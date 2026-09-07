@@ -1,0 +1,22 @@
+{
+  "name": "beatsedge-backend",
+  "version": "1.0.0",
+  "description": "Free backend for BeatsEdge: proxies stats.nba.com/wnba.com (which browsers can't call directly due to header restrictions), and computes real defense-vs-position stats from box score history.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node scripts/seed-from-csv.js",
+    "test:dvp": "node scripts/test-dvp-engine.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "better-sqlite3": "^11.10.0",
+    "node-cron": "^3.0.3",
+    "csv-parse": "^5.5.6"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "license": "ISC"
+}
