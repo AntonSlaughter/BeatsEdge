@@ -2929,14 +2929,39 @@
                 detail: `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - shrink) * 100)}% toward 50% for regression (${sampleGames} game sample)`
             });
 
-            // historical hit rates are stored as "% over" — flip for an under
+            // Directional hit rate at THIS prop's exact line. Recompute it from
+            // the raw game log whenever we have one — the pre-baked
+            // statsByKey[k].hitRate is a single number set against whatever
+            // line the window builder happened to pick, which is WRONG for any
+            // stat that has several lines (goblins / demons / alts). Only fall
+            // back to the window's estimate when there's no game log yet.
             const dirRate = (hitRate) => hitRate == null ? null : (direction === 'over' ? hitRate / 100 : 1 - hitRate / 100);
+            const _glRows = (player.gameLogByKey && player.gameLogByKey[prop.statKey]) || null;
+            const _glVals = Array.isArray(_glRows)
+                ? _glRows.map(g => (g && typeof g.points === 'number') ? g.points : null).filter(v => v != null)
+                : [];
+            const _hasGl = _glVals.length >= 5;
+            const rateAt = (vals) => {
+                if (!vals.length) return null;
+                const over = vals.filter(v => v > line).length / vals.length;
+                return direction === 'over' ? over : 1 - over;
+            };
             const priors = [];
-            if (s.season && typeof s.season.hitRate === 'number' && (s.season.games || 0) >= 5) {
-                priors.push({ p: dirRate(s.season.hitRate), w: Math.min(0.30, (s.season.games / 100) * 0.30), games: s.season.games, name: `season hit rate` });
-            }
-            if (s.last10 && typeof s.last10.hitRate === 'number' && (s.last10.games || 0) >= 5) {
-                priors.push({ p: dirRate(s.last10.hitRate), w: 0.15, games: s.last10.games, name: `last-10 hit rate` });
+            if (_hasGl) {
+                priors.push({ p: rateAt(_glVals), w: Math.min(0.30, _glVals.length / 100 * 0.30), games: _glVals.length, name: 'game-log hit rate' });
+                const l10 = _glVals.slice(-10);
+                if (l10.length >= 5) priors.push({ p: rateAt(l10), w: 0.15, games: l10.length, name: 'last-10 hit rate' });
+            } else if (typeof prop.hitRate === 'number' && prop.hitRate >= 0 && prop.hitRate <= 100) {
+                // No game log yet (MLB pre-modal). prop.hitRate is estHitRate at
+                // THIS prop's line, already directional — the best available.
+                priors.push({ p: prop.hitRate / 100, w: 0.20, games: sampleGames || 20, name: 'estimated hit rate' });
+            } else {
+                if (s.season && typeof s.season.hitRate === 'number' && (s.season.games || 0) >= 5) {
+                    priors.push({ p: dirRate(s.season.hitRate), w: Math.min(0.30, (s.season.games / 100) * 0.30), games: s.season.games, name: 'season hit rate (est.)' });
+                }
+                if (s.last10 && typeof s.last10.hitRate === 'number' && (s.last10.games || 0) >= 5) {
+                    priors.push({ p: dirRate(s.last10.hitRate), w: 0.15, games: s.last10.games, name: 'last-10 hit rate (est.)' });
+                }
             }
             const wHist = priors.reduce((a, x) => a + x.w, 0);
             let pBlend = pDist * (1 - wHist) + priors.reduce((a, x) => a + x.p * x.w, 0);
@@ -3017,7 +3042,21 @@
             }
 
             const pickRate = (hr) => (hr == null ? null : (direction === 'over' ? Math.round(hr) : Math.round(100 - hr)));
-            const hitRates = {
+            // Real per-line hit rates from the game log when we have one, so the
+            // "reference" numbers match THIS prop's line — not the pre-baked
+            // window hitRate (see the priors block above for why).
+            const _glPick = (vals) => vals.length < 3 ? null
+                : Math.round((direction === 'over' ? vals.filter(v => v > line).length : vals.filter(v => v <= line).length) / vals.length * 100);
+            const _glOver = (vals) => vals.length < 3 ? null : Math.round(vals.filter(v => v > line).length / vals.length * 100);
+            const _glOppVals = Array.isArray(_glRows) && player.opponent
+                ? _glRows.filter(g => g && g.opponent === player.opponent && typeof g.points === 'number').map(g => g.points)
+                : [];
+            const hitRates = _hasGl ? {
+                season: { pick: _glPick(_glVals), over: _glOver(_glVals), games: _glVals.length },
+                last10: { pick: _glPick(_glVals.slice(-10)), over: _glOver(_glVals.slice(-10)), games: Math.min(10, _glVals.length) },
+                last5: { pick: _glPick(_glVals.slice(-5)), over: _glOver(_glVals.slice(-5)), games: Math.min(5, _glVals.length) },
+                vsOpp: _glOppVals.length ? { pick: _glPick(_glOppVals), over: _glOver(_glOppVals), games: _glOppVals.length } : null
+            } : {
                 season: s.season && s.season.games ? { pick: pickRate(s.season.hitRate), over: s.season.hitRate, games: s.season.games } : null,
                 last10: s.last10 && s.last10.games ? { pick: pickRate(s.last10.hitRate), over: s.last10.hitRate, games: s.last10.games } : null,
                 last5: s.last5 && s.last5.games ? { pick: pickRate(s.last5.hitRate), over: s.last5.hitRate, games: s.last5.games } : null,
@@ -5597,8 +5636,11 @@
                     const s10 = l10[p.id + ':' + grp];
                     if (!s5 && !s10) return p;
                     const isPitcher = !!p._isPitcher;
+                    // Prefer the STANDARD-board line for each stat — an alt /
+                    // goblin / demon line must not become the hit-rate baseline.
                     const lineFor = {};
-                    p.props.forEach(pr => { lineFor[pr.statKey] = pr.line; });
+                    [...p.props].sort((a, b) => (a.altLine || a.ppKind ? 1 : 0) - (b.altLine || b.ppKind ? 1 : 0))
+                        .forEach(pr => { if (lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
                     const nextByKey = { ...p.statsByKey };
                     Object.keys(nextByKey).forEach(k => {
                         const line = lineFor[k] != null ? lineFor[k] : nextByKey[k].season.avg;
@@ -5953,8 +5995,10 @@
 
                 setPlayersData(prev => prev.map(p => {
                     if (p.id !== player.id || p.role !== player.role || !p.statsByKey) return p;
+                    // Prefer the STANDARD-board line per stat (see warmMlbSlateForm).
                     const lineFor = {};
-                    p.props.forEach(pr => { lineFor[pr.statKey] = pr.line; });
+                    [...p.props].sort((a, b) => (a.altLine || a.ppKind ? 1 : 0) - (b.altLine || b.ppKind ? 1 : 0))
+                        .forEach(pr => { if (lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
                     const nextByKey = { ...p.statsByKey };
                     const nextLogByKey = { ...p.gameLogByKey };
 
@@ -7940,11 +7984,11 @@
 
                                                 {(() => {
                                                     const inParlay = isPropSelected(player, activeProp);
-                                                    // Gate on the real, direction-aware hit rate (season,
-                                                    // then L10), not the pre-load seed estimate.
-                                                    const realHR = hr(cStats && ((cStats.season && cStats.season.hitRate) != null
-                                                        ? cStats.season.hitRate
-                                                        : (cStats.last10 && cStats.last10.hitRate)));
+                                                    // Gate on the real, direction-aware hit rate for THIS
+                                                    // prop's line — from edge.hitRates (game-log based).
+                                                    const hrObj = edge.hitRates || {};
+                                                    const realHR = (hrObj.season && hrObj.season.pick != null) ? hrObj.season.pick
+                                                        : (hrObj.last10 && hrObj.last10.pick != null) ? hrObj.last10.pick : null;
                                                     const gateHR = Math.round((realHR != null ? realHR : activeProp.hitRate) || 0);
                                                     const eligible = gateHR >= 80;
                                                     const addProp = { ...activeProp, hitRate: gateHR };
@@ -7969,40 +8013,59 @@
                                     );
                                 })()}
 
-                                <div className="hit-rate-section">
-                                    <div className="hit-rate-header">
-                                        <div>
-                                            <div className="hit-rate-title">
-                                                Hit Rate{cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${cardProp.line}` : ''}
-                                            </div>
-                                            <div className="hit-rate-main">{(hr(cStats.vsOpp && cStats.vsOpp.hitRate) != null ? hr(cStats.vsOpp.hitRate) : hr(cStats.season && cStats.season.hitRate)) ?? '—'}%</div>
-                                        </div>
-                                        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                                            <div style={{ fontWeight: 600 }}>Hit rate vs {player.opponent}</div>
-                                            <div style={{ fontSize: '0.8rem' }}>{player.sport === 'mlb' ? `Share of games ${dirUnder ? 'below' : 'above'} this line, per window` : 'The hit rate over the last 20 games with recent games given more importance'}</div>
-                                        </div>
-                                    </div>
-                                    <div className="hit-rate-bars">
-                                        {[
-                                            { label: 'L5', value: hr(cStats.last5 && cStats.last5.hitRate) },
-                                            { label: 'L10', value: hr(cStats.last10 && cStats.last10.hitRate) },
-                                            { label: 'L20', value: hr(cStats.last20 && cStats.last20.hitRate) },
-                                            { label: 'Season', value: hr(cStats.season && cStats.season.hitRate) },
-                                            { label: 'Vs Opp', value: hr(cStats.vsOpp && cStats.vsOpp.hitRate) }
-                                        ].filter(bar => bar.value !== undefined && bar.value !== null).map((bar, idx) => (
-                                            <div key={idx} className="hit-rate-bar">
-                                                <div className="hit-rate-bar-label">{bar.label}</div>
-                                                <div className="hit-rate-bar-value">{bar.value}%</div>
-                                                <div className="hit-rate-bar-visual">
-                                                    <div
-                                                        className="hit-rate-bar-fill"
-                                                        style={{ width: `${bar.value}%` }}
-                                                    ></div>
+                                {(() => {
+                                    // Compute hit rates straight from the game log against THIS
+                                    // prop's line (cardProp.line) — the pre-baked window hitRate
+                                    // is one number set against whatever line the window builder
+                                    // picked, which is wrong for any stat with several lines.
+                                    const L = cardProp ? cardProp.line : ((cStats.season && cStats.season.avg) || 0);
+                                    const glv = (cLog || []).map(g => (g && typeof g.points === 'number') ? g.points : null).filter(v => v != null);
+                                    const oppVals = (cLog || []).filter(g => g && g.opponent === player.opponent && typeof g.points === 'number').map(g => g.points);
+                                    const gr = (vals) => vals.length ? Math.round((dirUnder ? vals.filter(v => v <= L).length : vals.filter(v => v > L).length) / vals.length * 100) : null;
+                                    const useGl = glv.length >= 3;
+                                    const bars = (useGl ? [
+                                        { label: 'L5', value: gr(glv.slice(-5)) },
+                                        { label: 'L10', value: gr(glv.slice(-10)) },
+                                        { label: 'L20', value: gr(glv.slice(-20)) },
+                                        { label: 'Season', value: gr(glv) },
+                                        oppVals.length >= 3 ? { label: `Vs Opp (${oppVals.length})`, value: gr(oppVals) } : null
+                                    ] : [
+                                        { label: 'L5', value: hr(cStats.last5 && cStats.last5.hitRate) },
+                                        { label: 'L10', value: hr(cStats.last10 && cStats.last10.hitRate) },
+                                        { label: 'L20', value: hr(cStats.last20 && cStats.last20.hitRate) },
+                                        { label: 'Season', value: hr(cStats.season && cStats.season.hitRate) },
+                                        { label: 'Vs Opp', value: hr(cStats.vsOpp && cStats.vsOpp.hitRate) }
+                                    ]).filter(b => b && b.value != null);
+                                    const headline = useGl ? (oppVals.length >= 4 ? gr(oppVals) : gr(glv))
+                                        : (hr(cStats.vsOpp && cStats.vsOpp.hitRate) != null ? hr(cStats.vsOpp.hitRate) : hr(cStats.season && cStats.season.hitRate));
+                                    return (
+                                        <div className="hit-rate-section">
+                                            <div className="hit-rate-header">
+                                                <div>
+                                                    <div className="hit-rate-title">
+                                                        Hit Rate{cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${cardProp.line}` : ''}
+                                                    </div>
+                                                    <div className="hit-rate-main">{headline ?? '—'}%</div>
+                                                </div>
+                                                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                                    <div style={{ fontWeight: 600 }}>{useGl && oppVals.length >= 4 ? `Hit rate vs ${player.opponent} (${oppVals.length}g)` : `${dirUnder ? 'Under' : 'Over'} rate — last ${Math.min(glv.length, 40)} games`}</div>
+                                                    <div style={{ fontSize: '0.8rem' }}>Share of games {dirUnder ? 'at or below' : 'above'} {cardProp ? cardProp.line : 'this line'}, straight from the game log.</div>
                                                 </div>
                                             </div>
-                                        ))}
-                                    </div>
-                                </div>
+                                            <div className="hit-rate-bars">
+                                                {bars.map((bar, idx) => (
+                                                    <div key={idx} className="hit-rate-bar">
+                                                        <div className="hit-rate-bar-label">{bar.label}</div>
+                                                        <div className="hit-rate-bar-value">{bar.value}%</div>
+                                                        <div className="hit-rate-bar-visual">
+                                                            <div className="hit-rate-bar-fill" style={{ width: `${bar.value}%` }}></div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
 
                                 <div className="stats-tabs">
                                     {[['last5', 'L5'], ['last10', 'L10'], ['last20', 'L20'], ['season', 'Season'], ['vsOpp', `vs ${player.opponent}`]].map(([tab, label]) => (
