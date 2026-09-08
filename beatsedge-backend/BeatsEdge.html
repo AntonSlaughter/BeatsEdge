@@ -2309,6 +2309,98 @@
             .lineup-orders { grid-template-columns: 1fr; }
         }
 
+        /* ── Live-data freshness stamp ───────────────────────────────── */
+        .live-ts {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            font-size: 0.78rem; color: var(--text-muted); font-weight: 600;
+        }
+        .live-ts-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+        .live-ts-dot.live { background: var(--success-green); box-shadow: 0 0 0 3px rgba(46,160,67,0.18); animation: ts-pulse 2.4s ease-in-out infinite; }
+        .live-ts-dot.stale { background: var(--warning-yellow); }
+        .live-ts-dot.pending { background: var(--text-muted); }
+        @keyframes ts-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+        .research-freshness { margin: 0.35rem 0 0.75rem; }
+        .data-source-ts { margin-left: auto; }
+
+        /* ── Research page: over / under section labels ──────────────── */
+        .research-side-label {
+            font-size: 0.8rem; font-weight: 800; letter-spacing: 0.06em;
+            text-transform: uppercase; margin: 1.6rem 0 0.7rem;
+        }
+        .research-side-label.over { color: var(--success-green); }
+        .research-side-label.under { color: var(--danger-red); }
+        .research-side-label:first-of-type { margin-top: 0.5rem; }
+
+        /* ── Free → Pro soft gate ───────────────────────────────────── */
+        .pro-lock-card {
+            background: linear-gradient(165deg, var(--bg-surface) 0%, var(--bg-raised) 100%);
+            border: 1px solid var(--accent-red);
+            border-radius: 14px; padding: 1.3rem 1.4rem; max-width: 420px;
+            text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+        .pro-lock-card.compact { padding: 1rem 1.1rem; }
+        .pro-lock-title { font-size: 1rem; font-weight: 800; color: var(--text-primary); }
+        .pro-lock-text { font-size: 0.83rem; color: var(--text-secondary); margin-top: 0.4rem; line-height: 1.5; }
+        .pro-lock-sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.5rem; }
+        .pro-lock-btn {
+            margin-top: 0.85rem; background: var(--accent-red); color: #fff; border: none;
+            padding: 0.6rem 1.15rem; border-radius: 9px; font-family: var(--font-body);
+            font-weight: 800; font-size: 0.82rem; cursor: pointer;
+        }
+        .pro-lock-btn:hover { filter: brightness(1.08); }
+
+        .backtest-panel.pro-locked { position: relative; overflow: hidden; }
+        .backtest-panel.pro-locked .backtest-grades,
+        .backtest-panel.pro-locked .backtest-panel-note,
+        .backtest-panel.pro-locked .backtest-factors { filter: blur(6px); opacity: 0.5; pointer-events: none; user-select: none; }
+        .pro-lock-overlay {
+            position: absolute; inset: 0; z-index: 3;
+            display: flex; align-items: center; justify-content: center; padding: 1rem;
+        }
+
+        .pro-gate-banner {
+            display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+            background: linear-gradient(165deg, rgba(224,49,49,0.08) 0%, var(--bg-raised) 100%);
+            border: 1px solid var(--accent-red); border-radius: 12px;
+            padding: 0.9rem 1.1rem; margin-bottom: 1rem;
+            font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;
+        }
+        .pro-gate-banner > div { flex: 1; min-width: 240px; }
+        .pro-gate-banner strong { color: var(--text-primary); }
+
+        .filter-select-locked { cursor: pointer; color: var(--text-muted); }
+        .pro-lock-strip {
+            margin-top: 1rem; border: 1px dashed var(--accent-red); border-radius: 12px;
+            padding: 1rem 1.1rem; cursor: pointer; text-align: center;
+            background: var(--bg-secondary);
+        }
+        .pro-lock-strip:hover { background: var(--bg-raised); }
+        .pro-lock-strip-blur { display: block; filter: blur(5px); opacity: 0.55; user-select: none; margin-bottom: 0.6rem; }
+        .pro-lock-ghost { display: inline-block; margin: 0 0.5rem; font-weight: 700; color: var(--text-primary); }
+        .pro-lock-strip-cta { font-weight: 800; color: var(--accent-red); font-size: 0.88rem; }
+
+        .plan-toggle { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+        .plan-toggle-btn {
+            background: var(--bg-secondary); color: var(--text-muted); border: none;
+            padding: 0.45rem 1.1rem; font-family: var(--font-body); font-weight: 700;
+            font-size: 0.8rem; cursor: pointer;
+        }
+        .plan-toggle-btn.active { background: var(--accent-red); color: #fff; }
+
+        .upgrade-modal { max-width: 640px; }
+        .upgrade-body { padding: 1.25rem 1.4rem 1.5rem; }
+        .upgrade-lead { font-size: 0.9rem; color: var(--text-secondary); margin: 0 0 1.1rem; }
+        .upgrade-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        .upgrade-col { border: 1px solid var(--border-hairline); border-radius: 12px; padding: 1rem; background: var(--bg-secondary); }
+        .upgrade-col.pro { border-color: var(--accent-red); }
+        .upgrade-col-head { font-size: 0.9rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.7rem; display: flex; justify-content: space-between; }
+        .upgrade-col-head span { font-weight: 600; color: var(--text-muted); font-size: 0.78rem; }
+        .upgrade-col ul { margin: 0; padding-left: 1.1rem; }
+        .upgrade-col li { font-size: 0.82rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 0.3rem; }
+        .upgrade-cta { display: block; width: 100%; margin-top: 1.2rem; }
+        .upgrade-note { font-size: 0.74rem; color: var(--text-muted); margin-top: 0.7rem; line-height: 1.5; text-align: center; }
+        @media (max-width: 560px) { .upgrade-cols { grid-template-columns: 1fr; } }
+
     </style>
 </head>
 <body>
@@ -2992,8 +3084,10 @@
         // Top N best-supported picks across EVERY player and EVERY one of their
         // props, using the same calculateEdgeScore engine as Browse (not a
         // separate heuristic). One entry per player so the list stays varied.
-        // Ranked: letter grade, then gradeScore, then |model edge|.
-        function findTopPicks(players, n = 6) {
+        // Ranked: letter grade, then gradeScore, then |model edge|. Pass
+        // `direction` ('over' | 'under') to restrict to that side only — used
+        // by the research page to show the best overs and the best unders.
+        function findTopPicks(players, n = 6, direction = null) {
             const rank = (e) => [GRADE_RANK[e.grade], -e.gradeScore, -Math.abs(e.edge)];
             const rows = [];
             (players || []).forEach(player => {
@@ -3007,6 +3101,7 @@
                     // "over 0.5" goblin) would otherwise dominate with trivially
                     // high hit rates and crowd out real picks.
                     if (prop.altLine || prop.crossBook) return;
+                    if (direction && (prop.direction || 'over') !== direction) return;
                     const edge = calculateEdgeScore(player, prop);
                     if (edge.thinData) return; // not enough game log to trust the projection
                     if (!bestForPlayer) { bestForPlayer = { player, prop, propIdx: idx, edge }; return; }
@@ -3024,6 +3119,25 @@
                 return ar - br || ag - bg || ae - be;
             });
             return rows.slice(0, n);
+        }
+
+        // The research page's picks: the 2 best OVERs + the 2 best UNDERs for a
+        // sport (4 total). De-duped so the same player/prop can't be both.
+        function findResearchPicks(players) {
+            const overs = findTopPicks(players, 3, 'over');
+            const unders = findTopPicks(players, 3, 'under');
+            const seen = new Set();
+            const take = (list, k) => {
+                const out = [];
+                for (const r of list) {
+                    const id = r.player.id + ':' + r.prop.statKey;
+                    if (seen.has(id)) continue;
+                    seen.add(id); out.push(r);
+                    if (out.length === k) break;
+                }
+                return out;
+            };
+            return { overs: take(overs, 2), unders: take(unders, 2) };
         }
 
         const SPORT_LABELS = { nba: 'NBA', nfl: 'NFL', nhl: 'NHL', mlb: 'MLB' };
@@ -3503,10 +3617,59 @@
             return bt ? bt.grades : null;
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning }) {
-            const picks = !loading && Array.isArray(playersData) && playersData.length > 0
-                ? findTopPicks(playersData, 6)
-                : [];
+        // ── Live-data freshness stamp ────────────────────────────────────────
+        // Reads the ACTUAL last successful refresh time (ms epoch), not a
+        // hardcoded string. Ticks itself so "32 sec ago" stays honest.
+        const _TZ_ABBR = (() => {
+            try {
+                const p = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date());
+                return (p.find(x => x.type === 'timeZoneName') || {}).value || '';
+            } catch (e) { return ''; }
+        })();
+        function LiveTimestamp({ ts, className, prefix }) {
+            const [, force] = React.useState(0);
+            React.useEffect(() => {
+                if (!ts) return;
+                const id = setInterval(() => force(n => n + 1), 10000);
+                return () => clearInterval(id);
+            }, [ts]);
+            if (!ts) {
+                return <span className={`live-ts ${className || ''}`}><span className="live-ts-dot pending" />Waiting for first data pull…</span>;
+            }
+            const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+            let label;
+            if (sec < 60) label = `Live data · updated ${sec} sec ago`;
+            else if (sec < 3600) label = `Live data · updated ${Math.round(sec / 60)} min ago`;
+            else {
+                const t = new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                label = `Last updated ${t}${_TZ_ABBR ? ' ' + _TZ_ABBR : ''}`;
+            }
+            const stale = sec > 900;
+            return (
+                <span className={`live-ts ${className || ''}`} title={new Date(ts).toLocaleString()}>
+                    <span className={`live-ts-dot ${stale ? 'stale' : 'live'}`} />
+                    {prefix ? prefix + ' ' : ''}{label}
+                </span>
+            );
+        }
+
+        // ── Free → Pro soft gate ────────────────────────────────────────────
+        function ProLock({ title, text, onUnlock, compact }) {
+            return (
+                <div className={`pro-lock-card ${compact ? 'compact' : ''}`}>
+                    <div className="pro-lock-title">🔒 {title}</div>
+                    {text && <div className="pro-lock-text">{text}</div>}
+                    <div className="pro-lock-sub">You've reached the Free plan limit.</div>
+                    <button className="pro-lock-btn" onClick={onUnlock}>Unlock full BeatsEdge research</button>
+                </div>
+            );
+        }
+
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt }) {
+            const research = !loading && Array.isArray(playersData) && playersData.length > 0
+                ? findResearchPicks(playersData)
+                : { overs: [], unders: [] };
+            const hasAny = research.overs.length + research.unders.length > 0;
 
             const verdictClass = (label) => label === 'GREEN MATCHUP' ? 'green' : (label === 'RED MATCHUP' ? 'red' : 'mixed');
             const otherReadySports = Object.keys(SPORT_STATUS).filter(s => SPORT_STATUS[s] === 'ready' && s !== selectedSport);
@@ -3514,19 +3677,72 @@
             const cal = bt ? bt.grades : null;
             const canBacktest = (selectedSport === 'mlb' || selectedSport === 'nfl') && Array.isArray(playersData) && playersData.some(p => p.sport === selectedSport);
 
+            const PickCard = ({ p, n }) => {
+                const why = p.edge.factors.filter(f => f.supports).map(f => f.name);
+                return (
+                    <div
+                        className="top-pick-card top-pick-card-click"
+                        onClick={() => onOpenPick(p.player, p.propIdx)}
+                        title="Tap for the full research breakdown"
+                    >
+                        <div className="top-pick-rank-row">
+                            <div className="top-pick-sport-label">{SPORT_ICONS[selectedSport]} {SPORT_LABELS[selectedSport]}</div>
+                            <div className="top-pick-rank">{p.prop.direction === 'under' ? 'U' : 'O'}#{n}</div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
+                            <div>
+                                <div className="top-pick-player">{p.player.name}</div>
+                                <div className="top-pick-prop">
+                                    {p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
+                                    {p.prop.lineSource ? <span className="top-pick-real" title={p.prop.lineSource}> ●</span> : (p.prop.isProjection ? <span className="top-pick-proj"> proj</span> : '')}
+                                </div>
+                            </div>
+                            <div className={`grade-badge ${GRADE_META[p.edge.grade].cls}`} title={GRADE_META[p.edge.grade].label}>
+                                <div className="grade-badge-letter">{p.edge.grade}</div>
+                                <div className="grade-badge-caption">Grade</div>
+                            </div>
+                        </div>
+                        <div className="top-pick-confidence-row">
+                            <div className="top-pick-confidence-number">{p.edge.modelProbPct}%</div>
+                            <div className="top-pick-confidence-label">model probability · {p.edge.confidence}% factor alignment</div>
+                        </div>
+                        <div className={`top-pick-verdict ${verdictClass(p.edge.matchupLabel)}`}>
+                            {p.edge.matchupLabel} • {p.edge.greenCount}/{p.edge.totalFactors} aligned
+                        </div>
+                        <div className="top-pick-why">
+                            <span className="top-pick-why-label">Why:</span>{' '}
+                            {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}
+                        </div>
+                        <div className="top-pick-meta">Edge: {p.edge.edgePct >= 0 ? '+' : ''}{p.edge.edgePct}% · Model: {p.edge.projection} vs {p.prop.line} ({p.edge.edge >= 0 ? '+' : ''}{p.edge.edge})</div>
+                        <button
+                            className="top-pick-details-btn"
+                            onClick={(e) => { e.stopPropagation(); onOpenPick(p.player, p.propIdx); }}
+                        >See full research →</button>
+                    </div>
+                );
+            };
+
             return (
                 <div className="top-picks-view">
                     <div className="top-picks-intro">
-                        <h1 className="top-picks-heading">Today's Top Picks</h1>
+                        <h1 className="top-picks-heading">Today's BeatsEdge Research</h1>
+                        <LiveTimestamp ts={dataUpdatedAt} className="research-freshness" />
                         <p className="top-picks-subhead">
-                            The best-supported props for {SPORT_LABELS[selectedSport]}, ranked by how many
-                            independent factors actually agree — same engine as Browse, run across every
-                            player and every one of their live lines. A signal to evaluate, not a
-                            guarantee. Tap any card for the full factor-by-factor breakdown.
+                            The 2 best <strong>overs</strong> and 2 best <strong>unders</strong> for {SPORT_LABELS[selectedSport]},
+                            ranked by the same grade + probability engine as full Browse. A signal to
+                            evaluate, not a guarantee. Tap any card for the full factor-by-factor
+                            research breakdown.
                         </p>
                     </div>
 
-                    <div className="backtest-panel">
+                    <div className={`backtest-panel ${!isPro ? 'pro-locked' : ''}`}>
+                        {!isPro && (
+                            <div className="pro-lock-overlay">
+                                <ProLock compact title="Historical Model Performance"
+                                    text="See how every grade has actually landed, walk-forward over hundreds of thousands of real prop-sides."
+                                    onUnlock={onUnlock} />
+                            </div>
+                        )}
                         <div className="backtest-panel-head">
                             <div>
                                 <div className="backtest-panel-title">🧪 Model accuracy — {SPORT_LABELS[selectedSport]}</div>
@@ -3536,7 +3752,7 @@
                                         : 'Never run. This checks the grade engine against what actually happened, game by game, so the letters mean something.'}
                                 </div>
                             </div>
-                            {canBacktest && (
+                            {canBacktest && isPro && (
                                 <button className="backtest-run-btn" disabled={backtestRunning} onClick={onRunBacktest}>
                                     {backtestRunning ? 'Running…' : (cal ? 'Re-run' : 'Run backtest')}
                                 </button>
@@ -3577,62 +3793,35 @@
                         )}
                     </div>
 
-                    <div className="top-picks-grid">
-                        {loading ? (
+                    {loading ? (
+                        <div className="top-picks-grid">
                             <div className="loading"><div className="spinner"></div><div>Finding today's best-supported plays...</div></div>
-                        ) : (
-                            <React.Fragment>
-                                {picks.length > 0 ? picks.map((p, i) => {
-                                    const why = p.edge.factors.filter(f => f.supports).map(f => f.name);
-                                    return (
-                                        <div
-                                            className="top-pick-card top-pick-card-click"
-                                            key={p.player.id + ':' + p.propIdx}
-                                            onClick={() => onOpenPick(p.player, p.propIdx)}
-                                            title="Tap for the full breakdown"
-                                        >
-                                            <div className="top-pick-rank-row">
-                                                <div className="top-pick-sport-label">{SPORT_ICONS[selectedSport]} {SPORT_LABELS[selectedSport]}</div>
-                                                <div className="top-pick-rank">#{i + 1}</div>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
-                                                <div>
-                                                    <div className="top-pick-player">{p.player.name}</div>
-                                                    <div className="top-pick-prop">
-                                                        {p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
-                                                        {p.prop.lineSource ? <span className="top-pick-real" title={p.prop.lineSource}> ●</span> : (p.prop.isProjection ? <span className="top-pick-proj"> proj</span> : '')}
-                                                    </div>
-                                                </div>
-                                                <div className={`grade-badge ${GRADE_META[p.edge.grade].cls}`} title={GRADE_META[p.edge.grade].label}>
-                                                    <div className="grade-badge-letter">{p.edge.grade}</div>
-                                                    <div className="grade-badge-caption">Grade</div>
-                                                </div>
-                                            </div>
-                                            <div className="top-pick-confidence-row">
-                                                <div className="top-pick-confidence-number">{p.edge.confidence}%</div>
-                                                <div className="top-pick-confidence-label">factor confluence</div>
-                                            </div>
-                                            <div className={`top-pick-verdict ${verdictClass(p.edge.matchupLabel)}`}>
-                                                {p.edge.matchupLabel} • {p.edge.greenCount}/{p.edge.totalFactors} aligned
-                                            </div>
-                                            <div className="top-pick-why">
-                                                <span className="top-pick-why-label">Why:</span>{' '}
-                                                {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}
-                                            </div>
-                                            <div className="top-pick-meta">Prob: {p.edge.modelProbPct}% · Edge: {p.edge.edgePct >= 0 ? '+' : ''}{p.edge.edgePct}% · Model: {p.edge.projection} vs {p.prop.line} ({p.edge.edge >= 0 ? '+' : ''}{p.edge.edge})</div>
-                                            <button
-                                                className="top-pick-details-btn"
-                                                onClick={(e) => { e.stopPropagation(); onOpenPick(p.player, p.propIdx); }}
-                                            >See full breakdown →</button>
-                                        </div>
-                                    );
-                                }) : (
-                                    <div className="top-pick-card top-pick-card-pending">
-                                        <div className="top-pick-sport-label">{SPORT_ICONS[selectedSport]} {SPORT_LABELS[selectedSport]}</div>
-                                        <div className="top-pick-pending-text">No props loaded for this sport yet.</div>
-                                    </div>
-                                )}
+                        </div>
+                    ) : hasAny ? (
+                        <React.Fragment>
+                            <div className="research-side-label over">▲ Best Overs</div>
+                            <div className="top-picks-grid">
+                                {research.overs.length ? research.overs.map((p, i) => <PickCard key={p.player.id + ':' + p.propIdx} p={p} n={i + 1} />)
+                                    : <div className="top-pick-card top-pick-card-pending"><div className="top-pick-pending-text">No over meets the bar right now.</div></div>}
+                            </div>
+                            <div className="research-side-label under">▼ Best Unders</div>
+                            <div className="top-picks-grid">
+                                {research.unders.length ? research.unders.map((p, i) => <PickCard key={p.player.id + ':' + p.propIdx} p={p} n={i + 1} />)
+                                    : <div className="top-pick-card top-pick-card-pending"><div className="top-pick-pending-text">No under meets the bar right now.</div></div>}
+                            </div>
+                        </React.Fragment>
+                    ) : (
+                        <div className="top-picks-grid">
+                            <div className="top-pick-card top-pick-card-pending">
+                                <div className="top-pick-sport-label">{SPORT_ICONS[selectedSport]} {SPORT_LABELS[selectedSport]}</div>
+                                <div className="top-pick-pending-text">No props loaded for this sport yet.</div>
+                            </div>
+                        </div>
+                    )}
 
+                    <div className="top-picks-grid">
+                        {!loading && (
+                            <React.Fragment>
                                 {otherReadySports.map(sport => (
                                     <div className="top-pick-card top-pick-card-pending" key={sport}>
                                         <div className="top-pick-sport-label">{SPORT_ICONS[sport]} {SPORT_LABELS[sport]}</div>
@@ -3688,6 +3877,23 @@
             const [slateNewsSource, setSlateNewsSource] = useState('checking');
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
+            // Actual last successful data refresh (ms epoch) — drives the "Live
+            // data · updated Ns ago" stamp. Set on every successful slate /
+            // lines / injury / lineup pull; never a hardcoded time.
+            const [dataUpdatedAt, setDataUpdatedAt] = useState(null);
+            const markFresh = React.useCallback(() => setDataUpdatedAt(Date.now()), []);
+            // Free vs Pro. No backend auth yet — a localStorage flag, toggled
+            // from Data Sources settings, that a real checkout will flip later.
+            const [plan, setPlan] = useState(() => {
+                try { return localStorage.getItem('beatsedge_plan') === 'pro' ? 'pro' : 'free'; } catch (e) { return 'free'; }
+            });
+            const isPro = plan === 'pro';
+            const setPlanPersist = (p) => {
+                setPlan(p);
+                try { localStorage.setItem('beatsedge_plan', p); } catch (e) { }
+            };
+            const [showUpgrade, setShowUpgrade] = useState(false);
+            const onUnlock = React.useCallback(() => setShowUpgrade(true), []);
             const [liveGames, setLiveGames] = useState([]);
             const [scoreboardSource, setScoreboardSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [statsDataSource, setStatsDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
@@ -3805,6 +4011,7 @@
                     if (selectedSport === 'mlb') setMlbSlateSource('live');
                     if (selectedSport === 'nfl') setNflSlateSource('live');
                     setPropLineSource(cached.players.some(p => (p.props || []).some(pr => pr.lineSource)) ? 'live' : 'sample');
+                    setDataUpdatedAt(cached.at);
                     // The slate is cached, but the injury wire and scoreboard
                     // strip are sport/date-specific — without this they'd still
                     // show the tab we came FROM. Cheap, async, non-blocking.
@@ -3935,6 +4142,7 @@
                     if (stale()) return;
                     setPlayersData(players);
                     setLoading(false);
+                    markFresh();
 
                     // 1b. For MLB, layer real recent-form windows (L5/L10) and the
                     //     real opposing-lineup batting profile on top, in a few
@@ -3970,11 +4178,13 @@
                     if (stale()) return;
                     await fetchSlateLineups(players, stale);
                     if (stale()) return;
+                    markFresh();
                     await fetchCombinedDefenseData(players);
                     if (stale()) return;
                     await fetchBallDontLieStats(players);
                     if (stale()) return;
                     await fetchPlayerSituationalData(players);
+                    if (!stale()) markFresh();
                 } catch (error) {
                     console.error('Error fetching data:', error);
                     if (!stale()) setLoading(false);
@@ -5541,6 +5751,7 @@
                         _noLiveLines: !hasRealForBook
                     };
                 }));
+                if (!gone()) markFresh();
                 setPropLineSource(matched > 0 ? 'live' : 'sample');
                 const bookName = (platforms.find(x => x.id === selectedPlatform) || {}).name || selectedPlatform;
                 setProplineError(matched === 0
@@ -6063,6 +6274,7 @@
                 });
                 try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
                 if (gone()) return [];
+                markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
                 setProplineError(built.length ? null : 'PropLine reached but produced no NFL props for this slate.');
                 return built;
@@ -7619,6 +7831,39 @@
                 );
             };
 
+            const UpgradeModal = () => {
+                if (!showUpgrade) return null;
+                const FREE = ['Today\'s BeatsEdge Research — 2 best overs + 2 best unders per sport', 'Grade + confidence / factor alignment', 'Model projection, line & edge', 'Model probability + basic "Why"', 'Full research breakdown on those picks', 'News & Lineups + Injury wire'];
+                const PRO = ['Every available prop, full Browse', 'Full player research on everyone', 'L5 / L10 / L20 splits + game-by-game history', 'Matchup analysis, defense data, usage, minutes', 'Advanced filters — search, sort, stat categories', 'Historical model performance (backtest)', 'Line-movement + alerts'];
+                return (
+                    <div className="modal-overlay" onClick={() => setShowUpgrade(false)}>
+                        <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div className="modal-title">Unlock full BeatsEdge research</div>
+                                <button className="close-btn" onClick={() => setShowUpgrade(false)}>×</button>
+                            </div>
+                            <div className="upgrade-body">
+                                <p className="upgrade-lead">You've reached the Free plan limit. Here's everything Pro opens up.</p>
+                                <div className="upgrade-cols">
+                                    <div className="upgrade-col">
+                                        <div className="upgrade-col-head">FREE <span>$0</span></div>
+                                        <ul>{FREE.map((f, i) => <li key={i}>{f}</li>)}</ul>
+                                    </div>
+                                    <div className="upgrade-col pro">
+                                        <div className="upgrade-col-head">PRO <span>full research</span></div>
+                                        <ul>{PRO.map((f, i) => <li key={i}>{f}</li>)}</ul>
+                                    </div>
+                                </div>
+                                <button className="pro-lock-btn upgrade-cta" onClick={() => { setPlanPersist('pro'); setShowUpgrade(false); }}>
+                                    Preview Pro now
+                                </button>
+                                <div className="upgrade-note">Checkout isn't wired yet — "Preview Pro" flips the plan locally so you can walk the full experience. Swap this button for real checkout at launch.</div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
             const SettingsModal = () => {
                 if (!showSettings) return null;
                 return (
@@ -7629,6 +7874,22 @@
                                 <button className="close-btn" onClick={() => setShowSettings(false)}>×</button>
                             </div>
                             <div className="settings-modal-body">
+                                <div className="settings-source-row">
+                                    <div className="settings-source-name">
+                                        <span>Plan</span>
+                                        <span className={`source-pill ${isPro ? 'live' : 'sample'}`}>{isPro ? '🟢 PRO' : '⚪ FREE'}</span>
+                                    </div>
+                                    <div className="plan-toggle">
+                                        <button className={`plan-toggle-btn ${!isPro ? 'active' : ''}`} onClick={() => setPlanPersist('free')}>Free</button>
+                                        <button className={`plan-toggle-btn ${isPro ? 'active' : ''}`} onClick={() => setPlanPersist('pro')}>Pro</button>
+                                    </div>
+                                    <div className="settings-note">
+                                        Pro unlocks full Browse, all props, advanced filters, historical model
+                                        performance, alerts and full player research. Checkout isn't wired yet —
+                                        this toggle previews the Pro experience.
+                                    </div>
+                                </div>
+
                                 <div className="settings-source-row">
                                     <div className="settings-source-name">
                                         <span>Your Backend (real defense-vs-position)</span>
@@ -7862,6 +8123,17 @@
                 return rows.sort(cmp).map(x => x.p);
             }, [gradedPlayers, sortBy, playerSearchDebounced, norm]);
 
+            // Free plan: Browse only renders today's research picks (the 2 best
+            // overs + 2 best unders), each with its FULL research modal intact.
+            // Every other player + the advanced filters are Pro.
+            const researchPickIds = React.useMemo(() => {
+                if (!Array.isArray(playersData) || !playersData.length) return new Set();
+                const r = findResearchPicks(playersData);
+                return new Set([...r.overs, ...r.unders].map(x => x.player.id));
+            }, [playersData, gradeVersion]);
+            const browsePlayers = isPro ? filteredPlayers : filteredPlayers.filter(p => researchPickIds.has(p.id));
+            const lockedCount = isPro ? 0 : Math.max(0, filteredPlayers.length - browsePlayers.length);
+
             // Stat categories actually present on the current slate, ordered
             // PrizePicks-style. Feeds the Browse filter chip bar.
             const statCats = React.useMemo(() => {
@@ -7989,6 +8261,7 @@
                                     🟡 SAMPLE — Prop Lines (no free source publishes these)
                                 </span>
                             )}
+                            <LiveTimestamp ts={dataUpdatedAt} className="data-source-ts" />
                         </div>
 
                         {Array.isArray(liveGames) && liveGames.length > 0 && scoreboardSource === 'live' && (
@@ -8037,40 +8310,46 @@
                                 )}
                             </div>
                             <div className="filters">
-                                <div className="player-search">
-                                    <span className="player-search-icon">⌕</span>
-                                    <input
-                                        type="text"
-                                        className="player-search-input"
-                                        placeholder="Search player, team or position…"
-                                        value={playerSearch}
-                                        onChange={(e) => setPlayerSearch(e.target.value)}
-                                    />
-                                    {playerSearch && (
-                                        <button className="player-search-clear" onClick={() => setPlayerSearch('')} title="Clear">×</button>
-                                    )}
-                                </div>
+                                {isPro && (
+                                    <div className="player-search">
+                                        <span className="player-search-icon">⌕</span>
+                                        <input
+                                            type="text"
+                                            className="player-search-input"
+                                            placeholder="Search player, team or position…"
+                                            value={playerSearch}
+                                            onChange={(e) => setPlayerSearch(e.target.value)}
+                                        />
+                                        {playerSearch && (
+                                            <button className="player-search-clear" onClick={() => setPlayerSearch('')} title="Clear">×</button>
+                                        )}
+                                    </div>
+                                )}
                                 <input
                                     type="date"
                                     className="date-input"
                                     value={selectedDate}
                                     onChange={(e) => setSelectedDate(e.target.value)}
                                 />
-                                <select
-                                    className="filter-select"
-                                    value={sortBy}
-                                    onChange={(e) => setSortBy(e.target.value)}
-                                    title="Sort players"
-                                >
-                                    <option value="grade">Sort: Grade (A→D)</option>
-                                    <option value="edge">Sort: Model edge</option>
-                                    <option value="time">Sort: Game time</option>
-                                    <option value="name">Sort: Name (A→Z)</option>
-                                </select>
+                                {isPro ? (
+                                    <select
+                                        className="filter-select"
+                                        value={sortBy}
+                                        onChange={(e) => setSortBy(e.target.value)}
+                                        title="Sort players"
+                                    >
+                                        <option value="grade">Sort: Grade (A→D)</option>
+                                        <option value="edge">Sort: Model edge</option>
+                                        <option value="time">Sort: Game time</option>
+                                        <option value="name">Sort: Name (A→Z)</option>
+                                    </select>
+                                ) : (
+                                    <button className="filter-select filter-select-locked" onClick={onUnlock} title="Search + sort are Pro">🔒 Search &amp; sort</button>
+                                )}
                             </div>
                         </div>
 
-                        {statCats.length > 0 && (
+                        {isPro && statCats.length > 0 && (
                             <div className="stat-cat-bar">
                                 <button
                                     className={`stat-cat-chip ${statFilter === 'all' ? 'active' : ''}`}
@@ -8093,22 +8372,42 @@
                             </div>
                         ) : (
                             <React.Fragment>
+                                {!isPro && (
+                                    <div className="pro-gate-banner">
+                                        <div>
+                                            <strong>Free plan — today's research picks.</strong> You're seeing the {browsePlayers.length} best plays with full research. {lockedCount > 0 ? `${lockedCount} more player${lockedCount === 1 ? '' : 's'} on this slate` : 'Every other player, every prop'}, plus search, sort, filters, alerts and historical model performance are Pro.
+                                        </div>
+                                        <button className="pro-lock-btn" onClick={onUnlock}>Unlock full BeatsEdge research</button>
+                                    </div>
+                                )}
                                 <div className="grid-count">
-                                    {filteredPlayers.length} {filteredPlayers.length === 1 ? 'player' : 'players'}
-                                    {statFilter !== 'all' ? ` · ${statFilter}` : ''}
-                                    {playerSearch ? ` matching “${playerSearch}”` : ''}
+                                    {isPro
+                                        ? <>{filteredPlayers.length} {filteredPlayers.length === 1 ? 'player' : 'players'}{statFilter !== 'all' ? ` · ${statFilter}` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}</>
+                                        : <>Showing {browsePlayers.length} free research pick{browsePlayers.length === 1 ? '' : 's'}</>}
                                 </div>
-                                {filteredPlayers.length === 0 ? (
+                                {browsePlayers.length === 0 ? (
                                     <div className="loading" style={{ padding: '2.5rem' }}>
-                                        No players{statFilter !== 'all' ? ` with a ${statFilter} prop` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}.{' '}
-                                        {statFilter !== 'all' && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setStatFilter('all')}>Show all categories</span>}
-                                        {playerSearch && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPlayerSearch('')}> · Clear search</span>}
+                                        {isPro
+                                            ? <>No players{statFilter !== 'all' ? ` with a ${statFilter} prop` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}.{' '}
+                                                {statFilter !== 'all' && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setStatFilter('all')}>Show all categories</span>}
+                                                {playerSearch && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPlayerSearch('')}> · Clear search</span>}</>
+                                            : 'No research picks for this sport yet — check back when the slate loads.'}
                                     </div>
                                 ) : (
                                     <div className="players-grid">
-                                        {filteredPlayers.map(player => (
+                                        {browsePlayers.map(player => (
                                             <PlayerCard key={player.id} player={player} />
                                         ))}
+                                    </div>
+                                )}
+                                {!isPro && lockedCount > 0 && (
+                                    <div className="pro-lock-strip" onClick={onUnlock}>
+                                        <span className="pro-lock-strip-blur">
+                                            {filteredPlayers.filter(p => !researchPickIds.has(p.id)).slice(0, 6).map(p => (
+                                                <span key={p.id} className="pro-lock-ghost">{p.name} · {p.team}</span>
+                                            ))}
+                                        </span>
+                                        <span className="pro-lock-strip-cta">🔒 {lockedCount} more researched player{lockedCount === 1 ? '' : 's'} — Unlock full Browse →</span>
                                     </div>
                                 )}
                             </React.Fragment>
@@ -8125,8 +8424,11 @@
                                 backtest={backtest}
                                 backtestRunning={backtestRunning}
                                 onRunBacktest={runBacktest}
+                                isPro={isPro}
+                                onUnlock={onUnlock}
+                                dataUpdatedAt={dataUpdatedAt}
                                 onSwitchSport={(sport, view) => { setSelectedSport(sport); setCurrentView(view); }}
-                                onOpenPick={(pl, propIdx) => { setCurrentView('browse'); setStatFilter('all'); setPlayerSearch(pl.name); openDetail(pl.id, propIdx); }}
+                                onOpenPick={(pl, propIdx) => { setCurrentView('browse'); setStatFilter('all'); setPlayerSearch(isPro ? pl.name : ''); openDetail(pl.id, propIdx); }}
                             />
                             </ErrorBoundary>
                         )}
@@ -8160,6 +8462,7 @@
 
                     <ParlayBuilderModal />
                     <SettingsModal />
+                    <UpgradeModal />
                 </div>
             );
         };
