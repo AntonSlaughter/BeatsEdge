@@ -2808,16 +2808,20 @@
                     detail: `${t.shotsPerGame} shots/game generated, ranked #${t.rank} in the league`
                 });
             } else if (posDefense && !(sport === 'nba' && /^(blocks|steals|turnovers|blocksSteals)$/.test(prop.statKey))) {
-                // The per-position box-score tally only carries points / reb /
-                // assists allowed — it has nothing to say about a blocks /
-                // steals / turnovers prop, so it is not shown for those.
+                // Per-position defense. For NBA points props this rank is the
+                // real DvP table (PG/SG/SF/PF/C, collapsed to G/F/C); reb / ast
+                // fall back to the box-score tally. Not shown for blk/stl/to
+                // (the tally has nothing to say about those).
                 const defRank = posDefense.rank;
                 const defSupports = defenseSupportsDirection(defRank, direction);
+                const _nbaScoring = sport === 'nba' && /^(points|pra|pr|pa)$/.test(prop.statKey);
                 factors.push({
                     key: 'defense',
-                    name: `Defense vs ${player.position}`,
+                    name: `${player.opponent} vs ${player.position}${_nbaScoring ? ' (DvP)' : ''}`,
                     supports: defSupports,
-                    detail: `Ranked #${defRank} vs ${player.position} (${posDefense[allowedKey]} allowed)`
+                    detail: _nbaScoring
+                        ? `#${defRank} of 30 — allows ${posDefense.pointsAllowed} pts/game to ${player.position === 'G' ? 'guards' : player.position === 'F' ? 'forwards' : 'centers'}${posDefense.sub ? ` (${posDefense.sub})` : ''}`
+                        : `Ranked #${defRank} vs ${player.position} (${posDefense[allowedKey]} allowed)`
                 });
             }
             // (NBA/NFL with no posDefense data: factor omitted, same honesty rule.)
@@ -7793,11 +7797,79 @@
                 F: { pts: 41, reb: 20, ast: 8 },
                 C: { pts: 24, reb: 13, ast: 4 }
             };
-            // Opponent's last ~10 box scores → what they allow to each
-            // position group (ESPN's G/F/C granularity — no free source splits
-            // finer). Runs on modal open only.
-            const nbaOppPosDefense = async (oppTeamId) => {
+
+            // ── Points allowed vs position — a real, properly-computed DvP
+            // table (FantasyPros-style: per-game points a team's opponents get
+            // from each of PG / SG / SF / PF / C, with a 1-30 rank). Pasted
+            // from a CSV export; a SNAPSHOT — refresh it by dropping in a newer
+            // CSV. Keyed by ESPN team abbreviation. Value is a flat array:
+            //   [ vsPG, PGrank, vsSG, SGrank, vsSF, SFrank, vsPF, PFrank, vsC, Crank ]
+            // ESPN only publishes G / F / C for a player's position, so this is
+            // collapsed to G = mean(PG,SG), F = mean(SF,PF), C = C below — but
+            // the raw 5-position row is kept for the modal table.
+            const NBA_DVP_PTS_ASOF = 'season-to-date snapshot — paste a fresh CSV to update';
+            const NBA_DVP_PTS = {
+                CHI:  [50.8, 19, 45.4, 27, 47.4, 22, 48.5, 28, 59.9, 27],
+                NY:   [45.7, 2,  40.6, 8,  43.1, 7,  41.0, 2,  47.4, 2],
+                CLE:  [49.5, 15, 40.5, 7,  45.3, 14, 46.2, 22, 52.3, 10],
+                IND:  [52.9, 26, 43.8, 24, 47.4, 22, 45.6, 19, 56.3, 21],
+                GS:   [51.2, 21, 41.1, 10, 44.5, 13, 43.5, 11, 56.4, 22],
+                PHI:  [47.8, 9,  41.6, 14, 45.7, 17, 45.1, 16, 53.5, 14],
+                WSH:  [54.0, 29, 43.5, 23, 51.2, 29, 50.9, 30, 63.2, 30],
+                DET:  [46.3, 3,  39.0, 2,  43.8, 11, 43.1, 8,  50.2, 3],
+                CHA:  [47.7, 8,  39.9, 6,  43.7, 10, 43.6, 12, 51.1, 5],
+                BKN:  [49.3, 13, 42.4, 17, 46.7, 20, 45.2, 18, 55.4, 20],
+                MIN:  [51.1, 20, 40.7, 9,  42.7, 5,  42.7, 6,  54.1, 18],
+                MEM:  [53.8, 28, 45.1, 26, 47.0, 21, 47.1, 25, 58.6, 24],
+                LAL:  [47.1, 5,  42.4, 17, 44.3, 12, 42.4, 5,  50.7, 4],
+                HOU:  [47.3, 7,  41.3, 12, 42.4, 4,  39.5, 1,  52.0, 8],
+                ATL:  [49.4, 14, 39.5, 4,  47.8, 26, 46.1, 21, 53.4, 13],
+                NO:   [50.6, 17, 44.5, 25, 46.3, 18, 45.6, 19, 60.1, 28],
+                BOS:  [46.6, 4,  39.4, 3,  42.8, 6,  42.2, 4,  46.8, 1],
+                SA:   [48.5, 10, 41.1, 10, 45.5, 16, 43.1, 8,  55.1, 19],
+                TOR:  [49.1, 12, 41.3, 12, 41.2, 1,  43.9, 13, 52.1, 9],
+                LAC:  [50.7, 18, 42.8, 20, 43.2, 8,  41.3, 3,  53.8, 17],
+                UTAH: [56.6, 30, 46.8, 30, 52.1, 30, 49.3, 29, 58.4, 23],
+                MIA:  [51.9, 25, 43.3, 21, 47.7, 25, 47.6, 27, 53.5, 14],
+                MIL:  [53.6, 27, 42.4, 17, 47.9, 28, 45.1, 16, 53.0, 11],
+                DAL:  [51.5, 23, 45.6, 28, 45.4, 15, 47.4, 26, 60.5, 29],
+                PHX:  [47.1, 5,  38.3, 1,  42.2, 3,  44.0, 14, 53.6, 16],
+                OKC:  [45.5, 1,  39.8, 5,  41.4, 2,  42.8, 7,  53.2, 12],
+                POR:  [51.5, 23, 43.4, 22, 46.3, 18, 46.6, 24, 59.7, 26],
+                SAC:  [51.2, 21, 45.7, 29, 43.5, 9,  44.2, 15, 58.6, 24],
+                DEN:  [50.2, 16, 42.2, 16, 47.8, 26, 46.4, 23, 51.4, 6],
+                ORL:  [48.7, 11, 41.6, 14, 47.5, 24, 43.4, 10, 51.5, 7]
+            };
+            // Collapse to G/F/C (+ keep the raw 5-pos row + a fresh 1-30 rank
+            // and league-average ratio for each collapsed group).
+            const NBA_DVP_PTS_GFC = (() => {
+                const rows = Object.entries(NBA_DVP_PTS).map(([abbr, a]) => ({
+                    abbr, pg: a[0], sg: a[2], sf: a[4], pf: a[6], c: a[8],
+                    pgR: a[1], sgR: a[3], sfR: a[5], pfR: a[7], cR: a[9],
+                    G: (a[0] + a[2]) / 2, F: (a[4] + a[6]) / 2, C: a[8]
+                }));
+                const rankMap = (k) => { const s = [...rows].sort((x, y) => x[k] - y[k]); const m = {}; s.forEach((r, i) => { m[r.abbr] = i + 1; }); return m; };
+                const avg = (k) => rows.reduce((s, r) => s + r[k], 0) / rows.length;
+                const gR = rankMap('G'), fR = rankMap('F'), cR = rankMap('C');
+                const gA = avg('G'), fA = avg('F'), cA = avg('C');
+                const out = {};
+                rows.forEach(r => {
+                    out[r.abbr] = {
+                        G: { pointsAllowed: Math.round(r.G * 10) / 10, rank: gR[r.abbr], ratio: Math.round(r.G / gA * 100) / 100, sub: `PG #${r.pgR}, SG #${r.sgR}` },
+                        F: { pointsAllowed: Math.round(r.F * 10) / 10, rank: fR[r.abbr], ratio: Math.round(r.F / fA * 100) / 100, sub: `SF #${r.sfR}, PF #${r.pfR}` },
+                        C: { pointsAllowed: r.c, rank: r.cR, ratio: Math.round(r.c / cA * 100) / 100, sub: `#${r.cR} of 30` },
+                        row5: { PG: [r.pg, r.pgR], SG: [r.sg, r.sgR], SF: [r.sf, r.sfR], PF: [r.pf, r.pfR], C: [r.c, r.cR] }
+                    };
+                });
+                return out;
+            })();
+            // Opponent's per-position defense. POINTS come from the real DvP
+            // table (NBA_DVP_PTS_GFC) when we have that team; REBOUNDS / ASSISTS
+            // are tallied from the opponent's last ~10 real box scores (ESPN's
+            // G/F/C granularity). Runs on modal open only.
+            const nbaOppPosDefense = async (oppTeamId, oppAbbr) => {
                 if (!oppTeamId) return null;
+                const csv = oppAbbr && NBA_DVP_PTS_GFC[String(oppAbbr).toUpperCase()];
                 let sch = null;
                 for (const yr of [NBA_YR_CUR, NBA_YR_PREV]) {
                     sch = await nflFetch(`${NBA_ESPN}/teams/${oppTeamId}/schedule?season=${yr}`).catch(() => null);
@@ -7807,10 +7879,10 @@
                     const c = e.competitions && e.competitions[0];
                     return c && c.status && c.status.type && c.status.type.completed;
                 }).map(e => e.id).slice(-10);
-                if (done.length < 3) return null;
+                if (done.length < 3 && !csv) return null;
                 const grp = (raw) => /^(PG|SG|G)$/i.test(raw || '') ? 'G' : /^(SF|PF|F)$/i.test(raw || '') ? 'F' : 'C';
                 const t = { G: { pts: 0, reb: 0, ast: 0 }, F: { pts: 0, reb: 0, ast: 0 }, C: { pts: 0, reb: 0, ast: 0 }, games: 0 };
-                for (const batch of chunk(done, 5)) {
+                for (const batch of chunk(done.length >= 3 ? done : [], 5)) {
                     await Promise.all(batch.map(async eid => {
                         try {
                             const sum = await nflFetch(`${NBA_ESPN}/summary?event=${eid}`);
@@ -7832,21 +7904,32 @@
                         } catch (e) { /* skip a game */ }
                     }));
                 }
-                if (t.games < 3) return null;
+                if (t.games < 3 && !csv) return null;
                 const byPosition = {};
                 ['G', 'F', 'C'].forEach(pos => {
-                    const b = NBA_POS_BASELINE[pos], n = t.games;
-                    const pAllowed = Math.round(t[pos].pts / n * 10) / 10;
-                    const ratio = b.pts ? (t[pos].pts / n) / b.pts : 1;
+                    const b = NBA_POS_BASELINE[pos], n = t.games || 1;
+                    // POINTS: prefer the real DvP table; box-score tally only as fallback.
+                    let ptsAllowed, ptsRank, ptsRatio, ptsSub = null;
+                    if (csv && csv[pos]) {
+                        ptsAllowed = csv[pos].pointsAllowed; ptsRank = csv[pos].rank; ptsRatio = csv[pos].ratio; ptsSub = csv[pos].sub;
+                    } else {
+                        ptsAllowed = Math.round(t[pos].pts / n * 10) / 10;
+                        ptsRatio = b.pts ? (t[pos].pts / n) / b.pts : 1;
+                        ptsRank = Math.max(1, Math.min(30, Math.round(15.5 + (ptsRatio - 1) * 42)));
+                    }
+                    // REB / AST: from the box-score tally vs the approx baseline.
+                    const rReb = t.games ? (t[pos].reb / n) / (b.reb || 1) : 1;
                     byPosition[pos] = {
-                        pointsAllowed: pAllowed,
-                        reboundsAllowed: Math.round(t[pos].reb / n * 10) / 10,
-                        assistsAllowed: Math.round(t[pos].ast / n * 10) / 10,
-                        rank: Math.max(1, Math.min(30, Math.round(15.5 + (ratio - 1) * 42))),
-                        ratio: Math.round(ratio * 100) / 100
+                        pointsAllowed: ptsAllowed,
+                        reboundsAllowed: t.games ? Math.round(t[pos].reb / n * 10) / 10 : null,
+                        assistsAllowed: t.games ? Math.round(t[pos].ast / n * 10) / 10 : null,
+                        rank: ptsRank,
+                        ratio: Math.round(ptsRatio * 100) / 100,
+                        rebRatio: Math.round(rReb * 100) / 100,
+                        sub: ptsSub
                     };
                 });
-                return { byPosition, games: t.games };
+                return { byPosition, games: t.games, row5: csv ? csv.row5 : null, ptsSource: csv ? 'dvp-table' : 'box-scores' };
             };
 
             const fetchNbaPlayerDetail = async (player) => {
@@ -7860,7 +7943,7 @@
                 if (!nbaCache.current.posDef) nbaCache.current.posDef = {};
                 const _pdCache = nbaCache.current.posDef;
                 if (player.oppTeamId && _pdCache[player.oppTeamId] === undefined) {
-                    _pdCache[player.oppTeamId] = await nbaOppPosDefense(player.oppTeamId).catch(() => null);
+                    _pdCache[player.oppTeamId] = await nbaOppPosDefense(player.oppTeamId, player.opponent).catch(() => null);
                 }
                 const posDef = player.oppTeamId ? _pdCache[player.oppTeamId] : null;
                 const oppDefObj = posDef ? {
@@ -7869,7 +7952,10 @@
                         ? { rank: player.oppDef.ptsRank, ppg: player.oppDef.ptsAllowed }
                         : { rank: 15, ppg: null },
                     byPosition: posDef.byPosition,
-                    dataSource: `ESPN box scores — ${player.opponent}'s last ${posDef.games} games`,
+                    row5: posDef.row5 || null,
+                    dataSource: posDef.ptsSource === 'dvp-table'
+                        ? `points: DvP table (${NBA_DVP_PTS_ASOF})${posDef.games ? `; reb/ast: ${player.opponent}'s last ${posDef.games} box scores` : ''}`
+                        : `ESPN box scores — ${player.opponent}'s last ${posDef.games} games`,
                     isRealByPosition: true
                 } : null;
                 setPlayersData(prev => prev.map(p => {
@@ -9424,11 +9510,11 @@
                                         </div>
                                         <div className="defense-source-note">
                                             Overall PPG: {player.opponentDefense.dataSource ? `🟢 Live — ${player.opponentDefense.dataSource}` : '🟡 Sample data'}.{' '}
-                                            {player.opponentDefense.isRealByPosition
-                                                ? (/ESPN box scores/.test(player.opponentDefense.dataSource || '')
+                                            {/DvP table/.test(player.opponentDefense.dataSource || '')
+                                                ? 'Points-allowed-vs-position is a real DvP table (PG / SG / SF / PF / C, ranked 1-30); ESPN gives a player only G / F / C so it is shown collapsed — G = mean(PG, SG), F = mean(SF, PF). Rebounds / assists are the opponent’s recent box scores.'
+                                                : (player.opponentDefense.isRealByPosition
                                                     ? 'Position splits are tallied live from the opponent’s recent box scores (ESPN’s G / F / C tagging). League rank is vs an approximate positional baseline.'
-                                                    : 'Position splits below are computed from real box scores by your own backend — not an estimate.')
-                                                : 'Position splits below are a modeled estimate — no free source (NBA.com, WNBA.com, or ESPN) publishes defense allowed by position directly. Connect your own backend (Data Sources settings) for real computed numbers.'}
+                                                    : 'Position splits below are a modeled estimate — no free source publishes defense by position directly.')}
                                         </div>
 
                                         <div className="defense-stats-grid">
@@ -9439,41 +9525,65 @@
                                                 // Rank colored: Green (20+), Yellow (10-19), Red (<10)
                                                 const rankTier = stats.rank >= 20 ? 'green' : (stats.rank >= 10 ? 'yellow' : 'red');
                                                 const isFavorable = rankTier === 'green';
+                                                const mine = (position === player.position);
                                                 return (
-                                                    <div key={position} className="defense-stat-card">
-                                                        <div className="defense-position">{position}</div>
+                                                    <div key={position} className="defense-stat-card" style={mine ? { outline: '2px solid var(--accent-red)', outlineOffset: '1px' } : null}>
+                                                        <div className="defense-position">{position}{mine ? ' ← this player' : ''}</div>
 
                                                         {displayFields.map(field => (
                                                             <div className="defense-stat-row" key={field.key}>
                                                                 <div className="defense-stat-label">{field.label}</div>
                                                                 <div className="defense-stat-value">
-                                                                    {stats[field.key] !== undefined ? stats[field.key] : '—'}
+                                                                    {stats[field.key] !== undefined && stats[field.key] !== null ? stats[field.key] : '—'}
                                                                 </div>
                                                             </div>
                                                         ))}
 
                                                         <div className="defense-stat-row" style={{ borderBottom: 'none', paddingTop: '0.6rem' }}>
-                                                            <div className="defense-stat-label">League Rank</div>
+                                                            <div className="defense-stat-label">Points Rank{stats.sub ? ` (${stats.sub})` : ''}</div>
                                                             <span className={`defense-rank-badge ${rankTier}`}>
                                                                 #{stats.rank}
                                                             </span>
                                                         </div>
 
                                                         {isFavorable && (
-                                                            <div style={{ 
-                                                                marginTop: '0.6rem', 
-                                                                paddingTop: '0.6rem', 
-                                                                borderTop: '1px solid var(--border-color)' 
-                                                            }}>
-                                                                <span className="defense-trend-indicator favorable">
-                                                                    ✓ Favorable Matchup
-                                                                </span>
+                                                            <div style={{ marginTop: '0.6rem', paddingTop: '0.6rem', borderTop: '1px solid var(--border-color)' }}>
+                                                                <span className="defense-trend-indicator favorable">✓ Favorable Matchup</span>
                                                             </div>
                                                         )}
                                                     </div>
                                                 );
                                             })}
                                         </div>
+
+                                        {player.opponentDefense.row5 && (
+                                            <div style={{ marginTop: '0.9rem', overflowX: 'auto' }}>
+                                                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                                                    {player.opponentDefense.team} points allowed by exact position
+                                                </div>
+                                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', fontVariantNumeric: 'tabular-nums' }}>
+                                                    <thead><tr style={{ color: 'var(--text-muted)' }}>
+                                                        <th style={{ textAlign: 'left', padding: '0.3rem 0.5rem' }}></th>
+                                                        {['PG', 'SG', 'SF', 'PF', 'C'].map(p => <th key={p} style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{p}</th>)}
+                                                    </tr></thead>
+                                                    <tbody>
+                                                        <tr><td style={{ padding: '0.3rem 0.5rem', color: 'var(--text-secondary)' }}>Pts/game</td>
+                                                            {['PG', 'SG', 'SF', 'PF', 'C'].map(p => <td key={p} style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{player.opponentDefense.row5[p][0]}</td>)}
+                                                        </tr>
+                                                        <tr><td style={{ padding: '0.3rem 0.5rem', color: 'var(--text-secondary)' }}>Rank</td>
+                                                            {['PG', 'SG', 'SF', 'PF', 'C'].map(p => {
+                                                                const rk = player.opponentDefense.row5[p][1];
+                                                                const c = rk >= 20 ? 'var(--success-green)' : rk <= 10 ? 'var(--danger-red)' : 'var(--text-muted)';
+                                                                return <td key={p} style={{ padding: '0.3rem 0.5rem', textAlign: 'right', color: c, fontWeight: 700 }}>#{rk}</td>;
+                                                            })}
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                                                    Rank 1 = fewest points allowed to that position (toughest); 30 = most (easiest).
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                               </div>
