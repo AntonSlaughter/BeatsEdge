@@ -2011,6 +2011,43 @@
             margin-top: 0.6rem;
             line-height: 1.5;
         }
+        /* ── Master research section (🧠 How this % was calculated) ── */
+        .prob-breakdown.research-master > summary { font-size: 0.88rem; color: var(--text-primary); }
+        .research-body { padding: 0.6rem 0.95rem 0.9rem; }
+        .research-topline {
+            display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem;
+            font-size: 0.82rem; font-weight: 700;
+            padding: 0.5rem 0.7rem; margin-bottom: 0.8rem;
+            background: var(--bg-secondary); border-radius: 8px;
+        }
+        .research-topline span { color: var(--text-secondary); }
+        .research-topline b { color: var(--text-primary); }
+        .research-sec { margin: 0.8rem 0; border: 1px solid var(--border-color); border-radius: 9px; overflow: hidden; }
+        .research-sec-head {
+            display: flex; align-items: center; gap: 0.45rem;
+            padding: 0.55rem 0.7rem; font-size: 0.82rem; font-weight: 800;
+            letter-spacing: 0.02em; background: var(--bg-secondary);
+        }
+        .research-sec-head .rs-num { color: var(--text-muted); }
+        .research-sec-body { padding: 0.55rem 0.7rem; }
+        .research-tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+        .research-tbl th { text-align: left; color: var(--text-muted); font-weight: 700; padding: 0.3rem 0.45rem; }
+        .research-tbl td { padding: 0.32rem 0.45rem; border-top: 1px solid var(--border-color); }
+        .research-tbl td.num { text-align: right; font-weight: 700; }
+        .research-tbl .rs-mine td { background: rgba(255,68,54,0.07); }
+        .research-assess { margin-top: 0.5rem; font-size: 0.78rem; font-weight: 700; }
+        .research-assess.g { color: var(--success-green); }
+        .research-assess.r { color: var(--danger-red); }
+        .research-assess.n { color: var(--text-muted); }
+        .research-note { margin-top: 0.4rem; font-size: 0.76rem; color: var(--text-secondary); line-height: 1.5; }
+        .research-sub { margin-top: 0.55rem; }
+        .research-sub > summary {
+            cursor: pointer; list-style: none; font-size: 0.76rem; font-weight: 700;
+            color: var(--info-blue); padding: 0.3rem 0;
+        }
+        .research-sub > summary::-webkit-details-marker { display: none; }
+        .research-sub > summary::before { content: '▸ '; }
+        .research-sub[open] > summary::before { content: '▾ '; }
         /* per-factor probability nudge chip in the factor list */
         .factor-prob-delta {
             flex: 0 0 auto;
@@ -9260,45 +9297,236 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     </div>
                                                 </div>
 
-                                                <details className="prob-breakdown">
-                                                    <summary>How this {edge.modelProbPct}% was calculated</summary>
-                                                    <div className="prob-steps">
-                                                        {edge.probSteps.map((st, i) => {
-                                                            const hasDelta = typeof st.delta === 'number';
-                                                            const val = hasDelta
-                                                                ? `${st.delta >= 0 ? '+' : ''}${Math.round(st.delta * 1000) / 10} pts`
-                                                                : (typeof st.p === 'number' ? `${Math.round(st.p * 100)}%` : '');
-                                                            const vcls = hasDelta ? (st.delta > 0 ? 'up' : st.delta < 0 ? 'down' : '') : '';
-                                                            return (
-                                                                <div key={i} className={`prob-step${st.subtotal ? ' subtotal' : ''}${st.final ? ' final' : ''}`}>
-                                                                    <span className="prob-step-label">
-                                                                        {st.label}
-                                                                        {st.detail ? <span className="prob-step-detail">{st.detail}</span> : null}
-                                                                    </span>
-                                                                    <span className={`prob-step-value ${vcls}`}>{val}</span>
+                                                <details className="prob-breakdown research-master">
+                                                    <summary>🧠 How this {edge.modelProbPct}% was calculated</summary>
+                                                    {(() => {
+                                                        const W = cStats || {};
+                                                        const isNba = player.sport === 'nba';
+                                                        const facBy = (k) => (edge.factors || []).find(f => f.key === k);
+                                                        const r1 = (x) => x == null ? null : Math.round(x * 10) / 10;
+                                                        const hrOf = (win) => win && win.hitRate != null ? hr(win.hitRate) : null;
+                                                        const impactOf = (k) => { const f = facBy(k); if (!f) return '—'; if (f.inProjection) return 'in projection'; const d = f.probDelta || 0; return d === 0 ? '±0' : `${d > 0 ? '+' : ''}${Math.round(d * 1000) / 10} pts`; };
+                                                        const dot = (s) => s === true ? '🟢' : s === false ? '🔴' : '⚪';
+                                                        const L = activeProp.line;
+                                                        const beats = (win) => win && win.avg != null ? (dirUnder ? win.avg < L : win.avg > L) : null;
+                                                        const beatN = [W.last5, W.last10, W.last20, W.season].filter(w => beats(w) === true).length;
+                                                        const formOk = beatN >= 3 ? true : beatN <= 1 ? false : null;
+                                                        const mt = player.minutesTrend || 0;
+                                                        const oppOk = isNba ? (mt >= 1 ? true : mt <= -1 ? false : null) : null;
+                                                        const dvpFac = facBy('defense');
+                                                        const matchupOk = dvpFac ? !!dvpFac.supports : null;
+                                                        const availOk = (player.status === 'OUT' || player.status === 'DOUBTFUL') ? false
+                                                            : (player.opportunity || player.status === 'ACTIVE' || player.status === 'PROBABLE' || !player.status) ? true : null;
+                                                        // DvP grid (NBA) — full 5-position table, tucked in a sub-details.
+                                                        const od = player.opponentDefense;
+                                                        const grp = od && od.playerGroup;
+                                                        const grpW = grp === 'G' ? 'guards' : grp === 'F' ? 'forwards' : 'centers';
+                                                        const mineRows = grp === 'G' ? ['PG', 'SG'] : grp === 'F' ? ['SF', 'PF'] : ['C'];
+                                                        const DCOLS = [['PTS', 'pts'], ['3PM', 'tpm'], ['REB', 'reb'], ['AST', 'ast'], ['STL', 'stl'], ['BLK', 'blk'], ['TO', 'to']];
+                                                        const dBg = (rk) => rk == null ? 'transparent' : rk <= 50 ? 'rgba(255,68,54,0.16)' : rk >= 101 ? 'rgba(52,211,153,0.16)' : 'rgba(245,166,35,0.14)';
+                                                        const dFg = (rk) => rk == null ? 'var(--text-muted)' : rk <= 50 ? '#FF6B5F' : rk >= 101 ? '#34D399' : '#F5A623';
+                                                        const grpRow = od && od.byPosition && od.byPosition[grp];
+                                                        const statField = { points: ['pts', 'PTS'], pra: ['pts', 'PTS'], pr: ['pts', 'PTS'], pa: ['pts', 'PTS'], rebounds: ['reb', 'REB'], ra: ['reb', 'REB'], assists: ['ast', 'AST'], threes: ['tpm', '3PM'], steals: ['stl', 'STL'], blocks: ['blk', 'BLK'], blocksSteals: ['blk', 'BLK'], turnovers: ['to', 'TO'] }[activeProp.statKey];
+                                                        const thisRk = grpRow && statField && grpRow[({ pts: 'rank', reb: 'rebRank', ast: 'astRank', tpm: 'tpmRank', stl: 'stlRank', blk: 'blkRank', to: 'toRank' })[statField[0]]];
+                                                        return (
+                                                        <div className="research-body">
+                                                            <div className="research-topline">
+                                                                <span>Model projection <b>{edge.projection}</b></span>
+                                                                <span>Line <b>{L}</b></span>
+                                                                <span>Model edge <b style={{ color: edge.edge >= 0 ? 'var(--success-green)' : 'var(--danger-red)' }}>{edge.edge >= 0 ? '+' : ''}{edge.edge}</b></span>
+                                                                <span>Probability <b style={{ color: 'var(--accent-red)' }}>{edge.modelProbPct}%</b></span>
+                                                            </div>
+
+                                                            {isNba && (
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">1.</span> OPPORTUNITY</div>
+                                                                <div className="research-sec-body">
+                                                                    <table className="research-tbl">
+                                                                        <thead><tr><th>Metric</th><th style={{ textAlign: 'right' }}>Value</th><th style={{ textAlign: 'right' }}>Model impact</th></tr></thead>
+                                                                        <tbody>
+                                                                            <tr><td>Projected minutes</td><td className="num">{player.projMin ?? '—'}</td><td className="num">{impactOf('minutes')}</td></tr>
+                                                                            <tr><td>L10 minutes</td><td className="num">{W.last10 && W.last10.minAvg != null ? W.last10.minAvg : '—'}</td><td className="num">—</td></tr>
+                                                                            <tr><td>Season minutes</td><td className="num">{W.season && W.season.minAvg != null ? W.season.minAvg : '—'}</td><td className="num">—</td></tr>
+                                                                            <tr><td>Usage rate</td><td className="num">{player.usage && player.usage.usgRate != null ? player.usage.usgRate + '%' : '—'}</td><td className="num">—</td></tr>
+                                                                            <tr><td>FGA / game</td><td className="num">{player.usage && player.usage.fgAttempts != null ? player.usage.fgAttempts : '—'}</td><td className="num">—</td></tr>
+                                                                            <tr><td>Touches</td><td className="num">{player.usage && player.usage.touches != null ? player.usage.touches : '—'}</td><td className="num">—</td></tr>
+                                                                        </tbody>
+                                                                    </table>
+                                                                    <div className={`research-assess ${oppOk === true ? 'g' : oppOk === false ? 'r' : 'n'}`}>
+                                                                        Assessment: {mt >= 1 ? 'Strong — role is expanding' : mt <= -1 ? 'Weak — role is shrinking' : 'Stable role'}
+                                                                    </div>
+                                                                    <div className="research-note">Usage / FGA / touches need a connected stats feed — shown as “—” until then.</div>
                                                                 </div>
-                                                            );
-                                                        })}
-                                                        {(() => {
-                                                            const hr = edge.hitRates || {};
-                                                            const parts = [];
-                                                            if (hr.season && hr.season.pick != null) parts.push(`season ${hr.season.pick}% (${hr.season.games}g)`);
-                                                            if (hr.last10 && hr.last10.pick != null) parts.push(`L10 ${hr.last10.pick}%`);
-                                                            if (hr.last5 && hr.last5.pick != null) parts.push(`L5 ${hr.last5.pick}%`);
-                                                            if (hr.vsOpp && hr.vsOpp.pick != null && hr.vsOpp.games) parts.push(`vs opp ${hr.vsOpp.pick}% (${hr.vsOpp.games}g)`);
-                                                            return parts.length ? (
-                                                                <div className="prob-step">
-                                                                    <span className="prob-step-label">Hit rate on this side (historical, for reference)
-                                                                        <span className="prob-step-detail">{parts.join(' · ')}</span>
-                                                                    </span>
-                                                                    <span className="prob-step-value"></span>
+                                                            </div>
+                                                            )}
+
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">{dot(formOk)}<span className="rs-num">{isNba ? '2.' : '1.'}</span> RECENT FORM</div>
+                                                                <div className="research-sec-body">
+                                                                    <table className="research-tbl">
+                                                                        <thead><tr><th>Window</th><th style={{ textAlign: 'right' }}>Avg</th><th style={{ textAlign: 'right' }}>{dirUnder ? 'Under' : 'Over'} rate</th></tr></thead>
+                                                                        <tbody>
+                                                                            {[['L5', W.last5], ['L10', W.last10], ['L20', W.last20], ['Season', W.season], [`vs ${player.opponent}`, W.vsOpp]].map(([lbl, w]) => (
+                                                                                <tr key={lbl}>
+                                                                                    <td>{lbl}</td>
+                                                                                    <td className="num">{w && w.avg != null && (lbl.indexOf('vs ') !== 0 || w.games) ? w.avg : '—'}</td>
+                                                                                    <td className="num" style={{ color: hrOf(w) != null ? (hrOf(w) >= 55 ? 'var(--success-green)' : hrOf(w) <= 45 ? 'var(--danger-red)' : 'inherit') : 'inherit' }}>
+                                                                                        {(lbl.indexOf('vs ') === 0 && !(w && w.games)) ? '—' : (hrOf(w) != null ? hrOf(w) + '%' : '—')}
+                                                                                    </td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                    <div className={`research-assess ${formOk === true ? 'g' : formOk === false ? 'r' : 'n'}`}>
+                                                                        Assessment: {beatN >= 3 ? 'Strong — most windows clear this line' : beatN === 2 ? 'Mixed' : 'Weak — recent scoring is under this line'}
+                                                                    </div>
                                                                 </div>
-                                                            ) : null;
-                                                        })()}
-                                                    </div>
-                                                    <div className="prob-disclaimer" style={{ padding: '0 0.95rem 0.9rem' }}>
-                                                        <strong>Model probability is an estimate</strong>, not a guaranteed outcome — it's built from historical game logs and matchup factors, and the real result is still one game. Even an 80% estimate misses about 1 in 5. <strong>Confidence</strong> ({edge.confidence}%) is a different number: it's how many of the independent factors agree on this side, not a probability. A higher probability and a higher confidence both add to the edge, but neither is a lock.
-                                                    </div>
+                                                            </div>
+
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">{dot(matchupOk)}<span className="rs-num">{isNba ? '3.' : '2.'}</span> MATCHUP</div>
+                                                                <div className="research-sec-body">
+                                                                    {isNba && grpRow ? (
+                                                                        <React.Fragment>
+                                                                            <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: '0.35rem' }}>{od.team} vs {grpW}</div>
+                                                                            <table className="research-tbl">
+                                                                                <thead><tr><th>Stat</th>{DCOLS.map(([l]) => <th key={l} style={{ textAlign: 'right' }}>{l}</th>)}</tr></thead>
+                                                                                <tbody><tr>
+                                                                                    <td>Rank /150</td>
+                                                                                    {DCOLS.map(([l, k]) => {
+                                                                                        const rk = grpRow[({ pts: 'rank', tpm: 'tpmRank', reb: 'rebRank', ast: 'astRank', stl: 'stlRank', blk: 'blkRank', to: 'toRank' })[k]];
+                                                                                        return <td key={l} className="num" style={{ background: dBg(rk), color: dFg(rk) }}>#{rk}</td>;
+                                                                                    })}
+                                                                                </tr></tbody>
+                                                                            </table>
+                                                                            <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
+                                                                                Assessment: {statField ? `${matchupOk === true ? 'Favorable' : matchupOk === false ? 'Tough' : 'Middle-of-pack'} for ${activeProp.type.toLowerCase()}` : 'Middle-of-pack'}
+                                                                            </div>
+                                                                            {thisRk != null && (
+                                                                                <div className="research-note">
+                                                                                    {od.team} ranks <b>#{thisRk} of 150</b> defending {grpW} on <b>{statField[1]}</b> — {thisRk <= 50 ? 'tougher than' : thisRk >= 101 ? 'softer than' : 'about'} the league midpoint (75). {thisRk <= 50 ? 'A negative matchup adjustment.' : thisRk >= 101 ? 'A positive matchup adjustment.' : 'Roughly neutral.'}
+                                                                                </div>
+                                                                            )}
+                                                                            {od.row5 && (
+                                                                                <details className="research-sub">
+                                                                                    <summary>View full Defense vs Position breakdown</summary>
+                                                                                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', margin: '0.4rem 0', fontSize: '0.72rem', fontWeight: 700 }}>
+                                                                                        <span style={{ color: 'var(--text-muted)' }}>Rank:</span>
+                                                                                        <span style={{ background: 'rgba(255,68,54,0.16)', color: '#FF6B5F', borderRadius: '5px', padding: '0.1rem 0.4rem' }}>Top 50</span>
+                                                                                        <span style={{ background: 'rgba(245,166,35,0.14)', color: '#F5A623', borderRadius: '5px', padding: '0.1rem 0.4rem' }}>Middle 50</span>
+                                                                                        <span style={{ background: 'rgba(52,211,153,0.16)', color: '#34D399', borderRadius: '5px', padding: '0.1rem 0.4rem' }}>Bottom 50</span>
+                                                                                    </div>
+                                                                                    <div style={{ overflowX: 'auto' }}>
+                                                                                        <table className="research-tbl">
+                                                                                            <thead><tr><th>Pos</th>{DCOLS.map(([l]) => <th key={l} style={{ textAlign: 'right' }}>{l}</th>)}</tr></thead>
+                                                                                            <tbody>
+                                                                                                {['PG', 'SG', 'SF', 'PF', 'C'].map(pos => {
+                                                                                                    const rec = od.row5[pos]; if (!rec) return null;
+                                                                                                    const mine = mineRows.includes(pos);
+                                                                                                    return (
+                                                                                                        <tr key={pos} className={mine ? 'rs-mine' : ''}>
+                                                                                                            <td style={{ fontWeight: 700 }}>{pos}{mine ? ' ◄' : ''}</td>
+                                                                                                            {DCOLS.map(([l, k]) => {
+                                                                                                                const rk = rec[k + 'Rank'];
+                                                                                                                return <td key={l} className="num" style={{ background: dBg(rk) }}><span>{rec[k]}</span><span style={{ display: 'block', fontSize: '0.66rem', color: dFg(rk) }}>#{rk}</span></td>;
+                                                                                                            })}
+                                                                                                        </tr>
+                                                                                                    );
+                                                                                                })}
+                                                                                            </tbody>
+                                                                                        </table>
+                                                                                    </div>
+                                                                                    <div className="research-note">Per 48 min. ESPN only tags a player G/F/C, so the factor uses the mean of the {mineRows.join(' + ')} rows. Green = softest (good for an over); red = toughest.</div>
+                                                                                </details>
+                                                                            )}
+                                                                        </React.Fragment>
+                                                                    ) : (
+                                                                        <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
+                                                                            {dvpFac ? `${dvpFac.name}: ${dvpFac.detail}` : 'No positional defense data for this matchup.'}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {isNba && (
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">4.</span> MINUTES</div>
+                                                                <div className="research-sec-body">
+                                                                    <table className="research-tbl">
+                                                                        <tbody>
+                                                                            <tr><td>L10</td><td className="num">{W.last10 && W.last10.minAvg != null ? W.last10.minAvg : '—'}</td></tr>
+                                                                            <tr><td>Season</td><td className="num">{W.season && W.season.minAvg != null ? W.season.minAvg : '—'}</td></tr>
+                                                                            <tr><td>Expected tonight</td><td className="num">~{player.projMin ?? '—'}</td></tr>
+                                                                            <tr><td>Minutes trend (L5 vs prior 10)</td><td className="num" style={{ color: mt > 0 ? 'var(--success-green)' : mt < 0 ? 'var(--danger-red)' : 'inherit' }}>{mt > 0 ? '+' : ''}{mt}</td></tr>
+                                                                        </tbody>
+                                                                    </table>
+                                                                    <div className="research-note">Model impact: {impactOf('minutes')} (the "Minutes Trend" factor).</div>
+                                                                </div>
+                                                            </div>
+                                                            )}
+
+                                                            {isNba && (
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">⚪<span className="rs-num">5.</span> GAME ENVIRONMENT</div>
+                                                                <div className="research-sec-body">
+                                                                    <div className="research-note">Pace, expected possessions, team offensive / opponent defensive rating, projected team points, game total, spread, blowout risk, home / away. Not in the model yet — wired in as those data sources come online. Home/road split IS live: see the "{player.isHomeTonight ? 'At home' : 'On the road'}" factor above.</div>
+                                                                </div>
+                                                            </div>
+                                                            )}
+
+                                                            <div className="research-sec">
+                                                                <div className="research-sec-head">{dot(availOk)}<span className="rs-num">{isNba ? '6.' : '3.'}</span> AVAILABILITY / ROLE</div>
+                                                                <div className="research-sec-body">
+                                                                    <table className="research-tbl">
+                                                                        <tbody>
+                                                                            <tr><td>Status</td><td className="num">{player.status || 'ACTIVE'}</td></tr>
+                                                                            <tr><td>Injury</td><td className="num">{player.injury && player.injury !== 'Injury' ? player.injury : '—'}{player.statusTrend === 'down' && player.prevStatus ? ` ▼ (was ${player.prevStatus})` : ''}</td></tr>
+                                                                            {isNba && <tr><td>Rest</td><td className="num">{player.b2b && player.b2b.tonight === 'second' ? 'Back-to-back (2nd night)' : player.b2b && player.b2b.restDays != null ? `${player.b2b.restDays} day${player.b2b.restDays === 1 ? '' : 's'}` : '—'}</td></tr>}
+                                                                            <tr><td>Next man up</td><td className="num">{player.opportunity && player.opportunity.covers && player.opportunity.covers.length ? player.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ') : '—'}</td></tr>
+                                                                        </tbody>
+                                                                    </table>
+                                                                    <div className={`research-assess ${availOk === true ? 'g' : availOk === false ? 'r' : 'n'}`}>
+                                                                        Assessment: {player.status === 'OUT' ? 'Ruled out' : player.status === 'DOUBTFUL' ? 'Doubtful — likely sits' : player.opportunity ? 'Bumped role — a teammate is sidelined at his spot' : 'Full go — no availability concern'}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            <details className="research-sub" style={{ marginTop: '0.8rem' }}>
+                                                                <summary>Probability math, step by step</summary>
+                                                                <div className="prob-steps" style={{ padding: '0.3rem 0 0' }}>
+                                                                    {edge.probSteps.map((st, i) => {
+                                                                        const hasDelta = typeof st.delta === 'number';
+                                                                        const val = hasDelta
+                                                                            ? `${st.delta >= 0 ? '+' : ''}${Math.round(st.delta * 1000) / 10} pts`
+                                                                            : (typeof st.p === 'number' ? `${Math.round(st.p * 100)}%` : '');
+                                                                        const vcls = hasDelta ? (st.delta > 0 ? 'up' : st.delta < 0 ? 'down' : '') : '';
+                                                                        return (
+                                                                            <div key={i} className={`prob-step${st.subtotal ? ' subtotal' : ''}${st.final ? ' final' : ''}`}>
+                                                                                <span className="prob-step-label">{st.label}{st.detail ? <span className="prob-step-detail">{st.detail}</span> : null}</span>
+                                                                                <span className={`prob-step-value ${vcls}`}>{val}</span>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                    {(() => {
+                                                                        const h = edge.hitRates || {};
+                                                                        const parts = [];
+                                                                        if (h.season && h.season.pick != null) parts.push(`season ${h.season.pick}% (${h.season.games}g)`);
+                                                                        if (h.last10 && h.last10.pick != null) parts.push(`L10 ${h.last10.pick}%`);
+                                                                        if (h.last5 && h.last5.pick != null) parts.push(`L5 ${h.last5.pick}%`);
+                                                                        if (h.vsOpp && h.vsOpp.pick != null && h.vsOpp.games) parts.push(`vs opp ${h.vsOpp.pick}% (${h.vsOpp.games}g)`);
+                                                                        return parts.length ? (
+                                                                            <div className="prob-step"><span className="prob-step-label">Hit rate on this side (reference)<span className="prob-step-detail">{parts.join(' · ')}</span></span><span className="prob-step-value"></span></div>
+                                                                        ) : null;
+                                                                    })()}
+                                                                </div>
+                                                            </details>
+
+                                                            <div className="prob-disclaimer">
+                                                                <strong>Model probability is an estimate</strong>, not a guaranteed outcome — built from historical game logs and matchup factors, and the real result is still one game. Even an 80% estimate misses about 1 in 5. <strong>Confidence</strong> ({edge.confidence}%) is a different number: how many independent factors agree on this side, not a probability. Higher probability and higher confidence both add to the edge, but neither is a lock.
+                                                            </div>
+                                                        </div>
+                                                        );
+                                                    })()}
                                                 </details>
 
                                                 <div style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>
@@ -9643,64 +9871,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     </div>
                                 )}
 
-                                {player.sport === 'nba' && player.opponentDefense && player.opponentDefense.row5 && (() => {
-                                    // rank 1-150 -> the user's 3-bucket colour. GREEN = weak
-                                    // defence = good for the player (an over).
-                                    const dvpBg = (rk) => rk == null ? 'transparent' : rk <= 50 ? 'rgba(255,68,54,0.16)' : rk >= 101 ? 'rgba(52,211,153,0.16)' : 'rgba(245,166,35,0.14)';
-                                    const dvpFg = (rk) => rk == null ? 'var(--text-muted)' : rk <= 50 ? '#FF6B5F' : rk >= 101 ? '#34D399' : '#F5A623';
-                                    const COLS = [['PTS', 'pts'], ['3PM', 'tpm'], ['REB', 'reb'], ['AST', 'ast'], ['STL', 'stl'], ['BLK', 'blk'], ['TO', 'to']];
-                                    const grp = player.opponentDefense.playerGroup;
-                                    const mineRows = grp === 'G' ? ['PG', 'SG'] : grp === 'F' ? ['SF', 'PF'] : ['C'];
-                                    const r5 = player.opponentDefense.row5;
-                                    return (
-                                    <div className="opponent-defense-section">
-                                        <div className="opponent-defense-header">
-                                            <div className="opponent-defense-title">🛡️ {player.opponentDefense.team} — Defense vs Position</div>
-                                            <div className="opponent-badge">{player.opponentDefense.team}</div>
-                                        </div>
-                                        <div className="defense-source-note">
-                                            🟢 {player.opponentDefense.dataSource}. Ranked <strong>1–150</strong> across every team × position — 1 = the league's toughest such matchup, 150 = the softest. Your player is a <strong>{grp === 'G' ? 'guard' : grp === 'F' ? 'forward' : 'center'}</strong>, so the matchup factor uses the mean of the {mineRows.join(' + ')} rows (highlighted).
-                                        </div>
-                                        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', margin: '0.5rem 0 0.7rem', fontSize: '0.75rem', fontWeight: 700 }}>
-                                            <span style={{ color: 'var(--text-muted)' }}>Opponent defensive rank:</span>
-                                            <span style={{ background: 'rgba(255,68,54,0.16)', color: '#FF6B5F', borderRadius: '5px', padding: '0.15rem 0.5rem' }}>Top 50</span>
-                                            <span style={{ background: 'rgba(245,166,35,0.14)', color: '#F5A623', borderRadius: '5px', padding: '0.15rem 0.5rem' }}>Middle 50</span>
-                                            <span style={{ background: 'rgba(52,211,153,0.16)', color: '#34D399', borderRadius: '5px', padding: '0.15rem 0.5rem' }}>Bottom 50</span>
-                                        </div>
-                                        <div style={{ overflowX: 'auto' }}>
-                                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}>
-                                                <thead><tr style={{ color: 'var(--text-muted)', textAlign: 'right' }}>
-                                                    <th style={{ textAlign: 'left', padding: '0.35rem 0.4rem' }}>Pos</th>
-                                                    {COLS.map(([lbl]) => <th key={lbl} style={{ padding: '0.35rem 0.4rem' }}>{lbl}</th>)}
-                                                </tr></thead>
-                                                <tbody>
-                                                    {['PG', 'SG', 'SF', 'PF', 'C'].map(pos => {
-                                                        const rec = r5[pos]; if (!rec) return null;
-                                                        const mine = mineRows.includes(pos);
-                                                        return (
-                                                            <tr key={pos} style={mine ? { outline: '2px solid var(--accent-red)' } : null}>
-                                                                <td style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: mine ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{pos}{mine ? ' ◄' : ''}</td>
-                                                                {COLS.map(([lbl, k]) => {
-                                                                    const rk = rec[k + 'Rank'];
-                                                                    return (
-                                                                        <td key={lbl} style={{ padding: '0.3rem 0.4rem', textAlign: 'right', background: dvpBg(rk) }}>
-                                                                            <div style={{ fontWeight: 700 }}>{rec[k]}</div>
-                                                                            <div style={{ fontSize: '0.68rem', color: dvpFg(rk), fontWeight: 700 }}>#{rk}</div>
-                                                                        </td>
-                                                                    );
-                                                                })}
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-                                            Green = one of the softest matchups in the league for that stat (good for an over); red = one of the toughest. Per 48 minutes.
-                                        </div>
-                                    </div>
-                                    );
-                                })()}
+                                {/* NBA Defense-vs-Position lives inside the master
+                                    "🧠 How this % was calculated" research section
+                                    (Section 3 — Matchup) so it isn't forced on
+                                    everyone. */}
                                 {player.sport !== 'nba' && player.opponentDefense && player.opponentDefense.byPosition && (
                                     <div className="opponent-defense-section">
                                         <div className="opponent-defense-header">
