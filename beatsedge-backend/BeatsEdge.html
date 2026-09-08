@@ -2697,10 +2697,10 @@
             }
             // (NBA/NFL with no posDefense data: factor omitted, same honesty rule.)
 
-            // NFL-specific factors, independent of the season mean: how often
-            // the player has cleared this number, history vs this opponent, and
-            // how leaky the opposing defense is (points allowed / game, ranked).
-            if (sport === 'nfl') {
+            // Football-specific factors (NFL + college), independent of the
+            // season mean: how often the player has cleared this number,
+            // history vs this opponent, and how leaky the opposing defense is.
+            if (sport === 'nfl' || sport === 'ncaaf') {
                 if (player.oppDef && player.oppDef.rank) {
                     const r = player.oppDef.rank;              // 1 = stingiest, 32 = leakiest
                     const leaky = r >= 23, stingy = r <= 10;
@@ -2741,7 +2741,7 @@
             // entirely for those sports rather than counting as a free green.
             // NBA/NFL behaviour is unchanged.
             const paceRating = player.paceRating || 'neutral';
-            const paceIsRealInput = !((sport === 'mlb' || sport === 'nhl' || sport === 'nfl') && paceRating === 'neutral');
+            const paceIsRealInput = !((sport === 'mlb' || sport === 'nhl' || sport === 'nfl' || sport === 'ncaaf') && paceRating === 'neutral');
             if (paceIsRealInput) {
                 const paceSupports = direction === 'over' ? paceRating !== 'unfavorable' : paceRating !== 'favorable';
                 factors.push({
@@ -2807,10 +2807,11 @@
                 const defAdjustment = (posDefense.rank - 15.5) * 0.12; // weak D (high rank) nudges projection up
                 projection += defAdjustment;
             }
-            // NFL: nudge by how leaky the opposing defense is, scaled to the
-            // size of the number (±6% at the extremes of the rank scale).
-            if (sport === 'nfl' && player.oppDef && player.oppDef.rank) {
-                projection *= 1 + ((player.oppDef.rank - 16.5) / 15.5) * 0.06;
+            // Football: nudge by how leaky the opposing defense is, scaled to
+            // the size of the number (±6% at the extremes of the rank scale).
+            if ((sport === 'nfl' || sport === 'ncaaf') && player.oppDef && player.oppDef.rank) {
+                const _span = sport === 'ncaaf' ? 65 : 15.5, _mid = sport === 'ncaaf' ? 67 : 16.5;
+                projection *= 1 + ((player.oppDef.rank - _mid) / _span) * 0.06;
             }
             if (paceRating === 'favorable') projection += 0.6;
             if (paceRating === 'unfavorable') projection -= 0.6;
@@ -2881,19 +2882,22 @@
             // Backtest showed the model's MOST extreme edges regress (they're
             // usually a hot/cold streak about to mean-revert) — its moderate
             // calls calibrate best. So an oversized gap can't be a top grade.
+            const _football = sport === 'nfl' || sport === 'ncaaf';
             const wildGap = edgeRatio > 0.5                                    // model & line disagree by a lot → regression risk
-                || (sport === 'nfl' && sampleGames < 6 && edgeRatio > 0.30);   // small sample + big gap
+                || (_football && sampleGames < 6 && edgeRatio > 0.30);        // small sample + big gap
             // A cross-book line (shown because the selected DFS site hasn't
             // posted this number) isn't actually pickable there — never let it
             // grade above C.
-            const thinData = sampleGames < (sport === 'nfl' ? 4 : 3) || wildGap || !!prop.crossBook;
+            const thinData = sampleGames < (_football ? 4 : 3) || wildGap || !!prop.crossBook;
             if (thinData && (grade === 'A' || grade === 'B')) grade = 'C';
 
-            // NFL has no opponent-defense factor wired yet, so an "A" would rest
-            // on 2-3 correlated prior-season signals — not enough. Require the
-            // hit-rate AND vs-opponent factors to have fired (real sample) for
-            // an NFL A; otherwise the best it earns is a B.
-            if (sport === 'nfl' && grade === 'A' && totalFactors < 4) grade = 'B';
+            // Football has no opponent-defense factor wired yet, so an "A" would
+            // rest on 2-3 correlated prior-season signals — not enough. Require
+            // the hit-rate AND vs-opponent factors to have fired (real sample)
+            // for a football A; otherwise the best it earns is a B. College
+            // adds a season-not-started guard (Week 1-3 = prior-year logs only).
+            if (_football && grade === 'A' && totalFactors < 4) grade = 'B';
+            if (sport === 'ncaaf' && grade === 'A' && (s.season && s.season.games || 0) < 6) grade = 'B';
 
             // ---- Model probability + betting edge --------------------------
             // P(this side hits) — a calibrated ESTIMATE, not a lock. Three
@@ -3140,8 +3144,8 @@
             return { overs: take(overs, 2), unders: take(unders, 2) };
         }
 
-        const SPORT_LABELS = { nba: 'NBA', nfl: 'NFL', nhl: 'NHL', mlb: 'MLB' };
-        const SPORT_ICONS = { nba: '🏀', nfl: '🏈', nhl: '🏒', mlb: '⚾' };
+        const SPORT_LABELS = { nba: 'NBA', nfl: 'NFL', nhl: 'NHL', mlb: 'MLB', ncaaf: 'CFB' };
+        const SPORT_ICONS = { nba: '🏀', nfl: '🏈', nhl: '🏒', mlb: '⚾', ncaaf: '🎓' };
 
         // ── Walk-forward backtest of the grade engine ─────────────────────
         // No historical prop lines exist (PropLine only serves upcoming games),
@@ -3602,7 +3606,7 @@
         // NBA and NFL have real backend pipelines built (see beatsedge-backend).
         // NHL/MLB aren't wired up yet — shown but disabled rather than hidden,
         // so it's honest about what's coming vs. what silently doesn't exist.
-        const SPORT_STATUS = { nba: 'ready', nfl: 'ready', nhl: 'ready', mlb: 'ready' };
+        const SPORT_STATUS = { nba: 'ready', nfl: 'ready', nhl: 'ready', mlb: 'ready', ncaaf: 'ready' };
 
         // The backtest result for one sport (state holds { mlb: {...}, nfl: {...} }).
         function backtestForSport(backtest, sport) {
@@ -3899,6 +3903,7 @@
             const [statsDataSource, setStatsDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [mlbSlateSource, setMlbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real MLB full-slate from statsapi.mlb.com
             const [nflSlateSource, setNflSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NFL slate from ESPN + PropLine
+            const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real CFB slate from ESPN + PropLine
             const [backtest, setBacktest] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_backtest_v1') || 'null'); } catch (e) { return null; }
             });
@@ -3973,7 +3978,8 @@
                 nba: 'basketball/nba',
                 nfl: 'football/nfl',
                 nhl: 'hockey/nhl',
-                mlb: 'baseball/mlb'
+                mlb: 'baseball/mlb',
+                ncaaf: 'football/college-football'
             };
 
             const platforms = [
@@ -3985,7 +3991,7 @@
                 { id: 'betmgm', name: 'BetMGM' }
             ];
 
-            const sports = ['nba', 'nfl', 'nhl', 'mlb'];
+            const sports = ['nba', 'nfl', 'ncaaf', 'nhl', 'mlb'];
 
             // Cache a built slate per sport+date so flipping between sports is
             // instant instead of a full refetch each time.
@@ -4010,6 +4016,7 @@
                     setLoading(false);
                     if (selectedSport === 'mlb') setMlbSlateSource('live');
                     if (selectedSport === 'nfl') setNflSlateSource('live');
+                    if (selectedSport === 'ncaaf') setCfbSlateSource('live');
                     setPropLineSource(cached.players.some(p => (p.props || []).some(pr => pr.lineSource)) ? 'live' : 'sample');
                     setDataUpdatedAt(cached.at);
                     // The slate is cached, but the injury wire and scoreboard
@@ -4048,7 +4055,7 @@
             useEffect(() => {
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 setPlayersData(prev => {
-                    if (!prev.some(p => (p.sport === 'mlb' || p.sport === 'nfl') && p._allLines)) return prev;
+                    if (!prev.some(p => (p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines)) return prev;
                     return prev.map(p => {
                         if (!p._allLines) return p;
                         if (p.sport === 'mlb') {
@@ -4061,7 +4068,7 @@
                                 _noLiveLines: !props.some(pr => pr.lineSource)
                             };
                         }
-                        if (p.sport === 'nfl') {
+                        if (p.sport === 'nfl' || p.sport === 'ncaaf') {
                             const nextByKey = { ...p.statsByKey };
                             const posKeys = nflPosKeys(p.position).filter(k => p._allLines[k]);
                             const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
@@ -4133,6 +4140,27 @@
                             console.warn('NFL slate failed, falling back to sample:', err.message);
                             if (!stale()) setNflSlateSource('sample');
                             players = generateMockPlayerData('nfl');
+                        }
+                    } else if (selectedSport === 'ncaaf') {
+                        setMlbSlateSource('checking');
+                        try {
+                            const slate = await fetchCfbSlate(selectedDate);
+                            if (!slate.slots.length) {
+                                if (!stale()) setCfbSlateSource('sample');
+                                players = [];
+                            } else if (!proplineKey || !backendUrl) {
+                                setCfbSlateSource('sample');
+                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real CFB lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                players = [];
+                            } else {
+                                players = await fetchCfbPropLines(slate, stale);
+                                if (stale()) return;
+                                setCfbSlateSource(players.length ? 'live' : 'sample');
+                            }
+                        } catch (err) {
+                            console.warn('CFB slate failed:', err.message);
+                            if (!stale()) setCfbSlateSource('sample');
+                            players = [];
                         }
                     } else {
                         players = await fetchPlayerProps();
@@ -4475,12 +4503,13 @@
                         setLineupSource(rows.some(r => r.confirmed) ? 'live' : rows.length ? 'partial' : 'unavailable');
                         return;
                     }
-                    if (selectedSport === 'nfl') {
-                        const games = (nflCache.current && nflCache.current.games) || [];
-                        const meta = (nflCache.current && nflCache.current.teamMeta) || {};
+                    if (selectedSport === 'nfl' || selectedSport === 'ncaaf') {
+                        const cache = selectedSport === 'nfl' ? nflCache.current : cfbCache.current;
+                        const games = (cache && cache.games) || [];
+                        const meta = (cache && cache.teamMeta) || {};
                         const qbByTeam = {};
                         (players || []).forEach(p => {
-                            if (p.sport === 'nfl' && p.position === 'QB') (qbByTeam[p.team] = qbByTeam[p.team] || []).push(p.name);
+                            if (p.sport === selectedSport && p.position === 'QB') (qbByTeam[p.team] = qbByTeam[p.team] || []).push(p.name);
                         });
                         const rows = games.map(g => ({
                             key: String(g.gameId),
@@ -4491,7 +4520,9 @@
                             awayProb: (qbByTeam[(meta[g.awayId] || {}).abbr] || [])[0] || null,
                             homeProb: (qbByTeam[(meta[g.homeId] || {}).abbr] || [])[0] || null,
                             awayLineup: [], homeLineup: [], confirmed: false,
-                            note: 'Inactives post ~90 min before kickoff — QB shown from the depth chart.'
+                            note: selectedSport === 'nfl'
+                                ? 'Inactives post ~90 min before kickoff — QB shown from the depth chart.'
+                                : 'CFB has no confirmed pre-game lineup feed — QB shown from the roster.'
                         })).sort((a, b) => (a.startMs || 0) - (b.startMs || 0));
                         if (gone()) return;
                         setLineups(rows);
@@ -6306,6 +6337,290 @@
                 }));
             };
 
+            // ═══════════════════════════════════════════════════════════════
+            // COLLEGE FOOTBALL — a football-shaped sport, so it reuses the NFL
+            // engine (NFL_PROP_DEFS / nflConsolidate / nflComputeWindows /
+            // nflBuildProps / nflParseGamelog). Only the ESPN endpoints and
+            // the PropLine sport key differ. PropLine's NCAAF outcomes carry
+            // `player_id: "espn:<id>"`, so the join is by ID (cleaner than the
+            // NFL name-join) with a normalized-name fallback.
+            // ═══════════════════════════════════════════════════════════════
+            const CFB_ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/college-football';
+            const CFB_ESPN_COMMON = 'https://site.api.espn.com/apis/common/v3/sports/football/college-football';
+            const cfbCache = React.useRef({ byId: {}, byNorm: {}, teamMeta: {}, games: [] });
+
+            // Multi-season concat (oldest → newest). CFB weeks 1-4 have almost
+            // no current-season games, and one CFB season is only ~13, so the
+            // window is always built from the current + 2 prior seasons — same
+            // approach the NFL backtest uses. `?season=` must be explicit or
+            // ESPN returns the empty in-progress season.
+            const cfbGamelogMulti = async (id) => {
+                const rows = [];
+                const gls = await Promise.all([NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON].map(y =>
+                    nflFetch(`${CFB_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
+                gls.forEach(gl => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl)); });
+                return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            };
+            const cfbGamelogs = async (ids) => {
+                const map = {};
+                for (const grp of chunk([...new Set(ids)], 16)) {
+                    await Promise.all(grp.map(async id => {
+                        try { map[id] = await cfbGamelogMulti(id); }
+                        catch (e) { map[id] = []; }
+                    }));
+                }
+                return map;
+            };
+
+            const fetchCfbSlate = async (date) => {
+                const ymd = String(date).replace(/-/g, '');
+                let sb;
+                try { sb = await nflFetch(`${CFB_ESPN}/scoreboard?dates=${ymd}&groups=80&limit=200`); } catch (e) { sb = {}; }
+                let events = (sb && sb.events) || [];
+                if (!events.length) {
+                    try { const sb2 = await nflFetch(`${CFB_ESPN}/scoreboard?groups=80&limit=200`); events = (sb2 && sb2.events) || []; } catch (e) { }
+                }
+                if (!events.length) return { slots: [], games: [] };
+
+                const teamMeta = {}, games = [];
+                events.forEach(e => {
+                    const c = (e.competitions || [])[0]; if (!c) return;
+                    const home = (c.competitors || []).find(x => x.homeAway === 'home');
+                    const away = (c.competitors || []).find(x => x.homeAway === 'away');
+                    if (!home || !away) return;
+                    teamMeta[home.team.id] = { abbr: home.team.abbreviation || home.team.shortDisplayName, name: home.team.displayName };
+                    teamMeta[away.team.id] = { abbr: away.team.abbreviation || away.team.shortDisplayName, name: away.team.displayName };
+                    const when = new Date(e.date);
+                    const st = e.status && e.status.type;
+                    games.push({
+                        gameId: e.id, homeId: home.team.id, awayId: away.team.id,
+                        iso: e.date, kickoffMs: Date.parse(e.date || ''),
+                        status: st && st.name, state: st && st.state,
+                        gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                            + (st && st.state === 'post' ? ' · Final' : (st && st.state === 'in' ? ' · Live' : ''))
+                    });
+                });
+
+                // Rosters for the ~15-25 teams actually on the slate. CFB
+                // rosters are big; keep skill positions only. (No defense-rank
+                // factor — 130+ teams make a keyless DvP ranking too noisy.)
+                const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
+                const rosters = await Promise.all(teamIds.map(async tid => {
+                    for (const u of [`${CFB_ESPN}/teams/${tid}/roster`, `${CFB_ESPN}/teams/${tid}?enable=roster`]) {
+                        try {
+                            const res = await fetch(u);
+                            if (!res.ok) continue;
+                            const r = await res.json();
+                            const groups = r.athletes || (r.team && r.team.athletes) || [];
+                            if (groups.length) return { tid, groups };
+                        } catch (e) { }
+                    }
+                    return { tid, groups: [] };
+                }));
+
+                const byId = {}, byNorm = {}, slots = [];
+                rosters.forEach(({ tid, groups }) => {
+                    const g = games.find(x => x.homeId === tid || x.awayId === tid);
+                    if (!g) return;
+                    const isHome = g.homeId === tid;
+                    const oppId = isHome ? g.awayId : g.homeId;
+                    const athletes = groups.flatMap(grp => Array.isArray(grp.items) ? grp.items : [grp]);
+                    athletes.forEach(a => {
+                        const pos = NFL_SKILL_POS[a.position && a.position.abbreviation];
+                        if (!pos || pos === 'K') return; // CFB kicker props are rare — skip
+                        const rec = {
+                            id: String(a.id), name: a.fullName || a.displayName, pos,
+                            headshot: (a.headshot && a.headshot.href) || `https://a.espncdn.com/i/headshots/college-football/players/full/${a.id}.png`,
+                            team: (teamMeta[tid] || {}).abbr, teamId: tid,
+                            opponent: (teamMeta[oppId] || {}).abbr, oppTeamId: oppId,
+                            oppDef: null,
+                            gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
+                        };
+                        byId[rec.id] = rec;
+                        byNorm[nflNormName(rec.name)] = rec;
+                        slots.push(rec);
+                    });
+                });
+                cfbCache.current = { byId, byNorm, teamMeta, games };
+                return { slots, games };
+            };
+
+            const fetchCfbPropLines = async (slate, isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                const { games } = slate;
+                if (gone()) return [];
+                if (!backendUrl || !proplineKey) { setPropLineSource('sample'); return []; }
+                const plFetch = async (path) => {
+                    const [p, q] = path.replace(/^\//, '').split('?');
+                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
+                    const r = await fetch(url);
+                    if (r.status === 401 || r.status === 403) throw new Error(`PropLine key rejected (HTTP ${r.status})`);
+                    if (r.status === 429) throw new Error('PropLine rate limit hit — try again later');
+                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
+                    return r.json();
+                };
+
+                const events = await plFetch('/v1/sports/football_ncaaf/events');
+                // Same rolling-window guard as NFL/MLB — restrict to events
+                // kicking off inside this slate's span before keying by matchup.
+                const _kMs = games.map(g => g.kickoffMs).filter(Number.isFinite);
+                const _lo = _kMs.length ? Math.min(..._kMs) - 2 * 864e5 : -Infinity;
+                const _hi = _kMs.length ? Math.max(..._kMs) + 2 * 864e5 : Infinity;
+                const evByPair = {};
+                (Array.isArray(events) ? events : []).forEach(ev => {
+                    const ct = Date.parse(ev.commence_time || '');
+                    if (Number.isFinite(ct) && (ct < _lo || ct > _hi)) return;
+                    const h = String(ev.home_team_id || '').split(':').pop();
+                    const a = String(ev.away_team_id || '').split(':').pop();
+                    if (!h || !a) return;
+                    const ctv = Number.isFinite(ct) ? ct : 0;
+                    [h + '-' + a, a + '-' + h].forEach(key => {
+                        const cur = evByPair[key];
+                        if (!cur || ctv < cur.ct) evByPair[key] = { id: ev.id, ct: ctv };
+                    });
+                });
+                const wantEventIds = new Set();
+                games.forEach(g => {
+                    if (g.state === 'post') return;
+                    const ev = evByPair[g.homeId + '-' + g.awayId];
+                    if (ev) wantEventIds.add(ev.id);
+                });
+                if (gone()) return [];
+                if (!wantEventIds.size) { setPropLineSource('sample'); setProplineError('No upcoming CFB games on this slate matched PropLine (only competitive games get player props).'); return []; }
+
+                const markets = Object.values(NFL_PROP_DEFS).map(d => d.market).join(',');
+                const books = PROPLINE_BOOK_PRIORITY.join(',');
+                // key -> statKey -> book -> [{line,over,under,juice,setAt,primary,ppType}]
+                const linesById = {};
+                const idMeta = {}; // pid -> {name}
+                await Promise.all([...wantEventIds].map(async eid => {
+                    try {
+                        const data = await plFetch(`/v1/sports/football_ncaaf/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
+                        (data.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => {
+                            const statKey = NFL_MARKET_TO_KEY[m.key];
+                            if (!statKey || m.suspended_at) return;
+                            (m.outcomes || []).forEach(o => {
+                                if (o.price == null || o.suspended_at) return;
+                                const pid = String(o.player_id || '').replace(/^espn:/, '') || ('nm:' + nflNormName(o.description || o.name));
+                                if (!pid || pid === 'nm:') return;
+                                idMeta[pid] = idMeta[pid] || { name: o.description || o.name };
+                                const ppType = o.dfs_odds_type || null;
+                                let line = null, side = null;
+                                if (/^over$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'over'; }
+                                else if (/^under$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'under'; }
+                                else if (!DFS_PLATFORMS.has(bm.key)) { const mm = /^(\d+)\s*\+/.exec(o.name || ''); if (mm) { line = parseInt(mm[1], 10) - 0.5; side = 'over'; } }
+                                if (line == null || side == null) return;
+                                const t2 = (linesById[pid] || (linesById[pid] = {}));
+                                const t3 = (t2[statKey] || (t2[statKey] = {}));
+                                const arr = (t3[bm.key] || (t3[bm.key] = []));
+                                const kk = ppType ? `${line}|${ppType}` : `${line}`;
+                                let e = arr.find(x => x._kk === kk);
+                                if (!e) { e = { _kk: kk, line, over: null, under: null, juice: 9999, setAt: null, ppType }; arr.push(e); }
+                                e[side] = o.price;
+                                const jz = Math.abs(o.price || 0); if (jz < e.juice) e.juice = jz;
+                                e.setAt = m.last_update || e.setAt;
+                            });
+                        }));
+                    } catch (e) { }
+                }));
+                if (gone()) return [];
+                nflConsolidate(linesById);
+
+                const byId = cfbCache.current.byId || {};
+                const byNorm = cfbCache.current.byNorm || {};
+                const resolveSlot = (pid) => {
+                    if (byId[pid]) return byId[pid];
+                    if (pid.startsWith('nm:')) return byNorm[pid.slice(3)] || null;
+                    // PropLine espn id didn't match the roster scan — try name.
+                    const nm = nflNormName((idMeta[pid] || {}).name);
+                    return nm ? byNorm[nm] || null : null;
+                };
+                const matched = Object.keys(linesById).map(pid => ({ pid, slot: resolveSlot(pid) })).filter(x => x.slot);
+                if (!matched.length) { setPropLineSource('sample'); setProplineError('PropLine returned CFB lines but none matched the roster scan.'); return []; }
+
+                const glMap = await cfbGamelogs(matched.map(x => x.slot.id));
+                const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
+                const SNAP_KEY = 'beatsedge_cfb_lines_v1';
+                let snap = {}; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { }
+                const nextSnap = {}, now = Date.now();
+
+                const built = [];
+                const seenPlayer = new Set();
+                matched.forEach(({ pid, slot }) => {
+                    if (seenPlayer.has(slot.id)) return;
+                    seenPlayer.add(slot.id);
+                    const lines = linesById[pid];
+                    const posKeys = nflPosKeys(slot.pos).filter(k => lines[k]);
+                    if (!posKeys.length) return;
+                    const glRows = glMap[slot.id] || [];
+                    const lineFor = {};
+                    Object.keys(lines).forEach(k => {
+                        const arr = (lines[k][wantBook]) || [];
+                        const pr = arr.find(e => e.primary) || arr[0];
+                        if (pr) lineFor[k] = pr.line;
+                    });
+                    Object.keys(lines).forEach(k => {
+                        const arr = (lines[k][wantBook]) || [];
+                        const pr = arr.find(e => e.primary) || arr[0];
+                        if (!pr) return;
+                        const id = `${slot.id}:${k}:${wantBook}`;
+                        nextSnap[id] = { line: pr.line, ts: now };
+                        const prev = snap[id];
+                        if (prev && typeof prev.line === 'number' && prev.line !== pr.line) {
+                            pr.move = { from: prev.line, to: pr.line, delta: Math.round((pr.line - prev.line) * 10) / 10, sinceTs: prev.ts };
+                        }
+                    });
+                    const { statsByKey, gameLogByKey } = glRows.length
+                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent)
+                        : { statsByKey: {}, gameLogByKey: {} };
+                    const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
+                    let props = nflBuildProps(posKeys, statsByKey, lines, wantBook, perGameFor);
+                    const player = {
+                        id: slot.id, name: slot.name, sport: 'ncaaf', role: 'skill',
+                        position: slot.pos, team: slot.team, opponent: slot.opponent,
+                        teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
+                        oppDef: null, gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        statsByKey, gameLogByKey, stats: {}, gameLog: [],
+                        _allLines: lines, _isCfb: true, _detailLoaded: glRows.length > 0,
+                        _seasonPerGame: perGameFor
+                    };
+                    props = sortPropsByEdge(player, props);
+                    if (!props.length) return;
+                    player.props = props;
+                    player.stats = statsByKey[props[0].statKey] || {};
+                    player.gameLog = gameLogByKey[props[0].statKey] || [];
+                    player._noLiveLines = !props.some(pr => pr.lineSource);
+                    built.push(player);
+                });
+                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
+                if (gone()) return [];
+                markFresh();
+                setPropLineSource(built.length ? 'live' : 'sample');
+                setProplineError(built.length ? null : 'PropLine reached but produced no CFB props for this slate.');
+                return built;
+            };
+
+            const fetchCfbPlayerDetail = async (player) => {
+                let glRows;
+                try { glRows = await cfbGamelogMulti(player.id); } catch (e) { return; }
+                if (!glRows.length) {
+                    setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'ncaaf' ? { ...p, _detailLoaded: true } : p));
+                    return;
+                }
+                setPlayersData(prev => prev.map(p => {
+                    if (p.id !== player.id || p.sport !== 'ncaaf') return p;
+                    const lineFor = {};
+                    (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
+                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent);
+                    return {
+                        ...p, statsByKey, gameLogByKey,
+                        stats: statsByKey[p.props[0].statKey] || p.stats,
+                        gameLog: gameLogByKey[p.props[0].statKey] || [],
+                        _detailLoaded: true, statsSource: 'ESPN — full game log (real)'
+                    };
+                }));
+            };
+
             // ── Run the walk-forward backtest over every player on the current
             // slate (their full real game logs), for the current sport.
             const runBacktest = async () => {
@@ -7099,6 +7414,7 @@
                     setSelectedPropTab('last10');
                     if (player.sport === 'mlb' && !player._detailLoaded) fetchMlbPlayerDetail(player);
                     if (player.sport === 'nfl' && !player._detailLoaded) fetchNflPlayerDetail(player);
+                    if (player.sport === 'ncaaf' && !player._detailLoaded) fetchCfbPlayerDetail(player);
                 }, [activeInModal, detailModal && detailModal.propIdx]);
 
                 const cardProps = Array.isArray(player.props) ? player.props : [];
@@ -8098,7 +8414,7 @@
             // changes, NOT on every search keystroke or sort toggle.
             const gradedPlayers = React.useMemo(() => {
                 return basePlayers
-                    .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl') && p._allLines && p._noLiveLines))
+                    .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines && p._noLiveLines))
                     .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter)))
                     .map(p => ({
                         p, g: playerBestGrade(p, statFilter),
@@ -8139,10 +8455,10 @@
             const statCats = React.useMemo(() => {
                 const seen = new Set();
                 basePlayers.forEach(p => {
-                    if ((p.sport === 'mlb' || p.sport === 'nfl') && p._allLines && p._noLiveLines) return;
+                    if ((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines && p._noLiveLines) return;
                     (Array.isArray(p.props) ? p.props : []).forEach(pr => { if (pr.type) seen.add(pr.type); });
                 });
-                const order = selectedSport === 'nfl' ? NFL_STAT_CAT_ORDER : STAT_CAT_ORDER;
+                const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : STAT_CAT_ORDER;
                 const ordered = order.filter(t => seen.has(t));
                 const extra = [...seen].filter(t => !order.includes(t)).sort();
                 return [...ordered, ...extra];
@@ -8187,7 +8503,7 @@
                                         onClick={() => { if (SPORT_STATUS[sport] === 'ready') setSelectedSport(sport); }}
                                         title={SPORT_STATUS[sport] === 'soon' ? 'Coming soon' : ''}
                                     >
-                                        {sport.toUpperCase()}{SPORT_STATUS[sport] === 'soon' ? ' 🔒' : ''}
+                                        {SPORT_LABELS[sport] || sport.toUpperCase()}{SPORT_STATUS[sport] === 'soon' ? ' 🔒' : ''}
                                     </button>
                                 ))}
                             </div>
@@ -8240,13 +8556,18 @@
                                     {nflSlateSource === 'live' ? '🟢 LIVE' : (nflSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — NFL Slate (ESPN players/stats + PropLine lines)
                                 </span>
                             )}
+                            {selectedSport === 'ncaaf' && (
+                                <span className={`source-pill ${cfbSlateSource}`}>
+                                    {cfbSlateSource === 'live' ? '🟢 LIVE' : (cfbSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — CFB Slate (ESPN players/stats + PropLine lines)
+                                </span>
+                            )}
                             <span className={`source-pill ${injuryDataSource}`}>
                                 {injuryDataSource === 'live' ? '🟢 LIVE' : (injuryDataSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Injuries
                             </span>
                             <span className={`source-pill ${scoreboardSource}`}>
                                 {scoreboardSource === 'live' ? '🟢 LIVE' : (scoreboardSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Scoreboard
                             </span>
-                            {(selectedSport === 'mlb' || selectedSport === 'nfl') ? (
+                            {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf') ? (
                                 <span className={`source-pill ${propLineSource === 'live' ? 'live' : (propLineSource === 'sample' ? 'sample' : 'checking')}`}>
                                     {propLineSource === 'live'
                                         ? '🟢 LIVE — Prop Lines (PropLine)'
