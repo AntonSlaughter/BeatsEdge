@@ -2552,6 +2552,30 @@
             return sd;
         }
 
+        // ── MLB split helpers ──────────────────────────────────────────────
+        // A rate (per-AB / per-PA / OPS) for one prop stat out of any MLB
+        // hitting stat object (season, a situational split, or batter-vs-
+        // pitcher). Same field names across all of them.
+        function mlbOffRate(st, statKey) {
+            if (!st) return null;
+            const pa = st.plateAppearances || 0, ab = st.atBats || 0;
+            const n = (x) => { const v = parseFloat(x); return Number.isFinite(v) ? v : null; };
+            switch (statKey) {
+                case 'hits': return ab ? (st.hits || 0) / ab : n(st.avg);
+                case 'totalBases': return n(st.slg) != null ? n(st.slg) : (ab ? (st.totalBases || 0) / ab : null);
+                case 'homeRuns': return pa ? (st.homeRuns || 0) / pa : null;
+                case 'rbis': return pa ? (st.rbi || 0) / pa : null;
+                case 'runs': return n(st.obp);
+                case 'singles': return ab ? Math.max(0, (st.hits || 0) - (st.doubles || 0) - (st.triples || 0) - (st.homeRuns || 0)) / ab : null;
+                case 'doubles': return ab ? (st.doubles || 0) / ab : null;
+                case 'batterWalks': return pa ? (st.baseOnBalls || 0) / pa : null;
+                case 'batterStrikeouts': return pa ? (st.strikeOuts || 0) / pa : null;
+                case 'stolenBases': return pa ? (st.stolenBases || 0) / pa : null;
+                default: return n(st.ops); // Hits+Runs+RBIs, Fantasy Score, anything else
+            }
+        }
+        const mlbSplitN = (st) => (st ? (st.plateAppearances || st.atBats || 0) : 0);
+
         // Per-(player, prop) result cache. React reuses the same player/prop
         // objects between renders until the underlying data changes (new slate,
         // detail load, book switch all create fresh objects), so identity keys
@@ -2662,6 +2686,41 @@
                 // If neither opponentContext shape is available, this factor
                 // is simply omitted — not defaulted to "supports", which would
                 // inflate confidence with data that isn't actually there.
+
+                // Split-based factors (land on card-expand — fetchMlbPlayerDetail):
+                // batter's career vs tonight's exact starter, platoon vs the
+                // starter's hand, and home/road. Each fires only with a real
+                // sample and only when the split rate is clearly off the
+                // player's own season baseline (±10%).
+                if (player.role === 'batter') {
+                    const baseRate = mlbOffRate(player._seasonStat, prop.statKey);
+                    const favorsMore = (r) => {
+                        if (r == null || baseRate == null || baseRate <= 0) return null;
+                        const ratio = r / baseRate;
+                        return ratio >= 1.10 ? true : ratio <= 0.90 ? false : null;
+                    };
+                    const pushSplit = (key, name, st, mkDetail) => {
+                        const more = favorsMore(mlbOffRate(st, prop.statKey));
+                        if (more === null) return;
+                        factors.push({ key, name, supports: direction === 'over' ? more : !more, detail: mkDetail(st) });
+                    };
+                    if (player.bvp && mlbSplitN(player.bvp) >= 8) {
+                        const b = player.bvp;
+                        pushSplit('bvp', `Career vs ${player.oppPitcherName || 'this starter'}`, b,
+                            () => `${b.hits}-for-${b.atBats}, ${b.homeRuns} HR, ${b.strikeOuts} K in ${mlbSplitN(b)} PA · ${b.avg} / ${b.ops} OPS`);
+                    }
+                    const hand = player.oppPitcherHand;
+                    const platoon = player.splitBy && (hand === 'L' ? player.splitBy.vl : hand === 'R' ? player.splitBy.vr : null);
+                    if (platoon && mlbSplitN(platoon) >= 40) {
+                        pushSplit('platoon', `vs ${hand === 'L' ? 'LHP' : 'RHP'}`, platoon,
+                            (st) => `${st.avg} / ${st.ops} OPS vs ${hand === 'L' ? 'lefties' : 'righties'} this year (${mlbSplitN(st)} PA)`);
+                    }
+                    const venue = player.splitBy && (player.isHomeTonight ? player.splitBy.h : player.splitBy.a);
+                    if (venue && mlbSplitN(venue) >= 40) {
+                        pushSplit('venue', player.isHomeTonight ? 'At home' : 'On the road', venue,
+                            (st) => `${st.avg} / ${st.ops} OPS ${player.isHomeTonight ? 'at home' : 'on the road'} this year (${mlbSplitN(st)} PA)`);
+                    }
+                }
             } else if (sport === 'nhl' && player.role === 'goalie' && player.opponentContext && player.opponentContext.teamShooting) {
                 // A goalie's real matchup is shot VOLUME the opposing team
                 // generates — mirrors MLB's pitcher-vs-lineup idea. Skaters
@@ -2812,6 +2871,23 @@
             if ((sport === 'nfl' || sport === 'ncaaf') && player.oppDef && player.oppDef.rank) {
                 const _span = sport === 'ncaaf' ? 65 : 15.5, _mid = sport === 'ncaaf' ? 67 : 16.5;
                 projection *= 1 + ((player.oppDef.rank - _mid) / _span) * 0.06;
+            }
+            // MLB batter: nudge by the platoon + batter-vs-starter splits,
+            // relative to the player's own season baseline. Each capped, total
+            // clamped ±20%. Needs a real sample or it doesn't move.
+            if (sport === 'mlb' && player.role === 'batter') {
+                const baseR = mlbOffRate(player._seasonStat, prop.statKey);
+                let mult = 1;
+                const nudge = (st, minN, cap) => {
+                    if (!st || mlbSplitN(st) < minN || baseR == null || baseR <= 0) return;
+                    const r = mlbOffRate(st, prop.statKey);
+                    if (r == null) return;
+                    mult *= 1 + Math.max(-cap, Math.min(cap, r / baseR - 1));
+                };
+                const hnd = player.oppPitcherHand;
+                nudge(player.splitBy && (hnd === 'L' ? player.splitBy.vl : hnd === 'R' ? player.splitBy.vr : null), 50, 0.12);
+                nudge(player.bvp, 12, 0.10);
+                projection *= Math.max(0.80, Math.min(1.20, mult));
             }
             if (paceRating === 'favorable') projection += 0.6;
             if (paceRating === 'unfavorable') projection -= 0.6;
@@ -5427,7 +5503,9 @@
                     gameLogByKey: {},
                     _detailLoaded: false,
                     _seasonStat: seasonStat,
-                    _isPitcher: isPitcher
+                    _isPitcher: isPitcher,
+                    oppPitcherId: slot.oppPitcherId || null,
+                    oppPitcherName: slot.oppPitcherName || null
                 };
 
                 const statsByKey = {};
@@ -5966,15 +6044,27 @@
             const fetchMlbPlayerDetail = async (player) => {
                 const isPitcher = !!player._isPitcher || player.role === 'pitcher';
                 const group = isPitcher ? 'pitching' : 'hitting';
-                let splits;
-                try {
-                    const data = await mlbFetch(`/people/${player.id}/stats?stats=gameLog&group=${group}&season=${MLB_SEASON}`);
-                    splits = (data.stats && data.stats[0] && data.stats[0].splits) || [];
-                } catch (e) { return; }
+                const pit = player.oppPitcherId;
+                // Game log + (batters only) situational splits, batter-vs-this-
+                // pitcher career, and the opposing starter's throwing hand —
+                // all keyless, all in one round trip.
+                const [glData, splitData, bvpData, pitchData] = await Promise.all([
+                    mlbFetch(`/people/${player.id}/stats?stats=gameLog&group=${group}&season=${MLB_SEASON}`).catch(() => null),
+                    (!isPitcher) ? mlbFetch(`/people/${player.id}/stats?stats=statSplits&group=hitting&season=${MLB_SEASON}&sitCodes=vl,vr,h,a&sportId=1`).catch(() => null) : Promise.resolve(null),
+                    (!isPitcher && pit) ? mlbFetch(`/people/${player.id}/stats?stats=vsPlayerTotal&group=hitting&opposingPlayerId=${pit}&sportId=1`).catch(() => null) : Promise.resolve(null),
+                    (!isPitcher && pit) ? mlbFetch(`/people/${pit}?fields=people,id,pitchHand,code`).catch(() => null) : Promise.resolve(null)
+                ]);
+                const splits = (glData && glData.stats && glData.stats[0] && glData.stats[0].splits) || [];
                 if (!splits.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.role === player.role ? { ...p, _detailLoaded: true } : p));
                     return;
                 }
+                // ---- shape the split extras ----
+                const splitBy = {};
+                ((splitData && splitData.stats && splitData.stats[0] && splitData.stats[0].splits) || [])
+                    .forEach(sp => { const c = sp.split && sp.split.code; if (c) splitBy[c] = sp.stat || null; });
+                const bvp = (bvpData && bvpData.stats && bvpData.stats[0] && bvpData.stats[0].splits && bvpData.stats[0].splits[0] && bvpData.stats[0].splits[0].stat) || null;
+                const oppHand = (pitchData && pitchData.people && pitchData.people[0] && pitchData.people[0].pitchHand && pitchData.people[0].pitchHand.code) || null;
 
                 const abbrById = mlbCache.current.abbrById;
                 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -6026,7 +6116,8 @@
                     return {
                         ...p, statsByKey: nextByKey, gameLogByKey: nextLogByKey,
                         stats: nextByKey[p.props[0].statKey], gameLog: nextLogByKey[p.props[0].statKey] || [],
-                        _detailLoaded: true, statsSource: 'statsapi.mlb.com — full game log (real)'
+                        splitBy, bvp, oppPitcherHand: oppHand,
+                        _detailLoaded: true, statsSource: 'statsapi.mlb.com — full game log + splits (real)'
                     };
                 }));
             };
