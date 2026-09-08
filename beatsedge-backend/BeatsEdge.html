@@ -2048,6 +2048,29 @@
         .research-sub > summary::-webkit-details-marker { display: none; }
         .research-sub > summary::before { content: '▸ '; }
         .research-sub[open] > summary::before { content: '▾ '; }
+        /* ── Advanced Research Data explorer ── */
+        .rx-group { margin-top: 0.7rem; }
+        .rx-group-head {
+            font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em;
+            color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem;
+        }
+        .rx-topic { border-top: 1px solid var(--border-color); }
+        .rx-topic > summary {
+            cursor: pointer; list-style: none; font-size: 0.8rem; font-weight: 700;
+            color: var(--text-secondary); padding: 0.42rem 0.2rem;
+        }
+        .rx-topic > summary::-webkit-details-marker { display: none; }
+        .rx-topic > summary::before { content: '▸ '; color: var(--text-muted); }
+        .rx-topic[open] > summary::before { content: '▾ '; }
+        .rx-topic[open] > summary { color: var(--text-primary); }
+        .rx-topic .rx-have { color: var(--success-green); font-weight: 800; margin-left: 0.3rem; font-size: 0.72rem; }
+        .rx-body { padding: 0.15rem 0.2rem 0.6rem; }
+        .rx-row { display: flex; justify-content: space-between; gap: 0.8rem; padding: 0.25rem 0; font-size: 0.78rem; border-bottom: 1px dashed var(--border-color); }
+        .rx-row:last-child { border-bottom: none; }
+        .rx-row .rx-k { color: var(--text-secondary); }
+        .rx-row .rx-v { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .rx-todo { font-size: 0.76rem; color: var(--text-muted); line-height: 1.5; }
+        .rx-todo b { color: var(--text-secondary); }
         /* per-factor probability nudge chip in the factor list */
         .factor-prob-delta {
             flex: 0 0 auto;
@@ -9528,6 +9551,154 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         );
                                                     })()}
                                                 </details>
+
+                                                {(player.sport === 'nba' || player.sport === 'nfl' || player.sport === 'ncaaf') && (() => {
+                                                    const isNba = player.sport === 'nba';
+                                                    const W = cStats || {};
+                                                    const SBK = player.statsByKey || {};
+                                                    const facBy = (k) => (edge.factors || []).find(f => f.key === k);
+                                                    const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}` : null; };
+                                                    const rr = (x) => x == null ? null : (dirUnder ? 100 - x : x) + '%';
+                                                    const win = (w) => w && w.avg != null ? `${w.avg} avg${w.hitRate != null ? ` · ${rr(w.hitRate)} ${dirUnder ? 'under' : 'over'}` : ''}` : null;
+                                                    const avgOf = (k) => SBK[k] && SBK[k].season ? SBK[k].season.avg : null;
+                                                    const Topic = ({ name, rows, todo }) => {
+                                                        const real = (rows || []).filter(r => r && r[1] != null && r[1] !== '');
+                                                        return (
+                                                            <details className="rx-topic">
+                                                                <summary>{name}{real.length ? <span className="rx-have">LIVE</span> : null}</summary>
+                                                                <div className="rx-body">
+                                                                    {real.map((r, i) => <div key={i} className="rx-row"><span className="rx-k">{r[0]}</span><span className="rx-v">{r[1]}</span></div>)}
+                                                                    {!real.length && !todo && <div className="rx-todo">No data for this matchup yet.</div>}
+                                                                    {todo && <div className="rx-todo">{real.length ? 'Also planned: ' : 'Not yet wired. Planned: '}<b>{todo}</b></div>}
+                                                                </div>
+                                                            </details>
+                                                        );
+                                                    };
+                                                    const Group = ({ title, children }) => <div className="rx-group"><div className="rx-group-head">{title}</div>{children}</div>;
+
+                                                    let body;
+                                                    if (isNba) {
+                                                        const od = player.oppDef;
+                                                        const teamDefRows = od ? [
+                                                            ['Points allowed / game', od.ptsAllowed != null ? `${od.ptsAllowed} (#${od.ptsRank} of 30)` : null],
+                                                            ['Rebounds allowed', od.rebAllowed != null ? `${od.rebAllowed} (#${od.rebRank})` : null],
+                                                            ['Assists allowed', od.astAllowed != null ? `${od.astAllowed} (#${od.astRank})` : null],
+                                                            ['3PM allowed', od.tpmAllowed != null ? `${od.tpmAllowed} (#${od.tpmRank})` : null],
+                                                            ['Opp shots blocked', od.blkAllowed != null ? `${od.blkAllowed} (#${od.blkRank})` : null],
+                                                            ['Opp turnovers forced', od.toForced != null ? `${od.toForced} (#${od.toRank})` : null]
+                                                        ] : [];
+                                                        const grp = player.opponentDefense && player.opponentDefense.playerGroup;
+                                                        const gRow = player.opponentDefense && player.opponentDefense.byPosition && player.opponentDefense.byPosition[grp];
+                                                        const dvpRows = gRow ? [
+                                                            ['PTS rank', `#${gRow.rank} of 150`], ['3PM rank', `#${gRow.tpmRank}`], ['REB rank', `#${gRow.rebRank}`],
+                                                            ['AST rank', `#${gRow.astRank}`], ['STL rank', `#${gRow.stlRank}`], ['BLK rank', `#${gRow.blkRank}`], ['TO rank', `#${gRow.toRank}`]
+                                                        ] : [];
+                                                        body = <React.Fragment>
+                                                            <Group title="Player">
+                                                                <Topic name="Opportunity" rows={[
+                                                                    ['Projected minutes', player.projMin],
+                                                                    ['L10 minutes', W.last10 && W.last10.minAvg],
+                                                                    ['Season minutes', W.season && W.season.minAvg],
+                                                                    ['Minutes trend (L5 vs prior 10)', player.minutesTrend != null ? (player.minutesTrend > 0 ? '+' : '') + player.minutesTrend : null]
+                                                                ]} />
+                                                                <Topic name="Efficiency" todo="TS%, eFG%, points per shot, points per touch, assisted-FG rate — needs an advanced box-score feed" />
+                                                                <Topic name="Usage" todo="usage rate, touches, front-court touches, time of possession, seconds per touch — needs a player-tracking feed" />
+                                                                <Topic name="Shot profile" todo="FGA, 3PA, rim / mid-range / three attempt mix, FT rate, catch-and-shoot vs pull-up — needs shot-detail data" />
+                                                                <Topic name="Recent form" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
+                                                                <Topic name="Splits" rows={[['Day of week', facDet('dow')], ['Rest / back-to-back', facDet('rest')], ['Home / road', facDet('venue')], ['Similar-ranked defenses', facDet('simdef')]]} todo="opponent's exact hand, pre/post All-Star, wins vs losses" />
+                                                            </Group>
+                                                            <Group title="Matchup">
+                                                                <Topic name="Defense vs position" rows={dvpRows} todo={dvpRows.length ? 'full PG/SG/SF/PF/C grid is in Section 3 above' : 'the Defense-vs-Position table'} />
+                                                                <Topic name="Team defense" rows={teamDefRows} todo="opp defensive rating, rim protection, perimeter D, transition D — needs an advanced feed" />
+                                                                <Topic name="Pace" todo="team & opponent possessions / 48, seconds per possession, transition rate — needs a pace feed" />
+                                                                <Topic name="Scheme" todo="drop vs switch coverage, blitz / help rate, isolation defense — needs a scheme-tag feed" />
+                                                                <Topic name="Opponent tendencies" todo="FT rate allowed, paint-touch rate allowed, second-chance points allowed — needs play-by-play" />
+                                                            </Group>
+                                                            <Group title="Game">
+                                                                <Topic name="Pace" todo="projected game pace, expected possessions each side" />
+                                                                <Topic name="Expected possessions" todo="pace × minutes → possession share" />
+                                                                <Topic name="Environment" todo="game total, spread, implied team total, blowout probability — needs a game-odds feed" />
+                                                                <Topic name="Rest" rows={[
+                                                                    ['Tonight', player.b2b && player.b2b.tonight === 'second' ? 'Back-to-back (2nd night)' : player.b2b && player.b2b.first === 'first' ? '1st of a back-to-back' : player.b2b && player.b2b.restDays != null ? `${player.b2b.restDays} days rest` : null],
+                                                                    ['Last game', player.b2b && player.b2b.prevOpp ? `vs ${player.b2b.prevOpp}` : null],
+                                                                    ['Next game', player.b2b && player.b2b.nextOpp ? `at ${player.b2b.nextOpp}` : null]
+                                                                ]} />
+                                                                <Topic name="Home / Away" rows={[['Tonight', player.isHomeTonight ? 'Home' : 'Road'], ['Split', facDet('venue')]]} />
+                                                            </Group>
+                                                            <Group title="Availability">
+                                                                <Topic name="Injuries" rows={[['Status', player.status || 'ACTIVE'], ['Detail', player.injury && player.injury !== 'Injury' ? player.injury : null], ['Trend', player.statusTrend === 'down' ? `▼ downgraded from ${player.prevStatus}` : null]]} />
+                                                                <Topic name="Starting lineup" todo="confirmed starters post ~30 min before tip — needs a lineup feed" />
+                                                                <Topic name="Rotation" todo="projected minute distribution, staggered units, foul-trouble risk — needs a rotation feed" />
+                                                                <Topic name="Teammate impact" rows={[['Sidelined at this spot', player.opportunity && player.opportunity.covers ? player.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ') : null]]} todo="usage / minutes redistribution when a teammate sits" />
+                                                            </Group>
+                                                            <Group title="Historical">
+                                                                <Topic name="L5 / L10 / L20 / Season" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
+                                                                <Topic name="vs Opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} todo="the Last-5 head-to-head table is above the chart" />
+                                                                <Topic name="Similar matchups" rows={[['vs similarly-ranked defenses', facDet('simdef')]]} />
+                                                            </Group>
+                                                        </React.Fragment>;
+                                                    } else {
+                                                        const pos = player.position;
+                                                        const od = player.oppDef;
+                                                        const oppRow = od && od.rank ? [['Points allowed / game', `${od.paPerGame} (#${od.rank} of 32)`]] : [];
+                                                        const ya = avgOf('passYds') && avgOf('passAttempts') ? Math.round(avgOf('passYds') / avgOf('passAttempts') * 10) / 10 : null;
+                                                        const cmpPct = avgOf('passCompletions') && avgOf('passAttempts') ? Math.round(avgOf('passCompletions') / avgOf('passAttempts') * 100) : null;
+                                                        const playerGroup = pos === 'QB' ? <React.Fragment>
+                                                            <Topic name="Opportunity" rows={[['Pass attempts / game', avgOf('passAttempts')], ['Completions / game', avgOf('passCompletions')]]}
+                                                                todo="dropbacks, team pass rate, neutral-situation pass rate, early-down pass rate, pace, drives / game, red-zone drives, two-minute-offense usage" />
+                                                            <Topic name="Efficiency" rows={[['Yards / attempt', ya], ['Completion %', cmpPct != null ? cmpPct + '%' : null], ['Pass yards / game', avgOf('passYds')], ['Pass TDs / game', avgOf('passTds')], ['INTs / game', avgOf('interceptions')]]}
+                                                                todo="EPA / dropback, EPA / pass, CPOE, air yards, aDOT, TD rate, INT rate — needs an EPA / charting feed" />
+                                                            <Topic name="Pressure" todo="pressure rate faced, blitz rate faced, sack rate, time to throw, clean-pocket EPA, pressure EPA, opp defensive pressure rate, opp pass-rush win rate" />
+                                                            <Topic name="Game environment" todo="projected team points, game total, spread, expected pass / run ratio, blowout probability, expected possessions" />
+                                                        </React.Fragment> : (pos === 'RB' ? <React.Fragment>
+                                                            <Topic name="Opportunity" rows={[['Carries / game', avgOf('rushAttempts')], ['Targets / game', avgOf('targets')], ['Receptions / game', avgOf('receptions')]]}
+                                                                todo="snap share, rush share, route participation, target share, touches / game, red-zone / goal-line / inside-10 / inside-5 carries" />
+                                                            <Topic name="Efficiency" rows={[['Rush yards / game', avgOf('rushYds')], ['Rush TDs / game', avgOf('rushTds')], ['Rec yards / game', avgOf('recYds')]]}
+                                                                todo="yards before / after contact, missed tackles forced, breakaway & explosive-run rate, EPA / rush, success rate, stuff rate, OL run-blocking, opp run-defense EPA, opp YBC / YAC allowed, run-direction tendencies" />
+                                                            <Topic name="Game environment" todo="projected team points, game script (lead vs trail), expected run rate, possessions" />
+                                                        </React.Fragment> : <React.Fragment>
+                                                            <Topic name="Opportunity" rows={[['Targets / game', avgOf('targets')], ['Receptions / game', avgOf('receptions')], ['Rec yards / game', avgOf('recYds')], ['Rec TDs / game', avgOf('recTds')]]}
+                                                                todo="snap %, route participation, routes / run, targets / route run, first-read target rate, air-yards share, red-zone / end-zone target share, slot / wide / inline %, pre-snap motion" />
+                                                            <Topic name="Route & coverage" todo="man / zone target splits, press-coverage rate, separation, contested / deep / intermediate / short target rate, opp slot / WR / TE coverage, opp explosive-pass rate allowed" />
+                                                            <Topic name="Efficiency" rows={[['Yards / reception', avgOf('receptions') && avgOf('recYds') ? Math.round(avgOf('recYds') / avgOf('receptions') * 10) / 10 : null]]}
+                                                                todo="yards per route run, EPA / route, catch rate, YAC / target, aDOT, QB target compatibility, QB pressure rate" />
+                                                            <Topic name="Game environment" todo="projected team points, game total, spread, expected pass volume, possessions" />
+                                                        </React.Fragment>);
+                                                        body = <React.Fragment>
+                                                            <Group title={pos || 'Player'}>{playerGroup}</Group>
+                                                            <Group title="Matchup">
+                                                                <Topic name="Opponent defense" rows={oppRow}
+                                                                    todo="PASS: pass / dropback EPA allowed, comp %, Y/A, explosive-pass & aDOT & air-yards & YAC allowed, pressure / sack / blitz %, man / zone %, Cover-1/3/4 & two-high %, slot / TE / WR / RB coverage. RUN: rush EPA, Y/C, stuff %, YBC / YAC, explosive-run %, run success rate, missed tackles, goal-line defense — needs an advanced defensive feed" />
+                                                                <Topic name="vs this opponent" rows={[['vs ' + player.opponent, SBK[activeProp.statKey] && SBK[activeProp.statKey].vsOpp && SBK[activeProp.statKey].vsOpp.games ? win(SBK[activeProp.statKey].vsOpp) : null]]} />
+                                                                <Topic name="Scheme & tendencies" todo="opp pass rate faced, blitz tendencies, pace of opponent, situational splits" />
+                                                            </Group>
+                                                            <Group title="Game">
+                                                                <Topic name="Environment" todo="projected team points, game total, spread, expected pace / possessions, blowout probability — needs a game-odds feed" />
+                                                                <Topic name="Weather" todo="wind, precipitation, dome / outdoor — matters most for pass & kick props" />
+                                                            </Group>
+                                                            <Group title="Availability">
+                                                                <Topic name="Injuries" rows={[['Status', player.status || 'ACTIVE'], ['Detail', player.injury && player.injury !== 'Injury' ? player.injury : null]]} />
+                                                                <Topic name="Inactives / snap projection" todo="inactives post ~90 min before kickoff; snap-share projection — needs a depth-chart / inactive feed" />
+                                                                <Topic name="Teammate impact" rows={[['Sidelined at this spot', player.opportunity && player.opportunity.covers ? player.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ') : null]]} todo="target / carry redistribution when a teammate is out" />
+                                                            </Group>
+                                                            <Group title="Historical">
+                                                                <Topic name="L5 / L10 / L20 / Season" rows={[['L5', win(SBK[activeProp.statKey] && SBK[activeProp.statKey].last5)], ['L10', win(SBK[activeProp.statKey] && SBK[activeProp.statKey].last10)], ['L20', win(SBK[activeProp.statKey] && SBK[activeProp.statKey].last20)], ['Season', win(SBK[activeProp.statKey] && SBK[activeProp.statKey].season)]]} />
+                                                                <Topic name="vs Opponent" rows={[['vs ' + player.opponent, SBK[activeProp.statKey] && SBK[activeProp.statKey].vsOpp && SBK[activeProp.statKey].vsOpp.games ? win(SBK[activeProp.statKey].vsOpp) : null]]} />
+                                                            </Group>
+                                                        </React.Fragment>;
+                                                    }
+                                                    return (
+                                                        <details className="prob-breakdown research-master" style={{ marginTop: '0.7rem' }}>
+                                                            <summary>🔬 Advanced Research Data</summary>
+                                                            <div className="research-body">
+                                                                <div className="research-note" style={{ marginBottom: '0.2rem' }}>
+                                                                    Everything the model looks at (or is being built to look at). <span className="rx-have">LIVE</span> = wired to real data now; the rest names what's planned and the feed it needs.
+                                                                </div>
+                                                                {body}
+                                                            </div>
+                                                        </details>
+                                                    );
+                                                })()}
 
                                                 <div style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>
                                                     A {verdictClass === 'red' ? 'red' : 'green'} matchup is a signal, not a guarantee — it means available data factors {verdictClass === 'red' ? 'work against' : 'support'} this direction.
