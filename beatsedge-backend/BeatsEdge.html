@@ -1221,8 +1221,16 @@
             font-size: 0.7rem;
             font-weight: 700;
             color: var(--text-primary);
-            line-height: 1;
+            line-height: 1.1;
             margin-bottom: 3px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .chart-bar-min {
+            font-size: 0.58rem;
+            font-weight: 600;
+            color: var(--text-muted);
         }
 
         .chart-bar {
@@ -7427,35 +7435,51 @@
             // Real windows for one player from their parsed game log — same
             // shape MLB/NFL use, so calculateEdgeScore / PlayerCard read it
             // unchanged.
+            // Weighted-recent minutes projection for tonight (L5 heaviest).
+            const nbaProjMinutes = (glRows) => {
+                const mins = glRows.map(g => (g.row && g.row.minutes) || 0).filter(m => m > 0);
+                if (!mins.length) return null;
+                const a = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+                const l5 = a(mins.slice(-5)), l10 = a(mins.slice(-10)), l20 = a(mins.slice(-20));
+                const w = l5 ? (0.5 * l5 + 0.3 * (l10 || l5) + 0.2 * (l20 || l10 || l5)) : (l10 || l20);
+                return Math.round(w * 10) / 10;
+            };
+
             const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr) => {
                 const statsByKey = {}, gameLogByKey = {};
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
+                // minutes per game, aligned to glRows order
+                const minOf = glRows.map(g => (g.row && g.row.minutes) || null);
+                const minMean = (arr) => { const v = arr.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
                 nbaAllKeys.forEach(k => {
                     const getV = NBA_PROP_DEFS[k].get;
                     const vals = glRows.map(g => getV(g.row) || 0);
                     const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
                     const rate = (arr) => arr.length ? Math.round((arr.filter(v => v > line).length / arr.length) * 100) : null;
                     const lastN = (n) => vals.slice(-n);
+                    const minN = (n) => minMean(minOf.slice(-n));
                     const sorted = [...vals].sort((a, b) => a - b);
-                    const oppVals = glRows.filter(g => g.opponent === oppAbbr).map(g => getV(g.row) || 0);
+                    const oppIdx = glRows.map((g, i) => g.opponent === oppAbbr ? i : -1).filter(i => i >= 0);
+                    const oppVals = oppIdx.map(i => vals[i]);
                     statsByKey[k] = {
-                        last5: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), games: Math.min(5, vals.length) },
-                        last10: { avg: mean(lastN(10)), hitRate: rate(lastN(10)), games: Math.min(10, vals.length) },
-                        last20: { avg: mean(lastN(20)), hitRate: rate(lastN(20)), games: Math.min(20, vals.length) },
-                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length },
-                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length } : { avg: mean(vals), hitRate: rate(vals), games: 0 },
-                        recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                        last5: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), games: Math.min(5, vals.length), minAvg: minN(5) },
+                        last10: { avg: mean(lastN(10)), hitRate: rate(lastN(10)), games: Math.min(10, vals.length), minAvg: minN(10) },
+                        last20: { avg: mean(lastN(20)), hitRate: rate(lastN(20)), games: Math.min(20, vals.length), minAvg: minN(20) },
+                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length, minAvg: minMean(minOf) },
+                        vsOpp: oppVals.length
+                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, minAvg: minMean(oppIdx.map(i => minOf[i])) }
+                            : { avg: mean(vals), hitRate: rate(vals), games: 0, minAvg: minMean(minOf) },
+                        recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length, minAvg: minN(5) }
                     };
-                    // Each row carries day-of-week, that opponent's defensive
-                    // rank, and days of rest before it so calculateEdgeScore
-                    // can build the "On <day>s" / "vs similar defenses" /
-                    // "on 0 days rest" splits without another pass.
+                    // Each row carries minutes played, day-of-week, that
+                    // opponent's defensive rank, and days of rest before it.
                     const _last40 = glRows.slice(-40);
                     gameLogByKey[k] = _last40.map((g, i) => {
                         const prevTs = i > 0 ? _last40[i - 1].ts : (glRows.length > _last40.length ? glRows[glRows.length - _last40.length - 1].ts : null);
                         return {
                             date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
                             points: getV(g.row) || 0, line,
+                            min: (g.row && g.row.minutes) || null,
                             dow: Number.isFinite(g.ts) && g.ts > 0 ? new Date(g.ts).getDay() : null,
                             oppRank: (oppRankByAbbr && oppRankByAbbr[g.opponent]) || null,
                             rest: (Number.isFinite(g.ts) && Number.isFinite(prevTs) && prevTs > 0) ? Math.round((g.ts - prevTs) / 864e5) : null
@@ -7738,7 +7762,7 @@
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
                         gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
-                        minutesTrend: nbaMinutesTrend(glRows),
+                        minutesTrend: nbaMinutesTrend(glRows), projMin: nbaProjMinutes(glRows),
                         oppDef: slot.oppDef || null, oppRank: slot.oppRank || null, gameDow: slot.gameDow,
                         b2b: slot.b2b || null, isBackToBackTonight: !!slot.isBackToBackTonight,
                         isHomeTonight: !!slot.isHome,
@@ -8038,7 +8062,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
                         gameLog: gameLogByKey[p.props[0].statKey] || [],
-                        minutesTrend: nbaMinutesTrend(glRows),
+                        minutesTrend: nbaMinutesTrend(glRows), projMin: nbaProjMinutes(glRows),
                         opponentDefense: oppDefObj || p.opponentDefense || null,
                         _detailLoaded: true, statsSource: 'ESPN — full game log (real)'
                     };
@@ -8912,6 +8936,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 <div className="player-team-info">
                                     <span className="team">{player.team}</span>
                                     <span className="opponent"> vs {player.opponent}</span>
+                                    {player.sport === 'nba' && player.projMin != null && (
+                                        <span className="opponent" title="Projected minutes tonight (weighted L5/L10/L20)"> · ~{player.projMin} min</span>
+                                    )}
                                 </div>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -9087,6 +9114,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             {activeProp.direction === 'over' ? ' O' : ' U'}
                                                             {typeof activeProp.odds === 'number' ? ` (${activeProp.odds > 0 ? '+' : ''}${activeProp.odds})` : ''}
                                                             {' • '}{player.position} vs {player.opponent}
+                                                            {player.sport === 'nba' && player.projMin != null && (
+                                                                <span title="Projected minutes tonight — weighted blend of L5 / L10 / L20 minutes played">
+                                                                    {' • '}~{player.projMin} proj min
+                                                                </span>
+                                                            )}
                                                         </div>
                                                         <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: activeProp.crossBook ? 'var(--warning-yellow)' : (activeProp.lineSource ? 'var(--success-green)' : 'var(--text-muted)') }}>
                                                             {activeProp.crossBook
@@ -9395,8 +9427,52 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             <div className="stat-summary-label">Games</div>
                                             <div className="stat-summary-value">{(cStats[selectedPropTab] && cStats[selectedPropTab].games != null ? cStats[selectedPropTab].games : (cStats.recent && cStats.recent.games)) ?? '—'}</div>
                                         </div>
+                                        {player.sport === 'nba' && (
+                                            <div className="stat-summary-item">
+                                                <div className="stat-summary-label">Min / Game</div>
+                                                <div className="stat-summary-value">{(cStats[selectedPropTab] && cStats[selectedPropTab].minAvg != null ? cStats[selectedPropTab].minAvg : (cStats.recent && cStats.recent.minAvg)) ?? '—'}</div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
+
+                                {player.sport === 'nba' && (() => {
+                                    const h2h = (Array.isArray(cLog) ? cLog : [])
+                                        .filter(g => (g.opponent || '').toUpperCase() === (player.opponent || '').toUpperCase())
+                                        .slice(-5).reverse();
+                                    if (!h2h.length) return null;
+                                    const L = cardProp ? cardProp.line : (h2h[0] && h2h[0].line) || 0;
+                                    const hit = (g) => dirUnder ? g.points < L : g.points >= L;
+                                    const hitN = h2h.filter(hit).length;
+                                    return (
+                                        <div className="stats-table" style={{ marginTop: '0.9rem' }}>
+                                            <div className="section-title-label">
+                                                🤝 Last {h2h.length} vs {player.opponent}{cardProp ? ` — ${cardProp.type}` : ''}
+                                                <span style={{ marginLeft: '0.5rem', color: 'var(--text-muted)', fontWeight: 600 }}>{hitN}/{h2h.length} {dirUnder ? 'under' : 'over'} {L}</span>
+                                            </div>
+                                            <div style={{ overflowX: 'auto' }}>
+                                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', fontVariantNumeric: 'tabular-nums' }}>
+                                                    <thead><tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                                                        <th style={{ padding: '0.3rem 0.5rem' }}>Date</th>
+                                                        <th style={{ padding: '0.3rem 0.5rem' }}>{cardProp ? cardProp.type : 'Stat'}</th>
+                                                        <th style={{ padding: '0.3rem 0.5rem' }}>Min</th>
+                                                        <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{dirUnder ? 'Under' : 'Over'} {L}?</th>
+                                                    </tr></thead>
+                                                    <tbody>
+                                                        {h2h.map((g, i) => (
+                                                            <tr key={i} style={{ borderTop: '1px solid var(--border-color)' }}>
+                                                                <td style={{ padding: '0.35rem 0.5rem', color: 'var(--text-secondary)' }}>{g.vsLabel || ''} {g.date || g.dateShort}</td>
+                                                                <td style={{ padding: '0.35rem 0.5rem', fontWeight: 700 }}>{g.points}</td>
+                                                                <td style={{ padding: '0.35rem 0.5rem', color: 'var(--text-secondary)' }}>{g.min != null ? g.min : '—'}</td>
+                                                                <td style={{ padding: '0.35rem 0.5rem', textAlign: 'right', fontWeight: 700, color: hit(g) ? 'var(--success-green)' : 'var(--danger-red)' }}>{hit(g) ? '✓' : '✗'}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
 
                                 {(() => {
                                     const WIN = { last5: 5, last10: 10, last20: 20, recent: 15, season: 40 };
@@ -9446,8 +9522,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {shown.map((g, i) => {
                                                             const good = cleared(g);
                                                             return (
-                                                                <div key={i} className="chart-bar-col" title={`${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= line ? 'over' : 'under'} ${line})`}>
-                                                                    <div className="chart-bar-val">{g.points}</div>
+                                                                <div key={i} className="chart-bar-col" title={`${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= line ? 'over' : 'under'} ${line})${g.min != null ? ` · ${g.min} min` : ''}`}>
+                                                                    <div className="chart-bar-val">
+                                                                        {g.points}
+                                                                        {player.sport === 'nba' && g.min != null && <span className="chart-bar-min">{g.min}′</span>}
+                                                                    </div>
                                                                     <div className={`chart-bar ${good ? 'over' : 'under'}`} style={{ height: Math.max(3, px(g.points)) + 'px' }}></div>
                                                                     <div className="chart-bar-date" style={{ height: dateH + 'px' }}>
                                                                         <span className="cbd-opp">{g.vsLabel || (g.opponent ? 'vs ' + g.opponent : '')}</span>
