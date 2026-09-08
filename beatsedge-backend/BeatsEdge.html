@@ -643,6 +643,8 @@
         .probable-tag,
         .doubtful-tag,
         .opportunity-tag,
+        .b2b-tag,
+        .rest-tag,
         .out-tag {
             padding: 0.25rem 0.6rem;
             border-radius: 4px;
@@ -650,6 +652,45 @@
             font-weight: 700;
             text-transform: uppercase;
         }
+
+        .b2b-tag {
+            background: rgba(255, 68, 54, 0.14);
+            color: #FF6B5F;
+            text-transform: none;
+        }
+        .b2b-tag.first {
+            background: rgba(245, 166, 35, 0.14);
+            color: #F5A623;
+        }
+        .rest-tag {
+            background: rgba(52, 211, 153, 0.14);
+            color: #34D399;
+            text-transform: none;
+        }
+        .opportunity-tag.hot {
+            background: rgba(255, 68, 54, 0.18);
+            color: #FF6B5F;
+            animation: nmuPulse 1.4s ease-in-out infinite;
+        }
+        @keyframes nmuPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 54, 0.5); }
+            50% { box-shadow: 0 0 0 4px rgba(255, 68, 54, 0); }
+        }
+        .injury-row.trend-down { border-left: 3px solid #FF6B5F; }
+        .status-trend {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #FF6B5F;
+            margin-left: 0.4rem;
+        }
+        .status-trend.up { color: #34D399; }
+        .line-vs-book {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        .line-vs-book .val { font-weight: 700; }
+        .line-vs-book .good { color: #34D399; }
+        .line-vs-book .bad { color: #FF6B5F; }
 
         .injury-tag {
             background: rgba(255, 68, 54, 0.14);
@@ -2858,6 +2899,37 @@
                         }
                     }
                 }
+                // Back-to-back / rest: only when we know tonight's rest state.
+                const b2b = player.b2b;
+                if (b2b && b2b.restDays != null && glRows.length >= 15) {
+                    const tired = b2b.restDays <= 1;                 // 2nd night of a b2b
+                    const short = glRows.filter(g => g.rest != null && g.rest <= 1).map(g => g.points);
+                    const rested = glRows.filter(g => g.rest != null && g.rest >= 2).map(g => g.points);
+                    if (short.length >= 5 && rested.length >= 5) {
+                        const sA = avg(short), rA = avg(rested);
+                        const nowAvg = tired ? sA : rA, otherAvg = tired ? rA : sA;
+                        if (otherAvg && Math.abs(nowAvg - otherAvg) / otherAvg >= 0.06) {
+                            factors.push({
+                                key: 'rest',
+                                name: tired ? 'On 0 days rest' : `On ${b2b.restDays} days rest`,
+                                supports: direction === 'over' ? nowAvg > otherAvg : nowAvg < otherAvg,
+                                detail: tired
+                                    ? `${r1(sA)} avg on a back-to-back (${short.length}g) vs ${r1(rA)} rested`
+                                    : `${r1(rA)} avg with 2+ days rest (${rested.length}g) vs ${r1(sA)} on a back-to-back`
+                            });
+                        }
+                    }
+                }
+                // DFS line vs the sportsbook consensus for this exact prop.
+                if (prop.marketLine != null && prop.mktGap != null && Math.abs(prop.mktGap) >= 0.5) {
+                    const better = direction === 'over' ? prop.mktGap < 0 : prop.mktGap > 0;
+                    factors.push({
+                        key: 'linevalue',
+                        name: 'Line vs market',
+                        supports: better,
+                        detail: `${prop.book === 'prizepicks' ? 'PrizePicks' : prop.book} ${prop.line} vs sportsbooks ${prop.marketLine} (${prop.mktGap > 0 ? '+' : ''}${prop.mktGap}) — ${better ? 'the better number' : 'the worse number'} for the ${direction}`
+                    });
+                }
             }
 
             // Factor 5: Pace. For MLB/NHL there is no real pace-equivalent
@@ -3520,9 +3592,18 @@
             return p || '?';
         }
         // Injured-position buckets that have a meaningful "next man up" among
-        // the players we actually track props for.
-        const NEXT_MAN_UP_BUCKETS = new Set(['RB', 'WR', 'TE', 'QB', 'OF', 'MIF', 'COR', 'C', 'DH']);
+        // the players we actually track props for. NBA is loose — a hurt
+        // guard's minutes spread across the other guards/wings — so G/F/C
+        // all qualify.
+        const NEXT_MAN_UP_BUCKETS = new Set(['RB', 'WR', 'TE', 'QB', 'OF', 'MIF', 'COR', 'C', 'DH', 'G', 'F']);
         const STATUS_ORDER = { OUT: 0, DOUBTFUL: 1, QUESTIONABLE: 2, PROBABLE: 3 };
+        // How likely the sidelined player actually SITS (drives how big a bump
+        // his backup gets, and whether we surface it at all).
+        const SIDELINED_LIKELIHOOD = {
+            OUT: { w: 1, label: 'out' },
+            DOUBTFUL: { w: 0.8, label: 'doubtful — likely out' },
+            QUESTIONABLE: { w: 0.5, label: 'questionable — 50/50' }
+        };
         const VOLUME_WORD = { mlb: 'at-bats / innings', nba: 'minutes & usage', nfl: 'touches & targets', nhl: 'ice time' };
 
         // Which PropLine bookmaker key each platform tab maps to.
@@ -3598,15 +3679,18 @@
                 return roster
                     .filter(p => (p.team || '').toUpperCase() === inj.team.toUpperCase()
                         && p.name !== inj.player
-                        && (p.status === 'ACTIVE' || !p.status)
+                        && (p.status === 'ACTIVE' || p.status === 'PROBABLE' || !p.status)
                         && posBucket(p.position) === b
                         && Array.isArray(p.props) && p.props.length)
                     .sort((a, c) => ((c._seasonStat && c._seasonStat.gamesPlayed) || 0) - ((a._seasonStat && a._seasonStat.gamesPlayed) || 0))
                     .slice(0, 2);
             };
 
+            // A just-downgraded status (e.g. Questionable → Doubtful) is the
+            // moment to bet the backup — float those to the very top.
             const sorted = [...list].sort((a, b) =>
-                (STATUS_ORDER[a.status] ?? 4) - (STATUS_ORDER[b.status] ?? 4)
+                (b.statusTrend === 'down' ? 1 : 0) - (a.statusTrend === 'down' ? 1 : 0)
+                || (STATUS_ORDER[a.status] ?? 4) - (STATUS_ORDER[b.status] ?? 4)
                 || (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
 
             return (
@@ -3634,8 +3718,11 @@
                                 const backups = nextManUp(inj);
                                 const cls = inj.status === 'OUT' ? 'out' : inj.status === 'DOUBTFUL' ? 'doubtful'
                                     : inj.status === 'PROBABLE' ? 'probable' : 'questionable';
+                                const likely = inj.status === 'PROBABLE' ? 'likely plays'
+                                    : inj.status === 'QUESTIONABLE' ? '50/50'
+                                    : inj.status === 'DOUBTFUL' ? 'likely sits' : 'out';
                                 return (
-                                    <div key={i} className="injury-row">
+                                    <div key={i} className={`injury-row ${inj.statusTrend === 'down' ? 'trend-down' : ''}`}>
                                         <div className="injury-row-head">
                                             <div className="injury-row-name">
                                                 {inj.player}
@@ -3648,12 +3735,19 @@
                                             {inj.update || 'No further detail.'}
                                         </div>
                                         <div className="injury-row-meta">
-                                            {(inj.sources || []).join(' + ') || inj.source || 'feed'}
+                                            <span title="How likely this player actually sits">{likely}</span>
+                                            {inj.statusTrend === 'down' && inj.prevStatus && (
+                                                <span className="status-trend"> · ▼ downgraded from {inj.prevStatus} — act before the line moves</span>
+                                            )}
+                                            {inj.statusTrend === 'up' && inj.prevStatus && (
+                                                <span className="status-trend up"> · ▲ upgraded from {inj.prevStatus}</span>
+                                            )}
+                                            {' · '}{(inj.sources || []).join(' + ') || inj.source || 'feed'}
                                             {inj.ageLabel ? <span className="injury-fresh"> · {inj.ageLabel}</span> : ''}
                                         </div>
                                         {backups.length > 0 && (
                                             <div className="injury-nmu">
-                                                <span className="injury-nmu-label">➜ Next man up</span>
+                                                <span className="injury-nmu-label">{inj.statusTrend === 'down' ? '🔥 ➜ Next man up' : '➜ Next man up'}</span>
                                                 <div className="injury-nmu-text">
                                                     {backups.map((b, bi) => (
                                                         <span key={bi}>
@@ -3661,11 +3755,12 @@
                                                                 className="injury-nmu-name"
                                                                 onClick={() => onOpenPlayer && onOpenPlayer(b)}
                                                             >{b.name}</span>
-                                                            {b.position ? ` (${b.position})` : ''}{bi < backups.length - 1 ? ', then ' : ''}
+                                                            {b.position ? ` (${b.position})` : ''}{b.status === 'PROBABLE' ? ' — himself probable, but expected to play' : ''}{bi < backups.length - 1 ? ', then ' : ''}
                                                         </span>
                                                     ))}
-                                                    {' '}— likely to absorb {inj.player.split(' ').slice(-1)[0]}'s{' '}
-                                                    {VOLUME_WORD[selectedSport] || 'role'} while he's {inj.status.toLowerCase()}.
+                                                    {' '}— {inj.status === 'QUESTIONABLE' ? 'in line for' : 'likely to absorb'} {inj.player.split(' ').slice(-1)[0]}'s{' '}
+                                                    {VOLUME_WORD[selectedSport] || 'role'} {inj.status === 'PROBABLE' ? 'if he sits' : `while he's ${inj.status.toLowerCase()}`}.
+                                                    {inj.statusTrend === 'down' && <strong style={{ color: '#FF6B5F' }}> The book usually lags a downgrade by minutes-to-hours — hit their line now.</strong>}
                                                     {' '}<span className="injury-nmu-cta" onClick={() => backups[0] && onOpenPlayer && onOpenPlayer(backups[0])}>Check their props →</span>
                                                 </div>
                                             </div>
@@ -4678,6 +4773,28 @@
                         .filter(i => i.player)
                         .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
 
+                    // Status trend vs the last refresh — a downgrade (e.g.
+                    // QUESTIONABLE → DOUBTFUL) is the moment to bet the backup,
+                    // before the book re-prices. Sticky for 2h so it survives
+                    // a few refreshes.
+                    const TREND_KEY = 'beatsedge_inj_status_v1', TREND_TTL = 2 * 3600 * 1000;
+                    let prevStatusMap = {};
+                    try { prevStatusMap = JSON.parse(localStorage.getItem(TREND_KEY) || '{}'); } catch (e) { }
+                    const nextStatusMap = {}, _now = Date.now();
+                    liveInjuries.forEach(i => {
+                        const key = i.player.toLowerCase();
+                        const prev = prevStatusMap[key];
+                        const oNew = STATUS_ORDER[i.status] ?? 4;
+                        const oOld = prev ? (STATUS_ORDER[prev.status] ?? 4) : null;
+                        if (oOld != null && oNew < oOld) { i.statusTrend = 'down'; i.prevStatus = prev.status; i.trendSince = _now; }
+                        else if (oOld != null && oNew > oOld) { i.statusTrend = 'up'; i.prevStatus = prev.status; i.trendSince = _now; }
+                        else if (prev && prev.trendSince && (_now - prev.trendSince) < TREND_TTL) {
+                            i.statusTrend = prev.statusTrend; i.prevStatus = prev.prevStatus; i.trendSince = prev.trendSince;
+                        }
+                        nextStatusMap[key] = { status: i.status, ts: _now, statusTrend: i.statusTrend || null, prevStatus: i.prevStatus || null, trendSince: i.trendSince || null };
+                    });
+                    try { localStorage.setItem(TREND_KEY, JSON.stringify(nextStatusMap)); } catch (e) { }
+
                     if (gone()) return;
                     setInjuryNews(liveInjuries);
                     setInjuryDataSource(liveInjuries.length ? 'live' : 'sample');
@@ -4715,10 +4832,12 @@
                     setSlateNews(allNews);
                     setSlateNewsSource(allNews.length ? 'live' : 'sample');
 
-                    // Injured (OUT/DOUBTFUL) players per team, for "next man up".
+                    // Sidelined players per team for "next man up" — now
+                    // OUT / DOUBTFUL / QUESTIONABLE (probable players are
+                    // likely to play, so they don't free anyone's minutes).
                     const sidelinedByTeam = {};
                     liveInjuries.forEach(i => {
-                        if (i.status === 'OUT' || i.status === 'DOUBTFUL') {
+                        if (SIDELINED_LIKELIHOOD[i.status]) {
                             (sidelinedByTeam[i.team] = sidelinedByTeam[i.team] || []).push(i);
                         }
                     });
@@ -4730,20 +4849,39 @@
                             next = {
                                 ...next,
                                 status: match.status,
+                                statusTrend: match.statusTrend || null,
+                                prevStatus: match.prevStatus || null,
                                 injury: match.injury,
                                 injuryDetail: match.update || match.rawStatus || ''
                             };
+                        } else if (p.statusTrend) {
+                            next = { ...next, statusTrend: null, prevStatus: null };
                         }
                         // "Next man up": a healthy player whose team has a
                         // sidelined regular in the same position bucket — they
                         // stand to see more run. Skip the injured guy himself.
-                        if ((!match || match.status === 'ACTIVE') && next.status !== 'OUT') {
+                        if ((!match || match.status === 'ACTIVE' || match.status === 'PROBABLE') && next.status !== 'OUT') {
                             const myBucket = posBucket(p.position);
                             const sidelined = NEXT_MAN_UP_BUCKETS.has(myBucket)
                                 ? (sidelinedByTeam[p.team] || []).filter(i => posBucket(i.position) === myBucket && i.player !== p.name)
                                 : [];
                             if (sidelined.length) {
-                                next = { ...next, opportunity: { covers: sidelined.map(i => `${i.player}${i.position ? ' (' + i.position + ')' : ''}`) } };
+                                // sort most-certain-out first
+                                sidelined.sort((a, b) => (STATUS_ORDER[a.status] ?? 4) - (STATUS_ORDER[b.status] ?? 4));
+                                const hot = sidelined.some(i => i.statusTrend === 'down');
+                                const trigger = (sidelined.find(i => i.statusTrend === 'down') || {});
+                                next = {
+                                    ...next,
+                                    opportunity: {
+                                        covers: sidelined.map(i => ({
+                                            name: i.player, position: i.position || '',
+                                            status: i.status, likelihood: (SIDELINED_LIKELIHOOD[i.status] || {}).label || i.status.toLowerCase(),
+                                            trend: i.statusTrend || null
+                                        })),
+                                        hot,
+                                        trigger: hot ? `${trigger.player} just moved ${trigger.prevStatus || '?'} → ${trigger.status}` : null
+                                    }
+                                };
                             } else if (next.opportunity) {
                                 next = { ...next, opportunity: null };
                             }
@@ -5050,6 +5188,14 @@
                     }
                     return;
                 }
+
+                // NBA now carries its own real opponent defense — team ranks
+                // from ESPN's `statistics/byteam` (fetchNbaSlate → player.oppDef)
+                // and a live per-position box-score tally on modal open
+                // (fetchNbaPlayerDetail → player.opponentDefense). The legacy
+                // path below only reached for stats.nba.com, which is
+                // CORS-blocked in a browser — skip it (was pure console noise).
+                if (selectedSport === 'nba') return;
 
                 const espnPath = ESPN_SPORT_PATHS[selectedSport];
                 const isBasketball = selectedSport === 'nba' || selectedSport === 'wnba';
@@ -7138,6 +7284,44 @@
             // read points / rebounds / assists / 3PM allowed per game and
             // rank 1 (stingiest) → 30. Feeds the NBA "vs <OPP> defense"
             // factor + projection nudge + the "similar defenses" split.
+            // Each slate team's schedule → is tonight the 2nd night of a
+            // back-to-back (game yesterday), the 1st night (game tomorrow),
+            // or a rested spot. Keyless `/teams/{id}/schedule`.
+            const nbaFetchB2B = async (teamIds, gameByTeam) => {
+                const DAY = 864e5;
+                const out = {};
+                await Promise.all(teamIds.map(async tid => {
+                    const tip = gameByTeam[tid];
+                    if (!tip) return;
+                    let evs = [];
+                    for (const yr of [NBA_YR_CUR, NBA_YR_PREV]) {
+                        const s = await nflFetch(`${NBA_ESPN}/teams/${tid}/schedule?season=${yr}`).catch(() => null);
+                        const list = (s && s.events) || [];
+                        if (list.length) evs = evs.concat(list);
+                    }
+                    const times = evs.map(e => {
+                        const c = e.competitions && e.competitions[0];
+                        const opp = (c && (c.competitors || []).find(x => String(x.team && x.team.id) !== String(tid)));
+                        return { ms: Date.parse(e.date || (c && c.date) || ''), abbr: (opp && opp.team && opp.team.abbreviation) || '' };
+                    }).filter(x => Number.isFinite(x.ms)).sort((a, b) => a.ms - b.ms);
+                    // nearest scheduled game to tonight = "this" game
+                    let iThis = -1, best = Infinity;
+                    times.forEach((t, i) => { const d = Math.abs(t.ms - tip); if (d < best) { best = d; iThis = i; } });
+                    if (iThis < 0) return;
+                    const prev = times[iThis - 1], next = times[iThis + 1];
+                    const restDays = prev ? Math.round((times[iThis].ms - prev.ms) / DAY) : null;
+                    const toNext = next ? Math.round((next.ms - times[iThis].ms) / DAY) : null;
+                    out[tid] = {
+                        tonight: restDays != null && restDays <= 1 ? 'second' : null,
+                        first: toNext != null && toNext <= 1 ? 'first' : null,
+                        restDays,
+                        prevOpp: prev ? prev.abbr : null,
+                        nextOpp: next ? next.abbr : null
+                    };
+                }));
+                return out;
+            };
+
             const nbaFetchTeamDef = async () => {
                 for (const yr of [NBA_YR_PREV, NBA_YR_CUR]) {
                     try {
@@ -7197,15 +7381,21 @@
                         vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length } : { avg: mean(vals), hitRate: rate(vals), games: 0 },
                         recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
                     };
-                    // Each row carries day-of-week + that opponent's defensive
-                    // rank so calculateEdgeScore can build the "On <day>s" and
-                    // "vs similar defenses" splits without another pass.
-                    gameLogByKey[k] = glRows.slice(-40).map(g => ({
-                        date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
-                        points: getV(g.row) || 0, line,
-                        dow: Number.isFinite(g.ts) && g.ts > 0 ? new Date(g.ts).getDay() : null,
-                        oppRank: (oppRankByAbbr && oppRankByAbbr[g.opponent]) || null
-                    }));
+                    // Each row carries day-of-week, that opponent's defensive
+                    // rank, and days of rest before it so calculateEdgeScore
+                    // can build the "On <day>s" / "vs similar defenses" /
+                    // "on 0 days rest" splits without another pass.
+                    const _last40 = glRows.slice(-40);
+                    gameLogByKey[k] = _last40.map((g, i) => {
+                        const prevTs = i > 0 ? _last40[i - 1].ts : (glRows.length > _last40.length ? glRows[glRows.length - _last40.length - 1].ts : null);
+                        return {
+                            date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
+                            points: getV(g.row) || 0, line,
+                            dow: Number.isFinite(g.ts) && g.ts > 0 ? new Date(g.ts).getDay() : null,
+                            oppRank: (oppRankByAbbr && oppRankByAbbr[g.opponent]) || null,
+                            rest: (Number.isFinite(g.ts) && Number.isFinite(prevTs) && prevTs > 0) ? Math.round((g.ts - prevTs) / 864e5) : null
+                        };
+                    });
                 });
                 return { statsByKey, gameLogByKey };
             };
@@ -7216,11 +7406,29 @@
             const nbaBuildProps = (statsByKey, allLines, book, perGameFor) => {
                 const props = [];
                 const seedK = (k, line) => { if (!statsByKey[k]) statsByKey[k] = nflSeedWindows(perGameFor(k, line), line); return statsByKey[k]; };
+                // Sportsbook (FanDuel / DraftKings / BetMGM) consensus line per
+                // stat — the "sharp" number the DFS line is compared against.
+                const marketLineFor = (byBook) => {
+                    const lines = ['fanduel', 'draftkings', 'betmgm', 'betrivers', 'pinnacle']
+                        .map(b => { const a = byBook[b]; if (!a || !a.length) return null; const p = a.find(x => x.primary) || a[0]; return p ? p.line : null; })
+                        .filter(v => v != null).sort((a, b) => a - b);
+                    if (!lines.length) return null;
+                    const m = lines.length >> 1;
+                    return lines.length % 2 ? lines[m] : Math.round((lines[m - 1] + lines[m]) * 5) / 10;
+                };
                 const pushLine = (k, def, e, extraIn) => {
-                    const { _stdLine, ...extra } = extraIn;
+                    const { _stdLine, _mktLine, ...extra } = extraIn;
                     const w = seedK(k, e.line);
                     const oHR = estHitRate(w.season.avg || w.recent.avg || e.line, e.line);
                     const base = { type: def.type, statKey: k, line: e.line, ...extra };
+                    // Attach the book-vs-market gap only to the MAIN, STANDARD
+                    // DFS line for this stat — never a goblin/demon rung (those
+                    // sit off-market by design) or a cross-book fallback.
+                    if (_mktLine != null && DFS_PLATFORMS.has(extra.book) && !extra.crossBook && !extra.altLine
+                        && e.primary && (e.ppType == null || e.ppType === 'standard')) {
+                        base.marketLine = _mktLine;
+                        base.mktGap = Math.round((e.line - _mktLine) * 10) / 10;
+                    }
                     if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
                         props.push({ ...base, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
                         return;
@@ -7257,10 +7465,11 @@
                     const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                     const multi = sorted.length > 1;
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                    const mktLine = marketLineFor(byBook);
                     sorted.forEach(e => pushLine(k, def, e, {
                         lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                         book: useBook, crossBook, setAt: e.setAt, move: e.move,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
+                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine, _mktLine: mktLine
                     }));
                 });
                 return props;
@@ -7313,14 +7522,17 @@
                 if (!games.length) return { slots: [], games: [] };
 
                 const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
-                const [rosters, teamDef] = await Promise.all([
+                const gameByTeam = {};
+                games.forEach(g => { gameByTeam[g.homeId] = g.kickoffMs; gameByTeam[g.awayId] = g.kickoffMs; });
+                const [rosters, teamDef, b2bByTeam] = await Promise.all([
                     Promise.all(teamIds.map(async tid => {
                         try {
                             const r = await nflFetch(`${NBA_ESPN}/teams/${tid}/roster`);
                             return { tid, athletes: r.athletes || (r.team && r.team.athletes) || [] };
                         } catch (e) { return { tid, athletes: [] }; }
                     })),
-                    nbaFetchTeamDef().catch(() => ({}))
+                    nbaFetchTeamDef().catch(() => ({})),
+                    nbaFetchB2B(teamIds, gameByTeam).catch(() => ({}))
                 ]);
                 // abbr -> that team's points-allowed rank (all 30, for the
                 // game-log "similar defenses" split).
@@ -7340,6 +7552,7 @@
                         if (st && /injured-reserve|g-league|suspension/i.test(String(st))) return;
                         const raw = (a.position && (a.position.abbreviation || a.position.name)) || 'G';
                         const od = teamDef[String(oppId)] || null;
+                        const b2b = b2bByTeam[String(tid)] || null;
                         const rec = {
                             id: String(a.id), name: a.fullName, pos: posGroup(raw), posRaw: raw,
                             headshot: (a.headshot && a.headshot.href) || `https://a.espncdn.com/i/headshots/nba/players/full/${a.id}.png`,
@@ -7347,6 +7560,7 @@
                             opponent: (teamMeta[oppId] || {}).abbr, oppTeamId: oppId,
                             oppDef: od, oppRank: od && od.ptsRank || null,
                             gameDow: g.kickoffMs ? new Date(g.kickoffMs).getDay() : null,
+                            b2b, isBackToBackTonight: !!(b2b && b2b.tonight === 'second'),
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
                         byNorm[nflNormName(a.fullName)] = rec;
@@ -7461,6 +7675,7 @@
                         gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
                         minutesTrend: nbaMinutesTrend(glRows),
                         oppDef: slot.oppDef || null, oppRank: slot.oppRank || null, gameDow: slot.gameDow,
+                        b2b: slot.b2b || null, isBackToBackTonight: !!slot.isBackToBackTonight,
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: linesByName[nm], _isNba: true, _detailLoaded: glRows.length > 0,
                         _seasonPerGame: perGameFor
@@ -8427,9 +8642,26 @@
                                         <span className="injury-tag">{player.injury}</span>
                                     )}
                                     {player.opportunity && player.opportunity.covers && player.opportunity.covers.length > 0 && (
-                                        <span className="opportunity-tag" title={`Extra playing time likely — ${player.opportunity.covers.join(', ')} sidelined at the same spot`}>
-                                            ⬆ Next man up
+                                        <span
+                                            className={`opportunity-tag ${player.opportunity.hot ? 'hot' : ''}`}
+                                            title={player.opportunity.hot
+                                                ? `${player.opportunity.trigger} — bet before the line moves`
+                                                : `Extra run likely — ${player.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')} at the same spot`}
+                                        >
+                                            {player.opportunity.hot ? '🔥 ⬆ Next man up' : '⬆ Next man up'}
                                         </span>
+                                    )}
+                                    {player.statusTrend === 'down' && player.prevStatus && (
+                                        <span className="status-trend" title="Status just got worse — line may not have moved yet">▼ was {player.prevStatus}</span>
+                                    )}
+                                    {player.b2b && player.b2b.tonight === 'second' && (
+                                        <span className="b2b-tag" title={`2nd night of a back-to-back${player.b2b.prevOpp ? ` — played ${player.b2b.prevOpp} yesterday` : ''}`}>🔁 B2B · 2nd</span>
+                                    )}
+                                    {player.b2b && player.b2b.tonight !== 'second' && player.b2b.first === 'first' && (
+                                        <span className="b2b-tag first" title={`1st night of a back-to-back${player.b2b.nextOpp ? ` — at ${player.b2b.nextOpp} tomorrow` : ''}`}>🔁 B2B · 1st</span>
+                                    )}
+                                    {player.b2b && player.b2b.tonight !== 'second' && player.b2b.first !== 'first' && player.b2b.restDays != null && player.b2b.restDays >= 3 && (
+                                        <span className="rest-tag" title={`${player.b2b.restDays} days since the last game`}>🛌 {player.b2b.restDays}d rest</span>
                                     )}
                                 </div>
                                 <div className="player-team-info">
@@ -8556,8 +8788,12 @@
                                     </div>
                                 )}
                                 {player.opportunity && player.opportunity.covers && player.opportunity.covers.length > 0 && (
-                                    <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '8px', background: 'rgba(91,158,255,0.12)', border: '1px solid rgba(91,158,255,0.35)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                                        <strong style={{ color: 'var(--info-blue)' }}>⬆ Next man up</strong> — {player.opportunity.covers.join(', ')} sidelined at {player.position}, so {player.name.split(' ').slice(-1)[0]} projects for extra playing time. Recent-form / volume numbers below may run light of tonight.
+                                    <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '8px', background: player.opportunity.hot ? 'rgba(255,68,54,0.12)' : 'rgba(91,158,255,0.12)', border: `1px solid ${player.opportunity.hot ? 'rgba(255,68,54,0.4)' : 'rgba(91,158,255,0.35)'}`, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                        <strong style={{ color: player.opportunity.hot ? '#FF6B5F' : 'var(--info-blue)' }}>{player.opportunity.hot ? '🔥 ⬆ Next man up' : '⬆ Next man up'}</strong>
+                                        {player.opportunity.hot && <span> — <strong>{player.opportunity.trigger}</strong>. The book usually takes minutes-to-hours to re-price everyone around him — this is the window.</span>}
+                                        {' '}{player.opportunity.covers.map((c, ci) => (
+                                            <span key={ci}>{ci > 0 ? ', ' : ''}{c.name}{c.position ? ` (${c.position})` : ''} <em>{c.likelihood}</em>{c.trend === 'down' ? ' ▼' : ''}</span>
+                                        ))} at {player.position} — so {player.name.split(' ').slice(-1)[0]} projects for extra {VOLUME_WORD[player.sport] || 'run'}. Recent-form / volume numbers below may run light of tonight.
                                     </div>
                                 )}
                                 {player.props && player.props.length > 0 && (() => {
@@ -8628,6 +8864,28 @@
                                                         {!activeProp.move && activeProp.setAt && (Date.now() - Date.parse(activeProp.setAt) < 5400000) && (
                                                             <div className="edge-prop-line" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                                                                 Book last set this line {agoLabel(activeProp.setAt)}
+                                                            </div>
+                                                        )}
+                                                        {activeProp.marketLine != null && (() => {
+                                                            const gap = activeProp.mktGap;
+                                                            const better = activeProp.direction === 'over' ? gap < 0 : gap > 0;
+                                                            const bookName = activeProp.book === 'prizepicks' ? 'PrizePicks' : (activeProp.book || 'DFS');
+                                                            return (
+                                                                <div className="edge-prop-line line-vs-book">
+                                                                    {bookName} <span className="val">{activeProp.line}</span> vs sportsbooks <span className="val">{activeProp.marketLine}</span>
+                                                                    {Math.abs(gap) >= 0.5
+                                                                        ? <span className={better ? 'good' : 'bad'}> — {gap > 0 ? '+' : ''}{gap}, the {better ? 'better' : 'worse'} number for the {activeProp.direction}</span>
+                                                                        : <span> — in line with the market</span>}
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                        {player.b2b && player.b2b.restDays != null && (
+                                                            <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: player.b2b.tonight === 'second' ? '#FF6B5F' : 'var(--text-muted)' }}>
+                                                                {player.b2b.tonight === 'second'
+                                                                    ? `🔁 Back-to-back — 2nd night${player.b2b.prevOpp ? ` (played ${player.b2b.prevOpp} yesterday)` : ''}`
+                                                                    : player.b2b.first === 'first'
+                                                                        ? `🔁 1st night of a back-to-back${player.b2b.nextOpp ? ` (at ${player.b2b.nextOpp} tomorrow)` : ''}`
+                                                                        : `🛌 ${player.b2b.restDays} day${player.b2b.restDays === 1 ? '' : 's'} rest`}
                                                             </div>
                                                         )}
                                                     </div>
