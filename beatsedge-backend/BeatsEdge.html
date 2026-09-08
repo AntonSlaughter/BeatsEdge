@@ -2229,6 +2229,86 @@
         .injury-nmu-name:hover { color: var(--accent-red); }
         .injury-nmu-cta { color: var(--info-blue); font-weight: 700; cursor: pointer; }
 
+        /* ── News & Lineups page ─────────────────────────────────────── */
+        .news-view { max-width: 820px; }
+        .news-section-title {
+            font-size: 0.95rem; font-weight: 800; color: var(--text-primary);
+            margin: 1.6rem 0 0.85rem; letter-spacing: 0.01em;
+        }
+        .news-section-title:first-of-type { margin-top: 0.5rem; }
+        .news-section-note { font-weight: 500; font-size: 0.78rem; color: var(--text-muted); letter-spacing: 0; }
+
+        .lineup-list { display: flex; flex-direction: column; gap: 0.85rem; }
+        .lineup-card {
+            background: linear-gradient(165deg, var(--bg-surface) 0%, var(--bg-raised) 100%);
+            border: 1px solid var(--border-hairline);
+            border-left: 4px solid var(--info-blue);
+            border-radius: 12px; padding: 0.95rem 1.1rem;
+        }
+        .lineup-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+        .lineup-matchup { font-size: 1rem; color: var(--text-primary); }
+        .lineup-matchup strong { font-weight: 800; }
+        .lineup-at { color: var(--text-muted); margin: 0 0.15rem; }
+        .lineup-time { display: block; font-size: 0.78rem; color: var(--text-muted); font-weight: 500; margin-top: 0.15rem; }
+        .lineup-status-pill {
+            flex: 0 0 auto; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.04em;
+            padding: 0.25rem 0.55rem; border-radius: 6px; white-space: nowrap;
+        }
+        .lineup-status-pill.confirmed { color: var(--success-green); background: rgba(46,160,67,0.12); }
+        .lineup-status-pill.projected { color: var(--warning-yellow); background: rgba(245,166,35,0.12); }
+
+        .lineup-probables {
+            margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 8px;
+            background: var(--bg-secondary); font-size: 0.86rem; color: var(--text-secondary);
+        }
+        .lineup-probables-label { display: block; font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.3rem; }
+        .lineup-probables strong { color: var(--text-muted); font-weight: 700; display: inline-block; min-width: 2.6rem; }
+
+        .lineup-orders { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.85rem; }
+        .lineup-order-team { font-size: 0.75rem; font-weight: 800; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
+        .lineup-order-list { margin: 0; padding-left: 1.4rem; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.7; }
+        .lineup-order-list li { padding-left: 0.15rem; }
+        .lineup-pos { color: var(--text-muted); font-size: 0.75rem; margin-left: 0.2rem; }
+        .lineup-pending { font-size: 0.83rem; color: var(--text-muted); margin-top: 0.75rem; font-style: italic; line-height: 1.5; }
+        .lineup-finals { margin-top: 0.4rem; }
+        .lineup-finals > summary { cursor: pointer; font-size: 0.82rem; font-weight: 700; color: var(--text-muted); padding: 0.5rem 0; list-style: none; }
+        .lineup-finals > summary::-webkit-details-marker { display: none; }
+        .lineup-finals > summary::before { content: '▸ '; }
+        .lineup-finals[open] > summary::before { content: '▾ '; }
+        .lineup-finals[open] { display: flex; flex-direction: column; gap: 0.85rem; }
+
+        .news-wire { display: flex; flex-direction: column; gap: 0.6rem; }
+        .news-item {
+            background: linear-gradient(165deg, var(--bg-surface) 0%, var(--bg-raised) 100%);
+            border: 1px solid var(--border-hairline);
+            border-left: 4px solid var(--border-color);
+            border-radius: 10px; padding: 0.8rem 1rem;
+        }
+        .news-item.news-lineup { border-left-color: var(--info-blue); }
+        .news-item.news-injury { border-left-color: var(--danger-red); }
+        .news-item.news-roster { border-left-color: var(--warning-yellow); }
+        .news-item.news-weather { border-left-color: #6aa9ff; }
+        .news-item-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+        .news-kind {
+            font-size: 0.64rem; font-weight: 800; letter-spacing: 0.05em;
+            padding: 0.12rem 0.4rem; border-radius: 5px; background: var(--bg-secondary); color: var(--text-muted);
+        }
+        .news-kind.lineup { color: var(--info-blue); }
+        .news-kind.injury { color: var(--danger-red); }
+        .news-kind.roster { color: var(--warning-yellow); }
+        .news-teams { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); }
+        .news-age { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+        .news-headline { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); line-height: 1.4; }
+        .news-desc { font-size: 0.82rem; color: var(--text-secondary); margin-top: 0.3rem; line-height: 1.5; }
+        .news-read { display: inline-block; margin-top: 0.45rem; font-size: 0.76rem; font-weight: 700; color: var(--info-blue); text-decoration: none; }
+        .news-read:hover { text-decoration: underline; }
+        .news-player-link { color: var(--text-primary); font-weight: 700; cursor: pointer; border-bottom: 1px dotted var(--text-muted); }
+        .news-player-link:hover { color: var(--accent-red); }
+
+        @media (max-width: 560px) {
+            .lineup-orders { grid-template-columns: 1fr; }
+        }
+
     </style>
 </head>
 <body>
@@ -3237,6 +3317,174 @@
                 </div>
             );
         }
+
+        // ── News page — starting lineups first, then the wider news wire ────
+        const NEWS_KIND_META = {
+            lineup:  { badge: 'LINEUP',  cls: 'lineup',  icon: '📋' },
+            injury:  { badge: 'INJURY',  cls: 'injury',  icon: '🩹' },
+            roster:  { badge: 'ROSTER',  cls: 'roster',  icon: '🔁' },
+            weather: { badge: 'WEATHER', cls: 'weather', icon: '🌦' },
+            recap:   { badge: 'RECAP',   cls: 'recap',   icon: '📈' },
+            news:    { badge: 'NEWS',    cls: 'news',     icon: '📰' }
+        };
+        const NEWS_KIND_ORDER = { lineup: 0, injury: 1, roster: 2, weather: 3, news: 4, recap: 5 };
+
+        function NewsView({ lineups, lineupSource, slateNews, slateNewsSource, selectedSport, playersData, onOpenPlayer }) {
+            const roster = Array.isArray(playersData) ? playersData : [];
+            const findPlayer = (name) => {
+                if (!name) return null;
+                const n = name.toLowerCase();
+                return roster.find(p => (p.name || '').toLowerCase() === n)
+                    || roster.find(p => { const ln = (p.name || '').toLowerCase().split(' ').slice(-1)[0]; return ln && n.endsWith(ln) && n.split(' ')[0][0] === (p.name || '')[0].toLowerCase(); })
+                    || null;
+            };
+            const PlayerLink = ({ name }) => {
+                const p = findPlayer(name);
+                return p
+                    ? <span className="news-player-link" onClick={() => onOpenPlayer && onOpenPlayer(p)}>{name}</span>
+                    : <span>{name}</span>;
+            };
+
+            const games = Array.isArray(lineups) ? lineups : [];
+            const upcoming = games.filter(g => g.state !== 'Final' && g.state !== 'post');
+            const finals = games.filter(g => g.state === 'Final' || g.state === 'post');
+
+            const news = (Array.isArray(slateNews) ? slateNews : [])
+                .slice()
+                .sort((a, b) =>
+                    (NEWS_KIND_ORDER[a.kind] ?? 4) - (NEWS_KIND_ORDER[b.kind] ?? 4)
+                    || (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+            const lineupNews = news.filter(n => n.kind === 'lineup');
+            const otherNews = news.filter(n => n.kind !== 'lineup');
+
+            const LineupCard = ({ g }) => (
+                <div className="lineup-card">
+                    <div className="lineup-card-head">
+                        <div className="lineup-matchup">
+                            <strong>{g.away}</strong> <span className="lineup-at">@</span> <strong>{g.home}</strong>
+                            {(() => {
+                                const live = g.state === 'in' || g.state === 'post' || g.state === 'Live' || g.state === 'Final'
+                                    || /progress|final|delay|postpon|suspend/i.test(g.statusText || '');
+                                const st = live && g.statusText ? ' · ' + String(g.statusText).replace(/^STATUS_/, '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : '';
+                                return <span className="lineup-time">{g.startLabel}{st}</span>;
+                            })()}
+                        </div>
+                        <span className={`lineup-status-pill ${g.confirmed ? 'confirmed' : 'projected'}`}>
+                            {g.confirmed ? '✓ CONFIRMED' : '⏳ NOT POSTED'}
+                        </span>
+                    </div>
+
+                    {(g.awayProb || g.homeProb) && (
+                        <div className="lineup-probables">
+                            <span className="lineup-probables-label">{selectedSport === 'mlb' ? 'Probable pitchers' : 'Starting QB'}</span>
+                            <div><strong>{g.away}</strong> <PlayerLink name={g.awayProb || 'TBD'} /></div>
+                            <div><strong>{g.home}</strong> <PlayerLink name={g.homeProb || 'TBD'} /></div>
+                        </div>
+                    )}
+
+                    {(g.awayLineup && g.awayLineup.length >= 9) ? (
+                        <div className="lineup-orders">
+                            {[['away', g.away, g.awayLineup], ['home', g.home, g.homeLineup]].map(([side, abbr, ln]) => (
+                                <div key={side} className="lineup-order-col">
+                                    <div className="lineup-order-team">{abbr}</div>
+                                    <ol className="lineup-order-list">
+                                        {ln.map(s => (
+                                            <li key={s.order}>
+                                                <PlayerLink name={s.name} /> <span className="lineup-pos">{s.pos}</span>
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="lineup-pending">
+                            {g.note || (selectedSport === 'mlb'
+                                ? 'Batting order posts ~2–3 hours before first pitch. Probable pitchers are set above.'
+                                : 'Full lineup not published by a free source yet.')}
+                        </div>
+                    )}
+                </div>
+            );
+
+            const NewsItem = ({ n }) => {
+                const meta = NEWS_KIND_META[n.kind] || NEWS_KIND_META.news;
+                return (
+                    <div className={`news-item news-${meta.cls}`}>
+                        <div className="news-item-head">
+                            <span className={`news-kind ${meta.cls}`}>{meta.icon} {meta.badge}</span>
+                            {n.teams && n.teams.length > 0 && <span className="news-teams">{n.teams.join(' · ')}</span>}
+                            {n.ageLabel && <span className="news-age">{n.ageLabel}</span>}
+                        </div>
+                        <div className="news-headline">
+                            {n.athlete ? <><PlayerLink name={n.athlete} />{' — '}</> : null}{n.headline}
+                        </div>
+                        {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
+                        {n.url && <a className="news-read" href={n.url} target="_blank" rel="noopener noreferrer">Read on ESPN →</a>}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="injuries-view news-view">
+                    <div className="top-picks-intro">
+                        <h1 className="top-picks-heading">News &amp; Lineups</h1>
+                        <p className="top-picks-subhead">
+                            Confirmed <strong>starting lineups</strong> are the fastest edge there is — a
+                            posted batting order or a late scratch moves every related prop before the
+                            book catches up. This page leads with lineups for today's slate, then the
+                            wider news wire (starter calls, roster moves, weather, injuries) newest first.
+                        </p>
+                    </div>
+
+                    {/* ── Starting lineups ─────────────────────────────────── */}
+                    <div className="news-section-title">🏟️ Starting Lineups
+                        <span className="news-section-note">
+                            {lineupSource === 'checking' ? ' · loading…'
+                                : lineupSource === 'unavailable' ? ' · no free lineup feed for this sport yet'
+                                    : lineupSource === 'partial' ? ' · probables set, orders pending' : ' · live from statsapi'}
+                        </span>
+                    </div>
+                    {games.length === 0 ? (
+                        <div className="lineup-pending" style={{ margin: '0 0 1.5rem' }}>
+                            {lineupSource === 'checking' ? 'Checking the lineup feed…' : 'No games on this slate.'}
+                        </div>
+                    ) : (
+                        <div className="lineup-list">
+                            {upcoming.map(g => <LineupCard key={g.key} g={g} />)}
+                            {finals.length > 0 && (
+                                <details className="lineup-finals">
+                                    <summary>{finals.length} final game{finals.length === 1 ? '' : 's'} — lineups as played</summary>
+                                    {finals.map(g => <LineupCard key={g.key} g={g} />)}
+                                </details>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ── Lineup / role news ───────────────────────────────── */}
+                    {lineupNews.length > 0 && (
+                        <>
+                            <div className="news-section-title">📋 Lineup &amp; Role News</div>
+                            <div className="news-wire">
+                                {lineupNews.map((n, i) => <NewsItem key={i} n={n} />)}
+                            </div>
+                        </>
+                    )}
+
+                    {/* ── Everything else ──────────────────────────────────── */}
+                    <div className="news-section-title">📰 News Wire
+                        <span className="news-section-note">{slateNewsSource === 'live' ? ` · ${otherNews.length} from ESPN` : slateNewsSource === 'checking' ? ' · loading…' : ' · feed unavailable'}</span>
+                    </div>
+                    {otherNews.length === 0 ? (
+                        <div className="lineup-pending">{slateNewsSource === 'checking' ? 'Loading the news wire…' : 'Nothing on the wire right now.'}</div>
+                    ) : (
+                        <div className="news-wire">
+                            {otherNews.map((n, i) => <NewsItem key={i} n={n} />)}
+                        </div>
+                    )}
+                </div>
+            );
+        }
         // NBA and NFL have real backend pipelines built (see beatsedge-backend).
         // NHL/MLB aren't wired up yet — shown but disabled rather than hidden,
         // so it's honest about what's coming vs. what silently doesn't exist.
@@ -3436,6 +3684,10 @@
             const [showParlayBuilder, setShowParlayBuilder] = useState(false);
             const [injuryNews, setInjuryNews] = useState([]);
             const [injuryDataSource, setInjuryDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
+            const [slateNews, setSlateNews] = useState([]);           // full ESPN news feed for the News page
+            const [slateNewsSource, setSlateNewsSource] = useState('checking');
+            const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
+            const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             const [liveGames, setLiveGames] = useState([]);
             const [scoreboardSource, setScoreboardSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [statsDataSource, setStatsDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
@@ -3559,6 +3811,7 @@
                     const staleNow = () => loadSeqRef.current !== mySeq;
                     fetchLiveInjuries(cached.players, staleNow).catch(() => {});
                     fetchLiveScoreboard(staleNow).catch(() => {});
+                    fetchSlateLineups(cached.players, staleNow).catch(() => {});
                     return;
                 }
                 fetchData(mySeq).catch(error => {
@@ -3715,6 +3968,8 @@
                     if (stale()) return;
                     await fetchLiveScoreboard(stale);
                     if (stale()) return;
+                    await fetchSlateLineups(players, stale);
+                    if (stale()) return;
                     await fetchCombinedDefenseData(players);
                     if (stale()) return;
                     await fetchBallDontLieStats(players);
@@ -3757,6 +4012,15 @@
                 return `${Math.round(m / 1440)}d ago`;
             };
             const NEWS_INJURY_RE = /\b(out|questionable|doubtful|day-to-day|dtd|injur|ruled out|will not play|won'?t play|placed on|activat|reinstat|return|left the game|exits?|leaves?|scratched|game-time|IL|DL|concussion|strain|sprain|soreness|surgery|MRI)\b/i;
+            // Lineup / role news — the News page's top priority. Deliberately
+            // strict: bare "start" / "starter" matches recaps and scheduling
+            // blurbs ("to start a 3-game series"), so require lineup-specific
+            // phrasing.
+            const LINEUP_NEWS_RE = /\b(?:in the (?:starting )?lineup|out of the lineup|(?:back|return[s]?|rejoin[s]?|recalled) (?:to|in) (?:the )?(?:starting )?(?:lineup|rotation)|return[s]? to (?:the )?[A-Z][\w']+ ?(?:'s)? lineup|(?:starting|batting) (?:lineup|order)|(?:named|will be|is|is the|listed as) (?:the )?(?:starting|starter)\b|gets? the (?:start|nod|ball)|will (?:start|get the start|be under center)|(?:late )?scratch(?:ed|es)?|benched?|to the bench|activated (?:from|off)|reinstated|recall(?:s|ed)?|call(?:s|ed)?[ -]up|promoted to the (?:active roster|majors|big leagues?)|(?:ruled|listed as) (?:inactive|active)|game-time decision|expected to (?:start|play)|named (?:the )?starter|starting (?:pitcher|goalie|goaltender|quarterback|qb|center|nine|five)|to start at\b|makes? (?:his|her|the) (?:first|season) start)/i;
+            const ROSTER_NEWS_RE = /\b(sign(?:s|ed|ing)?|trade[ds]?|acquire[ds]?|claim(?:ed|s)?|waive[ds]?|release[ds]?|(?:is|are|were) (?:released|cut)|designat(?:e|ed) for assignment|option(?:ed|s)? (?:to|down)|contract extension|DFA'?d?)\b/i;
+            const WEATHER_NEWS_RE = /\b(rain(?:ed|ing|out)?|wind|snow|storm|postpone[ds]?|(?:weather|rain) delay|tarp (?:on|is)|game (?:suspended|postponed)|makeup game)\b/i;
+            const RECAP_NEWS_RE = /(?:\b\d+-\d+\b|game highlights|final score|:\s*game highlights$)|\b(?:beat|beats|defeat[s]?|hold[s]? off|rally (?:past|to)|carries?|blank[s]?|edge[s]?|top[s]?|rout[s]?|snap[s]? (?:a |their )?\d|homers? (?:as|to)|walk-?off)\b/i;
+            const NEWS_NOISE_RE = /\bfantasy (?:football|baseball|hockey|basketball)\b|\bforecaster\b|\bwaiver\b|start[\/-]?sit|\brankings?\b|cheat sheet|\bmock draft\b|best bets|how to bet\b|odds,? (?:tips|analysis)|betting (?:preview|preparations)|power rankings|\bpodcast\b|\bfree tix\b/i;
 
             const fetchLiveInjuries = async (players, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
@@ -3887,6 +4151,39 @@
                     setInjuryNews(liveInjuries);
                     setInjuryDataSource(liveInjuries.length ? 'live' : 'sample');
 
+                    // Full news feed for the News page — every article, tagged by
+                    // kind so lineup / role items can float to the top.
+                    const allNews = ((newsData && newsData.articles) || []).map(a => {
+                        const acat = (a.categories || []).find(c => c.type === 'athlete' && c.athlete);
+                        const tcats = [...new Set((a.categories || [])
+                            .filter(c => c.type === 'team' && c.team)
+                            .map(c => strOf(c.team.abbreviation || c.team.name)).filter(Boolean))];
+                        const headline = strOf(a.headline);
+                        const text = `${headline} ${strOf(a.description)}`;
+                        // Recap / noise first so a recap that mentions "the
+                        // starting pitcher" isn't mislabelled a lineup alert.
+                        const kind = NEWS_NOISE_RE.test(text) ? 'news'
+                            : RECAP_NEWS_RE.test(headline) ? 'recap'
+                                : LINEUP_NEWS_RE.test(text) ? 'lineup'
+                                    : NEWS_INJURY_RE.test(text) ? 'injury'
+                                        : ROSTER_NEWS_RE.test(text) ? 'roster'
+                                            : WEATHER_NEWS_RE.test(text) ? 'weather'
+                                                : 'news';
+                        const ts = strOf(a.published || a.lastModified);
+                        return {
+                            headline,
+                            description: strOf(a.description),
+                            published: ts,
+                            ageLabel: agoLabel(ts),
+                            url: strOf(a.links && a.links.web && a.links.web.href),
+                            athlete: strOf(acat && acat.athlete && (acat.athlete.displayName || acat.athlete.fullName)),
+                            teams: tcats,
+                            kind
+                        };
+                    }).filter(n => n.headline);
+                    setSlateNews(allNews);
+                    setSlateNewsSource(allNews.length ? 'live' : 'sample');
+
                     // Injured (OUT/DOUBTFUL) players per team, for "next man up".
                     const sidelinedByTeam = {};
                     liveInjuries.forEach(i => {
@@ -3925,11 +4222,78 @@
                 } catch (err) {
                     console.warn('Live ESPN injury fetch failed, using sample injury data:', err.message);
                     setInjuryDataSource('sample');
+                    setSlateNewsSource('sample');
                     // Sample fallback so the news banner still has something to show
                     setInjuryNews([
                         { id: 1, player: 'LeBron James', team: 'LAL', status: 'QUESTIONABLE', injury: 'Ankle', update: "Game-time decision", timestamp: 'sample data' },
                         { id: 2, player: 'Kevin Durant', team: 'PHX', status: 'OUT', injury: 'Calf', update: 'Ruled out', timestamp: 'sample data' }
                     ]);
+                }
+            };
+
+            // Starting lineups + probables for the News page. MLB has real
+            // confirmed batting orders from statsapi (posted ~2-3h before first
+            // pitch); other sports get probables + an honest "full lineup not
+            // published by a free source yet" note.
+            const fetchSlateLineups = async (players, isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                try {
+                    if (selectedSport === 'mlb') {
+                        const sched = await mlbFetch(`/schedule?sportId=1&date=${selectedDate}&hydrate=lineups,probablePitcher,team,linescore`);
+                        const games = (sched.dates && sched.dates[0] && sched.dates[0].games) || [];
+                        const rows = games.map(g => {
+                            const L = g.lineups || {};
+                            const mapLine = (arr) => (arr || []).map((p, i) => ({
+                                order: i + 1, id: String(p.id), name: p.fullName,
+                                pos: (p.primaryPosition && p.primaryPosition.abbreviation) || ''
+                            }));
+                            const away = mapLine(L.awayPlayers), home = mapLine(L.homePlayers);
+                            return {
+                                key: String(g.gamePk),
+                                away: g.teams.away.team.abbreviation, awayName: g.teams.away.team.teamName || g.teams.away.team.name,
+                                home: g.teams.home.team.abbreviation, homeName: g.teams.home.team.teamName || g.teams.home.team.name,
+                                startMs: Date.parse(g.gameDate), startLabel: new Date(g.gameDate).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }),
+                                state: g.status && g.status.abstractGameState, statusText: g.status && g.status.detailedState,
+                                awayProb: g.teams.away.probablePitcher && g.teams.away.probablePitcher.fullName,
+                                homeProb: g.teams.home.probablePitcher && g.teams.home.probablePitcher.fullName,
+                                awayLineup: away, homeLineup: home,
+                                confirmed: away.length >= 9 && home.length >= 9
+                            };
+                        }).sort((a, b) => (a.startMs || 0) - (b.startMs || 0));
+                        if (gone()) return;
+                        setLineups(rows);
+                        setLineupSource(rows.some(r => r.confirmed) ? 'live' : rows.length ? 'partial' : 'unavailable');
+                        return;
+                    }
+                    if (selectedSport === 'nfl') {
+                        const games = (nflCache.current && nflCache.current.games) || [];
+                        const meta = (nflCache.current && nflCache.current.teamMeta) || {};
+                        const qbByTeam = {};
+                        (players || []).forEach(p => {
+                            if (p.sport === 'nfl' && p.position === 'QB') (qbByTeam[p.team] = qbByTeam[p.team] || []).push(p.name);
+                        });
+                        const rows = games.map(g => ({
+                            key: String(g.gameId),
+                            away: (meta[g.awayId] || {}).abbr, awayName: (meta[g.awayId] || {}).name,
+                            home: (meta[g.homeId] || {}).abbr, homeName: (meta[g.homeId] || {}).name,
+                            startMs: g.kickoffMs, startLabel: g.gameTime,
+                            state: g.state, statusText: g.status,
+                            awayProb: (qbByTeam[(meta[g.awayId] || {}).abbr] || [])[0] || null,
+                            homeProb: (qbByTeam[(meta[g.homeId] || {}).abbr] || [])[0] || null,
+                            awayLineup: [], homeLineup: [], confirmed: false,
+                            note: 'Inactives post ~90 min before kickoff — QB shown from the depth chart.'
+                        })).sort((a, b) => (a.startMs || 0) - (b.startMs || 0));
+                        if (gone()) return;
+                        setLineups(rows);
+                        setLineupSource(rows.length ? 'partial' : 'unavailable');
+                        return;
+                    }
+                    if (gone()) return;
+                    setLineups([]);
+                    setLineupSource('unavailable');
+                } catch (err) {
+                    console.warn('Lineup fetch failed:', err.message);
+                    if (!gone()) { setLineups([]); setLineupSource('unavailable'); }
                 }
             };
 
@@ -7531,6 +7895,12 @@
                                     Browse
                                 </button>
                                 <button
+                                    className={`view-toggle-btn ${currentView === 'news' ? 'active' : ''}`}
+                                    onClick={() => setCurrentView('news')}
+                                >
+                                    News{Array.isArray(lineups) && lineups.some(g => g.confirmed) ? ' 🟢' : ''}
+                                </button>
+                                <button
                                     className={`view-toggle-btn ${currentView === 'injuries' ? 'active' : ''}`}
                                     onClick={() => setCurrentView('injuries')}
                                 >
@@ -7757,6 +8127,20 @@
                                 onRunBacktest={runBacktest}
                                 onSwitchSport={(sport, view) => { setSelectedSport(sport); setCurrentView(view); }}
                                 onOpenPick={(pl, propIdx) => { setCurrentView('browse'); setStatFilter('all'); setPlayerSearch(pl.name); openDetail(pl.id, propIdx); }}
+                            />
+                            </ErrorBoundary>
+                        )}
+
+                        {currentView === 'news' && (
+                            <ErrorBoundary name="News" resetKey={selectedSport}>
+                            <NewsView
+                                lineups={lineups}
+                                lineupSource={lineupSource}
+                                slateNews={slateNews}
+                                slateNewsSource={slateNewsSource}
+                                selectedSport={selectedSport}
+                                playersData={playersData}
+                                onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
                             />
                             </ErrorBoundary>
                         )}
