@@ -9325,7 +9325,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {(() => {
                                                         const W = cStats || {};
                                                         const isNba = player.sport === 'nba';
+                                                        const isMlb = player.sport === 'mlb';
+                                                        let _sn = 0; const N = () => (++_sn) + '.';
                                                         const facBy = (k) => (edge.factors || []).find(f => f.key === k);
+                                                        const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}` : null; };
                                                         const r1 = (x) => x == null ? null : Math.round(x * 10) / 10;
                                                         const hrOf = (win) => win && win.hitRate != null ? hr(win.hitRate) : null;
                                                         const impactOf = (k) => { const f = facBy(k); if (!f) return '—'; if (f.inProjection) return 'in projection'; const d = f.probDelta || 0; return d === 0 ? '±0' : `${d > 0 ? '+' : ''}${Math.round(d * 1000) / 10} pts`; };
@@ -9337,7 +9340,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         const mt = player.minutesTrend || 0;
                                                         const oppOk = isNba ? (mt >= 1 ? true : mt <= -1 ? false : null) : null;
                                                         const dvpFac = facBy('defense');
-                                                        const matchupOk = dvpFac ? !!dvpFac.supports : null;
+                                                        const mlbMatchFacs = ['matchup', 'oppdef', 'bvp', 'platoon', 'venue'].map(facBy).filter(Boolean);
+                                                        const matchupOk = dvpFac ? !!dvpFac.supports
+                                                            : mlbMatchFacs.length ? (mlbMatchFacs.filter(f => f.supports).length >= mlbMatchFacs.filter(f => !f.supports).length) : null;
                                                         const availOk = (player.status === 'OUT' || player.status === 'DOUBTFUL') ? false
                                                             : (player.opportunity || player.status === 'ACTIVE' || player.status === 'PROBABLE' || !player.status) ? true : null;
                                                         // DvP grid (NBA) — full 5-position table, tucked in a sub-details.
@@ -9362,7 +9367,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                                                             {isNba && (
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">1.</span> OPPORTUNITY</div>
+                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">{N()}</span> OPPORTUNITY</div>
                                                                 <div className="research-sec-body">
                                                                     <table className="research-tbl">
                                                                         <thead><tr><th>Metric</th><th style={{ textAlign: 'right' }}>Value</th><th style={{ textAlign: 'right' }}>Model impact</th></tr></thead>
@@ -9384,7 +9389,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             )}
 
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">{dot(formOk)}<span className="rs-num">{isNba ? '2.' : '1.'}</span> RECENT FORM</div>
+                                                                <div className="research-sec-head">{dot(formOk)}<span className="rs-num">{N()}</span> RECENT FORM</div>
                                                                 <div className="research-sec-body">
                                                                     <table className="research-tbl">
                                                                         <thead><tr><th>Window</th><th style={{ textAlign: 'right' }}>Avg</th><th style={{ textAlign: 'right' }}>{dirUnder ? 'Under' : 'Over'} rate</th></tr></thead>
@@ -9407,7 +9412,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </div>
 
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">{dot(matchupOk)}<span className="rs-num">{isNba ? '3.' : '2.'}</span> MATCHUP</div>
+                                                                <div className="research-sec-head">{dot(matchupOk)}<span className="rs-num">{N()}</span> MATCHUP</div>
                                                                 <div className="research-sec-body">
                                                                     {isNba && grpRow ? (
                                                                         <React.Fragment>
@@ -9463,6 +9468,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                                 </details>
                                                                             )}
                                                                         </React.Fragment>
+                                                                    ) : mlbMatchFacs.length ? (
+                                                                        <React.Fragment>
+                                                                            <table className="research-tbl">
+                                                                                <tbody>
+                                                                                    {mlbMatchFacs.map((f, i) => (
+                                                                                        <tr key={i}><td style={{ width: '38%' }}>{f.supports ? '🟢' : '🔴'} {f.name}</td><td style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>{f.detail}</td></tr>
+                                                                                    ))}
+                                                                                </tbody>
+                                                                            </table>
+                                                                            <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
+                                                                                Assessment: {matchupOk === true ? 'Favorable — the pitcher / split matchup leans this way' : matchupOk === false ? 'Tough — the pitcher / split matchup works against it' : 'Neutral'}
+                                                                            </div>
+                                                                            <div className="research-note">Full Statcast matchup (pitcher xwOBA, CSW%, pitch mix, exit-velo allowed, barrels) → Advanced Research Data below.</div>
+                                                                        </React.Fragment>
                                                                     ) : (
                                                                         <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
                                                                             {dvpFac ? `${dvpFac.name}: ${dvpFac.detail}` : 'No positional defense data for this matchup.'}
@@ -9473,7 +9492,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                                                             {isNba && (
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">4.</span> MINUTES</div>
+                                                                <div className="research-sec-head">{dot(oppOk)}<span className="rs-num">{N()}</span> MINUTES</div>
                                                                 <div className="research-sec-body">
                                                                     <table className="research-tbl">
                                                                         <tbody>
@@ -9488,17 +9507,21 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </div>
                                                             )}
 
-                                                            {isNba && (
+                                                            {(isNba || isMlb) && (
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">⚪<span className="rs-num">5.</span> GAME ENVIRONMENT</div>
+                                                                <div className="research-sec-head">⚪<span className="rs-num">{N()}</span> {isMlb ? 'PARK & WEATHER' : 'GAME ENVIRONMENT'}</div>
                                                                 <div className="research-sec-body">
-                                                                    <div className="research-note">Pace, expected possessions, team offensive / opponent defensive rating, projected team points, game total, spread, blowout risk, home / away. Not in the model yet — wired in as those data sources come online. Home/road split IS live: see the "{player.isHomeTonight ? 'At home' : 'On the road'}" factor above.</div>
+                                                                    <div className="research-note">
+                                                                        {isMlb
+                                                                            ? 'Park factor (overall / HR / runs / L-R HR) and weather (temperature, wind speed & direction, humidity, roof open-closed, air density) — high-value for HR, total-bases and hitter-fantasy props. Not in the model yet; full list in Advanced Research Data → Ballpark / Weather.'
+                                                                            : `Pace, expected possessions, team offensive / opponent defensive rating, projected team points, game total, spread, blowout risk. Not in the model yet — wired in as those data sources come online. Home/road split IS live: see the "${player.isHomeTonight ? 'At home' : 'On the road'}" factor above.`}
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                             )}
 
                                                             <div className="research-sec">
-                                                                <div className="research-sec-head">{dot(availOk)}<span className="rs-num">{isNba ? '6.' : '3.'}</span> AVAILABILITY / ROLE</div>
+                                                                <div className="research-sec-head">{dot(availOk)}<span className="rs-num">{N()}</span> AVAILABILITY / ROLE</div>
                                                                 <div className="research-sec-body">
                                                                     <table className="research-tbl">
                                                                         <tbody>
@@ -9552,7 +9575,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     })()}
                                                 </details>
 
-                                                {(player.sport === 'nba' || player.sport === 'nfl' || player.sport === 'ncaaf') && (() => {
+                                                {(player.sport === 'nba' || player.sport === 'nfl' || player.sport === 'ncaaf' || player.sport === 'mlb') && (() => {
                                                     const isNba = player.sport === 'nba';
                                                     const W = cStats || {};
                                                     const SBK = player.statsByKey || {};
@@ -9635,6 +9658,90 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 <Topic name="L5 / L10 / L20 / Season" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
                                                                 <Topic name="vs Opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} todo="the Last-5 head-to-head table is above the chart" />
                                                                 <Topic name="Similar matchups" rows={[['vs similarly-ranked defenses', facDet('simdef')]]} />
+                                                            </Group>
+                                                        </React.Fragment>;
+                                                    } else if (player.sport === 'mlb') {
+                                                        const isPit = !!player._isPitcher || player.role === 'pitcher';
+                                                        const ss = player._seasonStat || {};
+                                                        const n3 = (x) => { const v = parseFloat(x); return Number.isFinite(v) ? (Math.round(v * 1000) / 1000).toFixed(3).replace(/^0/, '') : null; };
+                                                        const sb = player.splitBy || {};
+                                                        const splitLine = (st) => st ? `${st.avg} / ${st.ops} OPS · ${st.plateAppearances || st.atBats || 0} PA` : null;
+                                                        const bvp = player.bvp;
+                                                        const oc = player.opponentContext || {};
+                                                        const ip = parseFloat(ss.inningsPitched);
+                                                        body = isPit ? <React.Fragment>
+                                                            <Group title="Pitcher">
+                                                                <Topic name="Workload" rows={[
+                                                                    ['IP / start', Number.isFinite(ip) && ss.gamesStarted ? Math.round(ip / ss.gamesStarted * 10) / 10 : null],
+                                                                    ['Starts', ss.gamesStarted], ['Innings', ss.inningsPitched]
+                                                                ]} todo="projected pitch count, times through the order, days of rest, bullpen support" />
+                                                                <Topic name="Command & stuff" rows={[
+                                                                    ['K / 9', ss.strikeoutsPer9Inn],
+                                                                    ['BB / 9', Number.isFinite(ip) && ss.baseOnBalls ? Math.round(ss.baseOnBalls / ip * 9 * 10) / 10 : null]
+                                                                ]} todo="K%, BB%, K-BB%, CSW%, whiff%, swing%, chase%, zone%, velocity, spin rate, release point, pitch location — needs a Statcast feed" />
+                                                                <Topic name="Run prevention" rows={[['ERA', ss.era], ['WHIP', ss.whip], ['H / 9', ss.hitsPer9Inn]]}
+                                                                    todo="FIP, xFIP, SIERA, xERA, xwOBA, barrel% / hard-hit% / exit-velocity allowed" />
+                                                                <Topic name="Pitch mix" todo="pitch types + usage %, velocity band, movement profile, put-away pitch — needs a Statcast feed" />
+                                                                <Topic name="Recent form" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['Season', win(W.season)]]} />
+                                                            </Group>
+                                                            <Group title="Matchup">
+                                                                <Topic name="Opposing lineup" rows={oc.teamBatting ? [
+                                                                    ['Team AVG', n3(oc.teamBatting.teamAvg)], ['K-rate', oc.teamBatting.kRate != null ? (oc.teamBatting.kRate * 100).toFixed(1) + '%' : null],
+                                                                    ['Runs / game', oc.teamBatting.runsPerGame], ['Rank', oc.teamBatting.rank ? '#' + oc.teamBatting.rank : null]
+                                                                ] : []} todo="lineup xwOBA, L/R balance vs this hand, chase% & barrel% & hard-hit% as a unit, top-of-order OPS, platoon-advantage count" />
+                                                                <Topic name="vs this opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} />
+                                                            </Group>
+                                                            <Group title="Ballpark">
+                                                                <Topic name="Park factors" todo="overall park factor, HR factor, runs factor, L/R HR factor — needs a park-factors table" />
+                                                            </Group>
+                                                            <Group title="Weather">
+                                                                <Topic name="Conditions" todo="temperature, wind speed & direction, humidity, roof open / closed, air density — a separate model input; matters most for K props on windy days and HR-suppressed parks" />
+                                                            </Group>
+                                                            <Group title="Historical">
+                                                                <Topic name="L5 / L10 / L20 / Season" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
+                                                                <Topic name="vs Opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} />
+                                                            </Group>
+                                                        </React.Fragment> : <React.Fragment>
+                                                            <Group title="Batter">
+                                                                <Topic name="Opportunity" rows={[
+                                                                    ['PA / game', ss.plateAppearances && ss.gamesPlayed ? Math.round(ss.plateAppearances / ss.gamesPlayed * 10) / 10 : null],
+                                                                    ['Games', ss.gamesPlayed], ['Plate appearances', ss.plateAppearances], ['At-bats', ss.atBats]
+                                                                ]} todo="confirmed batting-order slot, projected PA, leadoff / RISP context, pinch-hit risk" />
+                                                                <Topic name="Discipline & contact" rows={[
+                                                                    ['BB', ss.baseOnBalls], ['K', ss.strikeOuts],
+                                                                    ['BB% (rough)', ss.plateAppearances && ss.baseOnBalls != null ? Math.round(ss.baseOnBalls / ss.plateAppearances * 100) + '%' : null],
+                                                                    ['K% (rough)', ss.plateAppearances && ss.strikeOuts != null ? Math.round(ss.strikeOuts / ss.plateAppearances * 100) + '%' : null]
+                                                                ]} todo="chase%, whiff%, contact%, zone-contact% — needs a plate-discipline feed" />
+                                                                <Topic name="Batted ball & power" rows={[
+                                                                    ['AVG', ss.avg], ['OBP', ss.obp], ['SLG', ss.slg], ['OPS', ss.ops],
+                                                                    ['ISO', ss.slg != null && ss.avg != null ? (Math.round((parseFloat(ss.slg) - parseFloat(ss.avg)) * 1000) / 1000).toFixed(3).replace(/^0/, '') : null],
+                                                                    ['HR', ss.homeRuns], ['RBI', ss.rbi]
+                                                                ]} todo="xBA, xSLG, xwOBA, wOBA, wRC+, barrel%, hard-hit%, exit velocity, launch angle, sweet-spot%, HR/FB, pull% / oppo%, FB / GB / LD% — needs a Statcast feed" />
+                                                                <Topic name="Splits" rows={[
+                                                                    ['vs LHP', splitLine(sb.vl)], ['vs RHP', splitLine(sb.vr)],
+                                                                    ['Home', splitLine(sb.h)], ['Road', splitLine(sb.a)],
+                                                                    ['Career vs ' + (player.oppPitcherName || 'starter'), bvp ? `${bvp.hits}-for-${bvp.atBats}, ${bvp.homeRuns} HR, ${bvp.strikeOuts} K · ${bvp.ops} OPS` : null]
+                                                                ]} todo="pitch-type splits, day / night, count leverage, vs fastball / breaking / offspeed" />
+                                                                <Topic name="Recent form" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
+                                                            </Group>
+                                                            <Group title="Matchup">
+                                                                <Topic name="Opposing starter" rows={oc.pitcher ? [
+                                                                    ['Pitcher', oc.pitcher.name], ['Throws', player.oppPitcherHand === 'L' ? 'LHP' : player.oppPitcherHand === 'R' ? 'RHP' : null],
+                                                                    ['ERA', oc.pitcher.era], ['WHIP', oc.pitcher.whip], ['K / 9', oc.pitcher.kPer9]
+                                                                ] : []} todo="starter xwOBA, CSW%, whiff%, pitch mix + velocity, times-through-order penalty, hard-hit% allowed, the bullpen behind him" />
+                                                                <Topic name="Platoon edge" rows={[['This matchup', player.oppPitcherHand ? `Batter vs ${player.oppPitcherHand === 'L' ? 'LHP' : 'RHP'}` : null], ['Split', facDet('platoon')]]} />
+                                                                <Topic name="vs this opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} />
+                                                            </Group>
+                                                            <Group title="Ballpark">
+                                                                <Topic name="Park factors" todo="overall park factor, HR factor, runs factor, L/R HR factor — needs a park-factors table. Big for total-bases, HR and hitter-fantasy props." />
+                                                            </Group>
+                                                            <Group title="Weather">
+                                                                <Topic name="Conditions" todo="temperature, wind speed & direction (out to / in from CF), humidity, roof open / closed, air density — a separate model input; a 15 mph wind out of a hitter's park can swing an HR projection materially." />
+                                                            </Group>
+                                                            <Group title="Historical">
+                                                                <Topic name="L5 / L10 / L20 / Season" rows={[['L5', win(W.last5)], ['L10', win(W.last10)], ['L20', win(W.last20)], ['Season', win(W.season)]]} />
+                                                                <Topic name="vs Opponent" rows={[['vs ' + player.opponent, W.vsOpp && W.vsOpp.games ? win(W.vsOpp) : null]]} />
+                                                                <Topic name="vs this starter" rows={[['Career', bvp ? `${bvp.hits}-for-${bvp.atBats}, ${bvp.homeRuns} HR, ${bvp.strikeOuts} K · ${bvp.avg} / ${bvp.ops} OPS` : null]]} todo="the Last-5 head-to-head is in the MLB modal's vs-opp window" />
                                                             </Group>
                                                         </React.Fragment>;
                                                     } else {
