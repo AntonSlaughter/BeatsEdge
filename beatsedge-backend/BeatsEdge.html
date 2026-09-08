@@ -2468,7 +2468,7 @@
         };
 
         const POSITIONS_BY_SPORT = {
-            nba: ['PG', 'SG', 'SF', 'PF', 'C'],
+            nba: ['G', 'F', 'C'],
             nfl: ['QB', 'RB', 'WR', 'TE'],
             nhl: ['F', 'D']
         };
@@ -2796,6 +2796,70 @@
                 }
             }
 
+            // NBA-specific matchup + situational splits:
+            //  · <OPP> team defense — points / rebounds / assists / 3PM allowed
+            //    per game, ranked 1 (stingiest) → 30 (from ESPN opponent splits)
+            //  · <OPP> vs this player's position group (G/F/C) — from the
+            //    opponent's real box scores (lands on modal open)
+            //  · day of week — does the player play better / worse on <day>s
+            //  · similar defenses — the player's history vs teams ranked near
+            //    tonight's opponent
+            if (sport === 'nba') {
+                const NBA_DEF_STAT = { points: 'pts', pra: 'pts', pr: 'pts', pa: 'pts', rebounds: 'reb', assists: 'ast', ra: 'reb', threes: 'tpm' };
+                const which = NBA_DEF_STAT[prop.statKey];
+                const od = player.oppDef;
+                if (od && which && od[which + 'Rank']) {
+                    const rk = od[which + 'Rank'], allowed = od[which + 'Allowed'];
+                    const leaky = rk >= 20, stingy = rk <= 10;
+                    if (leaky || stingy) {
+                        const lbl = which === 'pts' ? 'pts' : which === 'reb' ? 'reb' : which === 'ast' ? 'ast' : '3PM';
+                        factors.push({
+                            key: 'oppdef',
+                            name: `${player.opponent} defense`,
+                            supports: direction === 'over' ? leaky : stingy,
+                            detail: `#${rk} of 30${allowed != null ? ` — allows ${allowed} ${lbl}/game` : ''} (${leaky ? 'one of the leakiest' : 'one of the stingiest'})`
+                        });
+                    }
+                }
+                // (the position-group split lands as the existing "Defense vs
+                //  <G/F/C>" factor once player.opponentDefense is populated on
+                //  modal open — see the sport-dispatch block above.)
+                const glRows = (player.gameLogByKey && player.gameLogByKey[prop.statKey]) || [];
+                const avg = (arr) => arr.length ? arr.reduce((x, y) => x + y, 0) / arr.length : null;
+                const r1 = (x) => Math.round(x * 10) / 10;
+                if (player.gameDow != null && glRows.length >= 12) {
+                    const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                    const on = glRows.filter(g => g.dow === player.gameDow).map(g => g.points);
+                    const off = glRows.filter(g => g.dow != null && g.dow !== player.gameDow).map(g => g.points);
+                    if (on.length >= 4 && off.length >= 4) {
+                        const onA = avg(on), offA = avg(off);
+                        if (offA && Math.abs(onA - offA) / offA >= 0.08) {
+                            factors.push({
+                                key: 'dow',
+                                name: `On ${DOW[player.gameDow]}s`,
+                                supports: direction === 'over' ? onA > offA : onA < offA,
+                                detail: `${r1(onA)} avg on ${DOW[player.gameDow]}s (${on.length}g) vs ${r1(offA)} other days`
+                            });
+                        }
+                    }
+                }
+                if (player.oppRank != null && glRows.length >= 12) {
+                    const sim = glRows.filter(g => g.oppRank != null && Math.abs(g.oppRank - player.oppRank) <= 6).map(g => g.points);
+                    if (sim.length >= 4) {
+                        const simA = avg(sim), allA = avg(glRows.map(g => g.points));
+                        const tier = player.oppRank <= 10 ? 'stingy' : player.oppRank >= 20 ? 'leaky' : 'mid-pack';
+                        if (allA && Math.abs(simA - allA) / allA >= 0.06) {
+                            factors.push({
+                                key: 'simdef',
+                                name: `vs ${tier} defenses`,
+                                supports: direction === 'over' ? simA > line : simA < line,
+                                detail: `${r1(simA)} avg vs similarly-ranked D (${sim.length}g, rank ${player.oppRank}±6)`
+                            });
+                        }
+                    }
+                }
+            }
+
             // Factor 5: Pace. For MLB/NHL there is no real pace-equivalent
             // input (paceRating is always 'neutral'), so this factor is dropped
             // entirely for those sports rather than counting as a free green.
@@ -2872,6 +2936,20 @@
             if ((sport === 'nfl' || sport === 'ncaaf') && player.oppDef && player.oppDef.rank) {
                 const _span = sport === 'ncaaf' ? 65 : 15.5, _mid = sport === 'ncaaf' ? 67 : 16.5;
                 projection *= 1 + ((player.oppDef.rank - _mid) / _span) * 0.06;
+            }
+            // NBA: nudge by tonight's opponent's team defense for THIS stat
+            // (points / rebounds / assists / 3PM allowed, ranked 1-30), plus
+            // the position-group split when the box-score tally is loaded.
+            // ±5% at the rank extremes, another ±4% for a lopsided position D.
+            if (sport === 'nba' && player.oppDef) {
+                const w = { points: 'pts', pra: 'pts', pr: 'pts', pa: 'pts', rebounds: 'reb', assists: 'ast', ra: 'reb', threes: 'tpm' }[prop.statKey];
+                const rk = w && player.oppDef[w + 'Rank'];
+                if (rk) projection *= 1 + ((rk - 15.5) / 14.5) * 0.05;
+                const grp = /^(PG|SG|G)$/i.test(player.position || '') ? 'G' : /^(SF|PF|F)$/i.test(player.position || '') ? 'F' : 'C';
+                const pd = player.opponentDefense && player.opponentDefense.byPosition && player.opponentDefense.byPosition[grp];
+                if (pd && pd.ratio && (w === 'pts' || w === 'reb' || w === 'ast')) {
+                    projection *= 1 + Math.max(-0.04, Math.min(0.04, pd.ratio - 1));
+                }
             }
             // MLB batter: nudge by the platoon + batter-vs-starter splits,
             // relative to the player's own season baseline. Each capped, total
@@ -7054,10 +7132,53 @@
                 return prior.length ? Math.round((a(l5) - a(prior)) * 10) / 10 : 0;
             };
 
+            // Team defense — one keyless call gives all 30 teams' OPPONENT
+            // splits (what they allow). ESPN `statistics/byteam` carries an
+            // "Opponent Offensive" / "Opponent General" split per team; we
+            // read points / rebounds / assists / 3PM allowed per game and
+            // rank 1 (stingiest) → 30. Feeds the NBA "vs <OPP> defense"
+            // factor + projection nudge + the "similar defenses" split.
+            const nbaFetchTeamDef = async () => {
+                for (const yr of [NBA_YR_PREV, NBA_YR_CUR]) {
+                    try {
+                        const d = await nflFetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/statistics/byteam?season=${yr}&seasontype=2`);
+                        const teams = (d && d.teams) || [];
+                        const catNames = (nm) => { const c = (d.categories || []).find(x => x.name === nm && x.names); return c ? c.names : []; };
+                        const offN = catNames('offensive'), genN = catNames('general');
+                        const iPts = offN.indexOf('avgPoints'), iAst = offN.indexOf('avgAssists'), iTpm = offN.indexOf('avgThreePointFieldGoalsMade'), iReb = genN.indexOf('avgRebounds');
+                        const rows = [];
+                        teams.forEach(t => {
+                            const cats = t.categories || [];
+                            const oppOff = cats.find(c => c.name === 'offensive' && /opponent/i.test(c.displayName || ''));
+                            const oppGen = cats.find(c => c.name === 'general' && /opponent/i.test(c.displayName || ''));
+                            const ov = (oppOff && oppOff.values) || [], gv = (oppGen && oppGen.values) || [];
+                            const id = String(t.team && t.team.id);
+                            if (!id || !ov.length || !(ov[iPts] > 0)) return;
+                            rows.push({
+                                id,
+                                ptsAllowed: Math.round(ov[iPts] * 10) / 10,
+                                astAllowed: iAst >= 0 ? Math.round(ov[iAst] * 10) / 10 : null,
+                                tpmAllowed: iTpm >= 0 ? Math.round(ov[iTpm] * 10) / 10 : null,
+                                rebAllowed: iReb >= 0 && gv[iReb] != null ? Math.round(gv[iReb] * 10) / 10 : null
+                            });
+                        });
+                        if (rows.length < 20) continue;
+                        [['ptsAllowed', 'ptsRank'], ['rebAllowed', 'rebRank'], ['astAllowed', 'astRank'], ['tpmAllowed', 'tpmRank']].forEach(([f, rk]) => {
+                            const s = rows.filter(r => r[f] != null).sort((a, b) => a[f] - b[f]);
+                            s.forEach((r, i) => { r[rk] = i + 1; });
+                        });
+                        const map = {};
+                        rows.forEach(r => { map[r.id] = r; });
+                        return map;
+                    } catch (e) { /* try the other season */ }
+                }
+                return {};
+            };
+
             // Real windows for one player from their parsed game log — same
             // shape MLB/NFL use, so calculateEdgeScore / PlayerCard read it
             // unchanged.
-            const nbaComputeWindows = (glRows, lineFor, oppAbbr) => {
+            const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr) => {
                 const statsByKey = {}, gameLogByKey = {};
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
                 nbaAllKeys.forEach(k => {
@@ -7076,7 +7197,15 @@
                         vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length } : { avg: mean(vals), hitRate: rate(vals), games: 0 },
                         recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
                     };
-                    gameLogByKey[k] = glRows.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line }));
+                    // Each row carries day-of-week + that opponent's defensive
+                    // rank so calculateEdgeScore can build the "On <day>s" and
+                    // "vs similar defenses" splits without another pass.
+                    gameLogByKey[k] = glRows.slice(-40).map(g => ({
+                        date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
+                        points: getV(g.row) || 0, line,
+                        dow: Number.isFinite(g.ts) && g.ts > 0 ? new Date(g.ts).getDay() : null,
+                        oppRank: (oppRankByAbbr && oppRankByAbbr[g.opponent]) || null
+                    }));
                 });
                 return { statsByKey, gameLogByKey };
             };
@@ -7184,12 +7313,20 @@
                 if (!games.length) return { slots: [], games: [] };
 
                 const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
-                const rosters = await Promise.all(teamIds.map(async tid => {
-                    try {
-                        const r = await nflFetch(`${NBA_ESPN}/teams/${tid}/roster`);
-                        return { tid, athletes: r.athletes || (r.team && r.team.athletes) || [] };
-                    } catch (e) { return { tid, athletes: [] }; }
-                }));
+                const [rosters, teamDef] = await Promise.all([
+                    Promise.all(teamIds.map(async tid => {
+                        try {
+                            const r = await nflFetch(`${NBA_ESPN}/teams/${tid}/roster`);
+                            return { tid, athletes: r.athletes || (r.team && r.team.athletes) || [] };
+                        } catch (e) { return { tid, athletes: [] }; }
+                    })),
+                    nbaFetchTeamDef().catch(() => ({}))
+                ]);
+                // abbr -> that team's points-allowed rank (all 30, for the
+                // game-log "similar defenses" split).
+                const oppRankByAbbr = {};
+                NBA_TEAMS.forEach(([id, abbr]) => { const d = teamDef[id]; if (d && d.ptsRank) oppRankByAbbr[abbr] = d.ptsRank; });
+                const posGroup = (raw) => /^(PG|SG|G)$/i.test(raw || '') ? 'G' : /^(SF|PF|F)$/i.test(raw || '') ? 'F' : 'C';
 
                 const byNorm = {}, slots = [];
                 rosters.forEach(({ tid, athletes }) => {
@@ -7201,19 +7338,22 @@
                         if (!a || !a.id || !a.fullName) return;
                         const st = a.status && (a.status.type || a.status.name || a.status);
                         if (st && /injured-reserve|g-league|suspension/i.test(String(st))) return;
-                        const pos = (a.position && (a.position.abbreviation || a.position.name)) || 'G';
+                        const raw = (a.position && (a.position.abbreviation || a.position.name)) || 'G';
+                        const od = teamDef[String(oppId)] || null;
                         const rec = {
-                            id: String(a.id), name: a.fullName, pos,
+                            id: String(a.id), name: a.fullName, pos: posGroup(raw), posRaw: raw,
                             headshot: (a.headshot && a.headshot.href) || `https://a.espncdn.com/i/headshots/nba/players/full/${a.id}.png`,
                             team: (teamMeta[tid] || {}).abbr, teamId: tid,
                             opponent: (teamMeta[oppId] || {}).abbr, oppTeamId: oppId,
+                            oppDef: od, oppRank: od && od.ptsRank || null,
+                            gameDow: g.kickoffMs ? new Date(g.kickoffMs).getDay() : null,
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
                         byNorm[nflNormName(a.fullName)] = rec;
                         slots.push(rec);
                     });
                 });
-                nbaCache.current = { byNorm, teamMeta, games };
+                nbaCache.current = { byNorm, teamMeta, games, teamDef, oppRankByAbbr };
                 return { slots, games };
             };
 
@@ -7310,7 +7450,7 @@
                         }
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nbaComputeWindows(glRows, lineFor, slot.opponent)
+                        ? nbaComputeWindows(glRows, lineFor, slot.opponent, nbaCache.current.oppRankByAbbr)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                     let props = nbaBuildProps(statsByKey, linesByName[nm], wantBook, perGameFor);
@@ -7320,6 +7460,7 @@
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
                         gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
                         minutesTrend: nbaMinutesTrend(glRows),
+                        oppDef: slot.oppDef || null, oppRank: slot.oppRank || null, gameDow: slot.gameDow,
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: linesByName[nm], _isNba: true, _detailLoaded: glRows.length > 0,
                         _seasonPerGame: perGameFor
@@ -7340,6 +7481,71 @@
                 return built;
             };
 
+            // Rough league-average opponent production BY POSITION GROUP, per
+            // game (pts / reb / ast a team's Guards / Forwards / Centers put up
+            // against them). Used only to contextualise the live per-position
+            // tally below — labelled "approx" in the UI.
+            const NBA_POS_BASELINE = {
+                G: { pts: 51, reb: 15, ast: 16 },
+                F: { pts: 41, reb: 20, ast: 8 },
+                C: { pts: 24, reb: 13, ast: 4 }
+            };
+            // Opponent's last ~10 box scores → what they allow to each
+            // position group (ESPN's G/F/C granularity — no free source splits
+            // finer). Runs on modal open only.
+            const nbaOppPosDefense = async (oppTeamId) => {
+                if (!oppTeamId) return null;
+                let sch = null;
+                for (const yr of [NBA_YR_CUR, NBA_YR_PREV]) {
+                    sch = await nflFetch(`${NBA_ESPN}/teams/${oppTeamId}/schedule?season=${yr}`).catch(() => null);
+                    if (sch && (sch.events || []).some(e => e.competitions && e.competitions[0] && e.competitions[0].status && e.competitions[0].status.type && e.competitions[0].status.type.completed)) break;
+                }
+                const done = ((sch && sch.events) || []).filter(e => {
+                    const c = e.competitions && e.competitions[0];
+                    return c && c.status && c.status.type && c.status.type.completed;
+                }).map(e => e.id).slice(-10);
+                if (done.length < 3) return null;
+                const grp = (raw) => /^(PG|SG|G)$/i.test(raw || '') ? 'G' : /^(SF|PF|F)$/i.test(raw || '') ? 'F' : 'C';
+                const t = { G: { pts: 0, reb: 0, ast: 0 }, F: { pts: 0, reb: 0, ast: 0 }, C: { pts: 0, reb: 0, ast: 0 }, games: 0 };
+                for (const batch of chunk(done, 5)) {
+                    await Promise.all(batch.map(async eid => {
+                        try {
+                            const sum = await nflFetch(`${NBA_ESPN}/summary?event=${eid}`);
+                            const bs = sum && sum.boxscore;
+                            const oGrp = ((bs && bs.players) || []).find(p => p.team && String(p.team.id) !== String(oppTeamId));
+                            const s0 = oGrp && oGrp.statistics && oGrp.statistics[0];
+                            if (!s0) return;
+                            const L = s0.labels || s0.names || [];
+                            const iP = L.indexOf('PTS'), iR = L.indexOf('REB'), iA = L.indexOf('AST');
+                            if (iP < 0) return;
+                            t.games++;
+                            (s0.athletes || []).forEach(a => {
+                                if (a.didNotPlay || !a.stats || !a.stats.length) return;
+                                const g = grp(a.athlete && a.athlete.position && a.athlete.position.abbreviation);
+                                t[g].pts += parseFloat(a.stats[iP]) || 0;
+                                t[g].reb += parseFloat(a.stats[iR]) || 0;
+                                t[g].ast += parseFloat(a.stats[iA]) || 0;
+                            });
+                        } catch (e) { /* skip a game */ }
+                    }));
+                }
+                if (t.games < 3) return null;
+                const byPosition = {};
+                ['G', 'F', 'C'].forEach(pos => {
+                    const b = NBA_POS_BASELINE[pos], n = t.games;
+                    const pAllowed = Math.round(t[pos].pts / n * 10) / 10;
+                    const ratio = b.pts ? (t[pos].pts / n) / b.pts : 1;
+                    byPosition[pos] = {
+                        pointsAllowed: pAllowed,
+                        reboundsAllowed: Math.round(t[pos].reb / n * 10) / 10,
+                        assistsAllowed: Math.round(t[pos].ast / n * 10) / 10,
+                        rank: Math.max(1, Math.min(30, Math.round(15.5 + (ratio - 1) * 42))),
+                        ratio: Math.round(ratio * 100) / 100
+                    };
+                });
+                return { byPosition, games: t.games };
+            };
+
             const fetchNbaPlayerDetail = async (player) => {
                 let glRows;
                 try { const gl = await nbaFetchGamelog(player.id); glRows = gl ? nflParseGamelog(gl) : []; }
@@ -7348,16 +7554,32 @@
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nba' ? { ...p, _detailLoaded: true } : p));
                     return;
                 }
+                if (!nbaCache.current.posDef) nbaCache.current.posDef = {};
+                const _pdCache = nbaCache.current.posDef;
+                if (player.oppTeamId && _pdCache[player.oppTeamId] === undefined) {
+                    _pdCache[player.oppTeamId] = await nbaOppPosDefense(player.oppTeamId).catch(() => null);
+                }
+                const posDef = player.oppTeamId ? _pdCache[player.oppTeamId] : null;
+                const oppDefObj = posDef ? {
+                    team: player.opponent,
+                    overall: player.oppDef && player.oppDef.ptsRank
+                        ? { rank: player.oppDef.ptsRank, ppg: player.oppDef.ptsAllowed }
+                        : { rank: 15, ppg: null },
+                    byPosition: posDef.byPosition,
+                    dataSource: `ESPN box scores — ${player.opponent}'s last ${posDef.games} games`,
+                    isRealByPosition: true
+                } : null;
                 setPlayersData(prev => prev.map(p => {
                     if (p.id !== player.id || p.sport !== 'nba') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent);
+                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent, nbaCache.current.oppRankByAbbr);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
                         gameLog: gameLogByKey[p.props[0].statKey] || [],
                         minutesTrend: nbaMinutesTrend(glRows),
+                        opponentDefense: oppDefObj || p.opponentDefense || null,
                         _detailLoaded: true, statsSource: 'ESPN — full game log (real)'
                     };
                 }));
@@ -8157,7 +8379,7 @@
                     if (player.sport === 'mlb' && !player._detailLoaded) fetchMlbPlayerDetail(player);
                     if (player.sport === 'nfl' && !player._detailLoaded) fetchNflPlayerDetail(player);
                     if (player.sport === 'ncaaf' && !player._detailLoaded) fetchCfbPlayerDetail(player);
-                    if (player.sport === 'nba' && !player._detailLoaded) fetchNbaPlayerDetail(player);
+                    if (player.sport === 'nba' && (!player._detailLoaded || !player.opponentDefense)) fetchNbaPlayerDetail(player);
                 }, [activeInModal, detailModal && detailModal.propIdx]);
 
                 const cardProps = Array.isArray(player.props) ? player.props : [];
@@ -8852,7 +9074,9 @@
                                         <div className="defense-source-note">
                                             Overall PPG: {player.opponentDefense.dataSource ? `🟢 Live — ${player.opponentDefense.dataSource}` : '🟡 Sample data'}.{' '}
                                             {player.opponentDefense.isRealByPosition
-                                                ? 'Position splits below are computed from real box scores by your own backend — not an estimate.'
+                                                ? (/ESPN box scores/.test(player.opponentDefense.dataSource || '')
+                                                    ? 'Position splits are tallied live from the opponent’s recent box scores (ESPN’s G / F / C tagging). League rank is vs an approximate positional baseline.'
+                                                    : 'Position splits below are computed from real box scores by your own backend — not an estimate.')
                                                 : 'Position splits below are a modeled estimate — no free source (NBA.com, WNBA.com, or ESPN) publishes defense allowed by position directly. Connect your own backend (Data Sources settings) for real computed numbers.'}
                                         </div>
 
