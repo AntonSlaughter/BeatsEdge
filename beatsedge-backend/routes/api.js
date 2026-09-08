@@ -267,4 +267,31 @@ router.get('/propline/*', async (req, res) => {
   }
 });
 
+// ParlayAPI passthrough — parlay-api.com also sends no CORS headers. Same
+// thin, read-only, GET-only forwarder as PropLine. The caller passes its
+// own ParlayAPI key as the `apiKey` query param (parlay-api.com accepts
+// it as a TOA-compatible alternative to the X-API-Key header). No key
+// stored here.
+//
+//   GET /api/parlayapi/v1/sports/baseball_mlb/props?apiKey=...&bookmakers=prizepicks,underdog
+//   GET /api/parlayapi/v1/sports?apiKey=...
+//
+router.get('/parlayapi/*', async (req, res) => {
+  const upstreamPath = req.params[0];
+  if (!upstreamPath || upstreamPath.includes('..')) {
+    return res.status(400).json({ error: 'bad path' });
+  }
+  const qs = new URLSearchParams(req.query).toString();
+  const url = `https://parlay-api.com/${upstreamPath}${qs ? '?' + qs : ''}`;
+  try {
+    const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
+    const body = await upstream.text();
+    res.status(upstream.status)
+      .type(upstream.headers.get('content-type') || 'application/json')
+      .send(body);
+  } catch (err) {
+    res.status(502).json({ error: 'ParlayAPI unreachable: ' + err.message });
+  }
+});
+
 module.exports = router;

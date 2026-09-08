@@ -3334,9 +3334,44 @@
         // Which PropLine bookmaker key each platform tab maps to.
         const PLATFORM_BOOK = {
             prizepicks: 'prizepicks', underdog: 'underdog', sleeper: 'sleeper',
+            parlayplay: 'parlayplay', betr: 'betr', pick6: 'pick6',
             fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm'
         };
-        const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper']);
+        const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper', 'parlayplay', 'betr', 'pick6']);
+
+        // ── ParlayAPI (parlay-api.com) — optional SECOND DFS line source ─────
+        // Fills the DFS books PropLine is thin on (Sleeper) and adds
+        // ParlayPlay / Betr / Pick6. Merged as gap-fill only — PropLine stays
+        // primary where both have a line. Rows carry no player_id → name join.
+        const PARLAY_DFS_BOOKS = 'prizepicks,underdog,sleeper,parlayplay,betr,pick6';
+        // ParlayAPI market_key → BeatsEdge statKey. Only the clean, gradeable
+        // ones; its DFS-oddity markets ("halves with 25+ rec yds") are skipped.
+        const PARLAY_MLB_MKT = {
+            player_hits: 'hits', player_total_bases: 'totalBases', player_home_runs: 'homeRuns',
+            player_rbis: 'rbis', player_runs: 'runs', player_singles: 'singles', player_doubles: 'doubles',
+            player_triples: 'triples', player_stolen_bases: 'stolenBases',
+            player_hits_runs_rbis: 'hitsRunsRbis', player_hits__runs__rbis: 'hitsRunsRbis',
+            player_walks: 'batterWalks', player_batter_walks: 'batterWalks', player_bat_walks: 'batterWalks',
+            player_hitter_strikeouts: 'batterStrikeouts',
+            player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts',
+            player_earned_runs: 'earnedRuns', player_hits_allowed: 'hitsAllowed', player_pitching_outs: 'pitcherOuts'
+        };
+        const PARLAY_FB_MKT = {
+            player_pass_yds: 'passYds', player_passing_yards: 'passYds', player_pass_yards: 'passYds',
+            player_pass_tds: 'passTds', player_passing_touchdowns: 'passTds',
+            player_pass_attempts: 'passAttempts', player_passing_attempts: 'passAttempts',
+            player_pass_completions: 'passCompletions', player_completions: 'passCompletions',
+            player_interceptions: 'interceptions',
+            player_rush_yds: 'rushYds', player_rushing_yards: 'rushYds', player_rush_yards: 'rushYds',
+            player_rush_attempts: 'rushAttempts', player_rushing_attempts: 'rushAttempts',
+            player_rush_tds: 'rushTds', player_longest_rush: 'longRush',
+            player_receiving_yards: 'recYds', player_rec_yds: 'recYds',
+            player_receptions: 'receptions', player_rec_tds: 'recTds', player_receiving_tds: 'recTds',
+            player_longest_reception: 'longRec', player_longest_rec: 'longRec',
+            'player_rush+rec_yds': 'rushRecYds', player_rushing_and_receiving_yards: 'rushRecYds',
+            'player_pass+rush_yds': 'passRushYds', player_pass_rush_yds: 'passRushYds',
+            player_kicking_points: 'kickingPts', player_field_goal_made: 'fgMade', player_field_goals_made: 'fgMade'
+        };
 
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
         // the report is (that's the edge — act before the line moves), and who
@@ -3952,6 +3987,17 @@
             const [proplineKeyInput, setProplineKeyInput] = useState(proplineKey);
             const [proplineError, setProplineError] = useState(null);
             const [propLineSource, setPropLineSource] = useState('checking'); // 'live' | 'sample' | 'checking'
+            const [parlayApiKey, setParlayApiKey] = useState(() => {
+                try { return localStorage.getItem('beatsedge_parlayapi_key') || ''; } catch (e) { return ''; }
+            });
+            const [parlayApiKeyInput, setParlayApiKeyInput] = useState(parlayApiKey);
+            const [parlaySource, setParlaySource] = useState('off'); // 'off' | 'live' | 'error'
+            const [parlayCount, setParlayCount] = useState(0);
+            const saveParlayApiKey = (key) => {
+                const cleaned = key.trim();
+                setParlayApiKey(cleaned);
+                try { localStorage.setItem('beatsedge_parlayapi_key', cleaned); } catch (e) { }
+            };
 
             const saveBackendUrl = (url) => {
                 const cleaned = url.trim().replace(/\/$/, ''); // strip trailing slash
@@ -3986,6 +4032,9 @@
                 { id: 'prizepicks', name: 'PrizePicks' },
                 { id: 'underdog', name: 'Underdog' },
                 { id: 'sleeper', name: 'Sleeper' },
+                { id: 'parlayplay', name: 'ParlayPlay', srcKey: 'parlayApiKey' },
+                { id: 'betr', name: 'Betr', srcKey: 'parlayApiKey' },
+                { id: 'pick6', name: 'Pick6', srcKey: 'parlayApiKey' },
                 { id: 'fanduel', name: 'FanDuel' },
                 { id: 'draftkings', name: 'DraftKings' },
                 { id: 'betmgm', name: 'BetMGM' }
@@ -4032,7 +4081,7 @@
                     console.error('Error in fetchData:', error);
                     if (loadSeqRef.current === mySeq) setLoading(false);
                 });
-            }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey]);
+            }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey, parlayApiKey]);
 
             // Keep the cache warm with whatever's currently loaded — but ONLY
             // under the key for the sport these players actually belong to.
@@ -5280,7 +5329,7 @@
                     const multi = sorted.length > 1;
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
                     sorted.forEach(e => pushLine(k, def, e, {
-                        lineSource: `PropLine · ${book}`, book, move: e.move, setAt: e.setAt,
+                        lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${book}`, book, move: e.move, setAt: e.setAt,
                         altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
                     }));
                 });
@@ -5582,7 +5631,77 @@
             // ============================================================
             // Sharp sportsbooks first, then the DFS apps this app is themed
             // around. First book in this list that has a line for a player wins.
-            const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'bovada'];
+            const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'parlayplay', 'betr', 'pick6', 'bovada'];
+
+            // ── ParlayAPI: fetch DFS props for one sport, shaped as
+            //   { normName: { statKey: { book: [ {line,over,under,juice,setAt,ppType,_src} ] } } }
+            // Returns null when disabled / unreachable. Gap-fill only — the
+            // caller adds a book's array ONLY where it doesn't already have one.
+            const fetchParlayProps = async (parlaySportKey, mktMap) => {
+                if (!parlayApiKey || !backendUrl) return null;
+                let rows;
+                try {
+                    const url = `${backendUrl}/api/parlayapi/v1/sports/${parlaySportKey}/props`
+                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${PARLAY_DFS_BOOKS}&limit=1000`;
+                    const r = await fetch(url);
+                    if (!r.ok) throw new Error('ParlayAPI HTTP ' + r.status);
+                    rows = await r.json();
+                } catch (e) {
+                    console.warn('ParlayAPI fetch failed:', e.message);
+                    setParlaySource('error');
+                    return null;
+                }
+                if (!Array.isArray(rows)) { setParlaySource('error'); return null; }
+                const byNorm = {};
+                let n = 0;
+                rows.forEach(row => {
+                    const sk = mktMap[row.market_key];
+                    if (!sk) return;
+                    const nn = nflNormName(row.player);
+                    if (!nn || row.line == null) return;
+                    const book = row.bookmaker;
+                    if (!DFS_PLATFORMS.has(book)) return;
+                    const ppType = /demon/i.test(row.odds_type || row.projection_type || '') ? 'demon'
+                        : /goblin/i.test(row.odds_type || row.projection_type || '') ? 'goblin'
+                            : (row.is_dfs_flat_payout ? 'standard' : null);
+                    const t2 = byNorm[nn] || (byNorm[nn] = {});
+                    const t3 = t2[sk] || (t2[sk] = {});
+                    const arr = t3[book] || (t3[book] = []);
+                    const kk = ppType ? `${row.line}|${ppType}` : `${row.line}`;
+                    if (arr.some(e => e._kk === kk)) return;
+                    const o = row.over_price, u = row.under_price;
+                    arr.push({
+                        _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
+                        juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
+                        setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi'
+                    });
+                    n++;
+                });
+                setParlaySource('live');
+                return { byNorm, n };
+            };
+            // Merge ParlayAPI's byNorm into a PropLine target map, keyed by
+            // whatever the caller uses (pid or normName). `keyFor(normName)`
+            // returns the target key (or null to skip). Gap-fill: only sets a
+            // [statKey][book] array when the target has none there.
+            const mergeParlay = (target, parlay, keyFor) => {
+                if (!parlay || !parlay.byNorm) return 0;
+                let added = 0;
+                Object.entries(parlay.byNorm).forEach(([nn, byStat]) => {
+                    const key = keyFor(nn);
+                    if (key == null) return;
+                    const tByStat = target[key] || (target[key] = {});
+                    Object.entries(byStat).forEach(([sk, byBook]) => {
+                        const tByBook = tByStat[sk] || (tByStat[sk] = {});
+                        Object.entries(byBook).forEach(([book, arr]) => {
+                            if (tByBook[book] && tByBook[book].length) return; // PropLine wins
+                            tByBook[book] = arr.map(e => ({ ...e, primary: e.ppType === 'standard' }));
+                            added += arr.length;
+                        });
+                    });
+                });
+                return added;
+            };
 
             const fetchMlbPropLines = async (players, isStale) => {
                 // isStale() → the user switched sport/date mid-flight; skip every
@@ -5695,6 +5814,15 @@
                         });
                     } catch (e) { /* this game keeps its sample props */ }
                 }));
+
+                // ---- ParlayAPI gap-fill (optional 2nd DFS source) -----------
+                if (parlayApiKey) {
+                    const slateNorm = {};
+                    players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
+                    const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT);
+                    const added = mergeParlay(allLinesByPid, pa, nn => slateNorm[nn] || null);
+                    setParlayCount(added);
+                } else { setParlaySource('off'); }
 
                 // ---- Consolidate lines per (pid, statKey) --------------------
                 // DFS books: PropLine tags every line standard/goblin/demon, so
@@ -6051,7 +6179,7 @@
                     const multi = sorted.length > 1;
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
                     sorted.forEach(e => pushLine(k, def, e, {
-                        lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `PropLine · ${useBook}`,
+                        lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                         book: useBook, crossBook, setAt: e.setAt, move: e.move,
                         altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
                     }));
@@ -6241,9 +6369,14 @@
                     } catch (e) { /* one game keeps nothing */ }
                 }));
                 if (gone()) return [];
-                nflConsolidate(linesByName);
 
                 const bySlot = nflCache.current.byNorm || {};
+                if (parlayApiKey) {
+                    const pa = await fetchParlayProps('americanfootball_nfl', PARLAY_FB_MKT);
+                    setParlayCount(mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null));
+                } else { setParlaySource('off'); }
+                nflConsolidate(linesByName);
+
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
                 if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('PropLine returned NFL lines but none matched the roster scan (name join).'); return []; }
 
@@ -6524,10 +6657,15 @@
                     } catch (e) { }
                 }));
                 if (gone()) return [];
-                nflConsolidate(linesById);
 
                 const byId = cfbCache.current.byId || {};
                 const byNorm = cfbCache.current.byNorm || {};
+                if (parlayApiKey) {
+                    const pa = await fetchParlayProps('americanfootball_ncaaf', PARLAY_FB_MKT);
+                    setParlayCount(mergeParlay(linesById, pa, nn => (byNorm[nn] && byNorm[nn].id) || null));
+                } else { setParlaySource('off'); }
+                nflConsolidate(linesById);
+
                 const resolveSlot = (pid) => {
                     if (byId[pid]) return byId[pid];
                     if (pid.startsWith('nm:')) return byNorm[pid.slice(3)] || null;
@@ -8266,6 +8404,35 @@
 
                                 <div className="settings-source-row">
                                     <div className="settings-source-name">
+                                        <span>ParlayAPI (2nd DFS source — optional)</span>
+                                        <span className={`source-pill ${parlaySource === 'live' ? 'live' : (parlaySource === 'error' ? 'sample' : 'checking')}`}>
+                                            {parlaySource === 'live' ? `🟢 +${parlayCount}` : (parlaySource === 'error' ? '🟡 ERROR' : (parlayApiKey ? '⏳ CHECKING' : '⚪ OFF'))}
+                                        </span>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        className="settings-input"
+                                        placeholder="Paste your ParlayAPI key (parlay-api.com)"
+                                        value={parlayApiKeyInput}
+                                        onChange={(e) => setParlayApiKeyInput(e.target.value)}
+                                    />
+                                    <div className="settings-note">
+                                        Optional. Fills DFS books PropLine is thin on (Sleeper) and adds
+                                        <strong> ParlayPlay / Betr / Pick6</strong> for MLB, NFL &amp; CFB. Merged as
+                                        gap-fill — PropLine stays primary where both have a line. Also proxied
+                                        through your backend. Free tier is ~330 prop calls/month (3 credits each),
+                                        so use it as a supplement, not the main feed. No player IDs → matched by name.
+                                    </div>
+                                    <button
+                                        className="settings-save-btn"
+                                        onClick={() => { saveParlayApiKey(parlayApiKeyInput); setShowSettings(false); }}
+                                    >
+                                        Save & Refresh
+                                    </button>
+                                </div>
+
+                                <div className="settings-source-row">
+                                    <div className="settings-source-name">
                                         <span>BallDontLie (NBA stats)</span>
                                         <span className={`source-pill ${statsDataSource}`}>
                                             {statsDataSource === 'live' ? '🟢 LIVE' : (statsDataSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')}
@@ -8509,7 +8676,7 @@
                             </div>
                             <button
                                 className="settings-btn"
-                                onClick={() => { setKeyInput(balldontlieKey); setBackendUrlInput(backendUrl); setProplineKeyInput(proplineKey); setShowSettings(true); }}
+                                onClick={() => { setKeyInput(balldontlieKey); setBackendUrlInput(backendUrl); setProplineKeyInput(proplineKey); setParlayApiKeyInput(parlayApiKey); setShowSettings(true); }}
                                 title="Data source settings"
                             >
                                 ⚙️ Data Sources
@@ -8529,11 +8696,12 @@
                     {currentView === 'browse' && (
                     <div className="platform-tabs">
                         <div className="platform-tabs-inner">
-                            {platforms.map(platform => (
+                            {platforms.filter(p => !p.srcKey || parlayApiKey).map(platform => (
                                 <button
                                     key={platform.id}
                                     className={`platform-tab ${selectedPlatform === platform.id ? 'active' : ''}`}
                                     onClick={() => setSelectedPlatform(platform.id)}
+                                    title={platform.srcKey ? 'DFS lines via ParlayAPI — coverage varies by sport/day' : ''}
                                 >
                                     {platform.name}
                                 </button>
@@ -8580,6 +8748,11 @@
                             ) : (
                                 <span className="source-pill sample">
                                     🟡 SAMPLE — Prop Lines (no free source publishes these)
+                                </span>
+                            )}
+                            {parlayApiKey && (selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf') && (
+                                <span className={`source-pill ${parlaySource === 'live' ? 'live' : (parlaySource === 'error' ? 'sample' : 'checking')}`}>
+                                    {parlaySource === 'live' ? `🟢 +ParlayAPI (${parlayCount} DFS lines)` : (parlaySource === 'error' ? '🟡 ParlayAPI error' : '⏳ ParlayAPI')}
                                 </span>
                             )}
                             <LiveTimestamp ts={dataUpdatedAt} className="data-source-ts" />
@@ -8708,11 +8881,14 @@
                                 </div>
                                 {browsePlayers.length === 0 ? (
                                     <div className="loading" style={{ padding: '2.5rem' }}>
-                                        {isPro
-                                            ? <>No players{statFilter !== 'all' ? ` with a ${statFilter} prop` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}.{' '}
-                                                {statFilter !== 'all' && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setStatFilter('all')}>Show all categories</span>}
-                                                {playerSearch && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPlayerSearch('')}> · Clear search</span>}</>
-                                            : 'No research picks for this sport yet — check back when the slate loads.'}
+                                        {!isPro
+                                            ? 'No research picks for this sport yet — check back when the slate loads.'
+                                            : (platforms.find(p => p.id === selectedPlatform) || {}).srcKey
+                                                ? <>{(platforms.find(p => p.id === selectedPlatform) || {}).name} hasn't posted {SPORT_LABELS[selectedSport]} lines for this slate (via ParlayAPI). Coverage varies by book, sport and day — try {' '}
+                                                    <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setSelectedPlatform('prizepicks')}>PrizePicks</span>.</>
+                                                : <>No players{statFilter !== 'all' ? ` with a ${statFilter} prop` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}.{' '}
+                                                    {statFilter !== 'all' && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setStatFilter('all')}>Show all categories</span>}
+                                                    {playerSearch && <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPlayerSearch('')}> · Clear search</span>}</>}
                                     </div>
                                 ) : (
                                     <div className="players-grid">
