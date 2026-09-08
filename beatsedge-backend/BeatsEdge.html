@@ -1883,6 +1883,77 @@
             color: var(--danger-red);
         }
 
+        /* Probability layer — additive block under the projection box.
+           Model probability + market edge + implied price. */
+        .prob-box {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            background: var(--bg-secondary);
+            padding: 1.1rem 1.25rem;
+            border-radius: 10px;
+            margin-top: 0.85rem;
+        }
+        .prob-box .projection-value { font-size: 1.4rem; }
+        .prob-box .projection-value.edge-neutral { color: var(--text-muted); }
+
+        .prob-breakdown {
+            margin-top: 0.85rem;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .prob-breakdown > summary {
+            cursor: pointer;
+            padding: 0.7rem 0.95rem;
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            list-style: none;
+            background: var(--bg-secondary);
+        }
+        .prob-breakdown > summary::-webkit-details-marker { display: none; }
+        .prob-breakdown > summary::before { content: '▸ '; color: var(--text-muted); }
+        .prob-breakdown[open] > summary::before { content: '▾ '; }
+        .prob-steps { padding: 0.4rem 0.95rem 0.9rem; }
+        .prob-step {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.75rem;
+            padding: 0.4rem 0;
+            border-bottom: 1px dashed var(--border-color);
+            font-size: 0.8rem;
+        }
+        .prob-step:last-child { border-bottom: none; }
+        .prob-step.subtotal { font-weight: 700; color: var(--text-primary); }
+        .prob-step.final { color: var(--accent-red); }
+        .prob-step-label { color: var(--text-secondary); flex: 1; }
+        .prob-step.subtotal .prob-step-label { color: inherit; }
+        .prob-step-detail { display: block; color: var(--text-muted); font-weight: 400; font-size: 0.72rem; margin-top: 0.1rem; }
+        .prob-step-value { flex: 0 0 auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .prob-step-value.up { color: var(--success-green); }
+        .prob-step-value.down { color: var(--danger-red); }
+        .prob-disclaimer {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.6rem;
+            line-height: 1.5;
+        }
+        /* per-factor probability nudge chip in the factor list */
+        .factor-prob-delta {
+            flex: 0 0 auto;
+            font-size: 0.78rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            padding: 0.15rem 0.45rem;
+            border-radius: 6px;
+            background: var(--bg-primary);
+        }
+        .factor-prob-delta.up { color: var(--success-green); }
+        .factor-prob-delta.down { color: var(--danger-red); }
+        .factor-prob-delta.flat { color: var(--text-muted); }
+
         .prop-pill-dots {
             display: flex;
             gap: 3px;
@@ -2272,6 +2343,43 @@
             return direction === 'over' ? isWeakDefense : !isWeakDefense;
         }
 
+        // ── Probability helpers ─────────────────────────────────────────────
+        // Standard-normal CDF (Abramowitz & Stegun 26.2.17). Turns a
+        // projection-vs-line "z" (how many game-to-game swings the projection
+        // sits past the line) into P(the stat clears the line).
+        function normalCdf(z) {
+            const t = 1 / (1 + 0.2316419 * Math.abs(z));
+            const d = 0.3989422804014327 * Math.exp(-z * z / 2);
+            const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+            return z >= 0 ? 1 - p : p;
+        }
+        // American odds → implied probability (INCLUDES the book's vig).
+        function impliedFromAmerican(odds) {
+            if (odds == null || !isFinite(odds)) return null;
+            return odds >= 0 ? 100 / (odds + 100) : (-odds) / ((-odds) + 100);
+        }
+        // Game-to-game spread of a stat, used as the SD of the projection
+        // distribution. Takes the MORE conservative (wider) of two estimates:
+        //  - the player's own high/low range, read as ~3 SD (an observed range
+        //    from ~15-20 games understates the true spread, so /3 not /4);
+        //  - a stat-family coefficient of variation (rare events swing hardest
+        //    relative to their mean, volume stats least).
+        // A wider SD keeps the model from claiming near-certainty off a small,
+        // lucky sample — deliberately erring toward humility.
+        function projStdDev(mean, statKey, s) {
+            const m = Math.abs(mean) || 0;
+            const k = String(statKey || '').toLowerCase();
+            let cv = 0.60;
+            if (/home.?run|(^|_)hr($|_)|anytime|first.?td|(^|_)td($|_)|goal|steal|block|interception|(^|_)sack/.test(k)) cv = 0.95;
+            else if (/yard|yds|fantasy|(^|_)pts($|_)|points|pra|save|total.?bases|rush|recv|receiving|passing/.test(k)) cv = 0.45;
+            let sd = Math.max(m * cv, 1);
+            if (s && s.recent && Array.isArray(s.recent.range) && s.recent.range.length === 2) {
+                const lo = s.recent.range[0], hi = s.recent.range[1];
+                if (isFinite(lo) && isFinite(hi) && hi > lo) sd = Math.max(sd, (hi - lo) / 3, m * 0.30);
+            }
+            return sd;
+        }
+
         // Per-(player, prop) result cache. React reuses the same player/prop
         // objects between renders until the underlying data changes (new slate,
         // detail load, book switch all create fresh objects), so identity keys
@@ -2435,7 +2543,9 @@
                 }
                 if (s.season && typeof s.season.hitRate === 'number' && (s.season.games || 0) >= 4) {
                     const hr = s.season.hitRate;
-                    const hrSupports = direction === 'over' ? hr >= 50 : hr <= 50;
+                    // strict either side so an exactly-50 hit rate supports
+                    // neither direction (keeps over/under probabilities complementary).
+                    const hrSupports = direction === 'over' ? hr > 50 : hr < 50;
                     factors.push({
                         key: 'hitrate',
                         name: 'Clears this line',
@@ -2613,6 +2723,131 @@
             // an NFL A; otherwise the best it earns is a B.
             if (sport === 'nfl' && grade === 'A' && totalFactors < 4) grade = 'B';
 
+            // ---- Model probability + betting edge --------------------------
+            // P(this side hits) — a calibrated ESTIMATE, not a lock. Three
+            // transparent stages, each captured in `probSteps` for the modal's
+            // "how this was calculated" breakdown:
+            //   1. Distribution — how far the model projection sits past the
+            //      line, measured in this stat's own game-to-game swing; a
+            //      normal CDF turns that into a base probability.
+            //   2. History — blend toward how often the player has ACTUALLY
+            //      landed on this side (season, then last-10), weighted by
+            //      sample size. The projection is the anchor; history is a prior.
+            //   3. Factors — the matchup / context factors that AREN'T already
+            //      inside the projection nudge it a little, capped so they
+            //      modulate rather than dominate.
+            const probSteps = [];
+            const projSd = projStdDev(projection, prop.statKey, s);
+            const zOver = projSd > 0 ? (projection - line) / projSd : 0;
+            const zPick = direction === 'over' ? zOver : -zOver;
+            const pDistRaw = Math.max(0.02, Math.min(0.98, normalCdf(zPick)));
+            // Regression to the mean. Player projections are noisy and the
+            // model runs a little hot, so pull the raw distribution estimate
+            // toward a coin flip: harder when the game log is short. This is
+            // what keeps a lucky 12-game hot streak from reading as "88%".
+            const shrink = Math.min(0.80, 0.45 + Math.min(sampleGames, 40) / 40 * 0.35);
+            const pDist = 0.5 + (pDistRaw - 0.5) * shrink;
+            probSteps.push({
+                label: 'Base rate from the projection',
+                p: pDist,
+                detail: `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - shrink) * 100)}% toward 50% for regression (${sampleGames} game sample)`
+            });
+
+            // historical hit rates are stored as "% over" — flip for an under
+            const dirRate = (hitRate) => hitRate == null ? null : (direction === 'over' ? hitRate / 100 : 1 - hitRate / 100);
+            const priors = [];
+            if (s.season && typeof s.season.hitRate === 'number' && (s.season.games || 0) >= 5) {
+                priors.push({ p: dirRate(s.season.hitRate), w: Math.min(0.30, (s.season.games / 100) * 0.30), games: s.season.games, name: `season hit rate` });
+            }
+            if (s.last10 && typeof s.last10.hitRate === 'number' && (s.last10.games || 0) >= 5) {
+                priors.push({ p: dirRate(s.last10.hitRate), w: 0.15, games: s.last10.games, name: `last-10 hit rate` });
+            }
+            const wHist = priors.reduce((a, x) => a + x.w, 0);
+            let pBlend = pDist * (1 - wHist) + priors.reduce((a, x) => a + x.p * x.w, 0);
+            priors.forEach(pr => probSteps.push({
+                label: `Blend in ${pr.name}`,
+                p: pr.p, weight: pr.w,
+                detail: `hit this side in ${Math.round(pr.p * 100)}% of ${pr.games} games — weighted ${Math.round(pr.w * 100)}%`
+            }));
+            if (priors.length) probSteps.push({ label: 'After history blend', p: pBlend, subtotal: true });
+
+            // per-factor nudges — skip the two already inside `projection`
+            const FACTOR_STEP = 0.02, FACTOR_CAP = 0.08;
+            let factorAdjRaw = 0;
+            factors.forEach(f => {
+                if (f.key === 'recent' || f.key === 'season') { f.probDelta = 0; f.inProjection = true; return; }
+                f.probDelta = (f.supports ? 1 : -1) * FACTOR_STEP;
+                factorAdjRaw += f.probDelta;
+            });
+            let factorAdj = Math.max(-FACTOR_CAP, Math.min(FACTOR_CAP, factorAdjRaw));
+            if (factorAdjRaw !== 0 && factorAdj !== factorAdjRaw) {
+                const scale = factorAdj / factorAdjRaw;
+                factors.forEach(f => { if (f.probDelta) f.probDelta = Math.round(f.probDelta * scale * 1000) / 1000; });
+            }
+            const pAdj = pBlend + factorAdj;
+            if (Math.abs(factorAdj) > 0.0001) {
+                probSteps.push({
+                    label: 'Matchup / context factor adjustment',
+                    delta: factorAdj,
+                    detail: `${factors.filter(f => !f.inProjection && f.supports).length} support, ${factors.filter(f => !f.inProjection && !f.supports).length} against (capped at ±${Math.round(FACTOR_CAP * 100)} pts)`
+                });
+            }
+
+            // clamp — a model estimate is never a certainty. 78% is about as
+            // confident as a single-game prop model should ever sound.
+            const PROB_FLOOR = 0.22, PROB_CEIL = 0.78;
+            const modelProb = Math.max(PROB_FLOOR, Math.min(PROB_CEIL, pAdj));
+            probSteps.push({
+                label: modelProb === pAdj ? 'Model probability' : `Model probability (held inside the ${Math.round(PROB_FLOOR * 100)}–${Math.round(PROB_CEIL * 100)}% band — no estimate is a lock)`,
+                p: modelProb, subtotal: true, final: true
+            });
+
+            // implied probability from the posted price, de-vigged when both
+            // sides are priced. DFS pick'em (+100/+100, or no price) → 50%.
+            const impOver = impliedFromAmerican(prop.odds);
+            const impUnder = impliedFromAmerican(prop.oppOdds);
+            let impliedProb = null, vig = 0;
+            if (impOver != null && impUnder != null && impOver + impUnder > 0) {
+                vig = impOver + impUnder - 1;
+                impliedProb = (direction === 'over' ? impOver : impUnder) / (impOver + impUnder);
+            } else if (direction === 'over' && impOver != null) impliedProb = impOver;
+            else if (direction === 'under' && impUnder != null) impliedProb = impUnder;
+            const hasRealPrice = !!prop.lineSource && prop.lineSource !== 'backtest' && (impOver != null || impUnder != null);
+            if (impliedProb == null) impliedProb = 0.5; // DFS pick'em / unpriced baseline
+            const edgePct = Math.round((modelProb - impliedProb) * 1000) / 10;
+
+            // Keep the letter honest against a REAL market price: an A/B claims
+            // a genuine edge over the book, so if the model doesn't actually
+            // beat the (de-vigged) price it's a C at best. Same spirit as the
+            // RED MATCHUP / thinData / crossBook caps above.
+            if (hasRealPrice && (grade === 'A' || grade === 'B') && modelProb <= impliedProb) grade = 'C';
+            // The letter and the probability must never openly contradict:
+            //  - model has this side below a coin flip → not an A/B.
+            //  - model actively dislikes this side → D, whatever the raw
+            //    factor/edge score said (this catches a sample-line pick whose
+            //    projection beats the player's own average but still misses the
+            //    posted number).
+            // Skipped in backtest mode, where grade and probability are already
+            // driven by the same signal (nothing to reconcile) and the
+            // calibration must stay stable.
+            if (prop.lineSource !== 'backtest') {
+                if ((grade === 'A' || grade === 'B') && modelProb < 0.50) grade = 'C';
+                if (grade !== 'D' && modelProb < 0.44) grade = 'D';
+                // ...and the reverse: don't call it a D if the model clearly
+                // likes the side (keeps the letter from disagreeing with a
+                // 58%+ probability). C is as high as this bump goes — a true
+                // A/B still has to earn it through the factor + edge score.
+                if (grade === 'D' && modelProb >= 0.58) grade = 'C';
+            }
+
+            const pickRate = (hr) => (hr == null ? null : (direction === 'over' ? Math.round(hr) : Math.round(100 - hr)));
+            const hitRates = {
+                season: s.season && s.season.games ? { pick: pickRate(s.season.hitRate), over: s.season.hitRate, games: s.season.games } : null,
+                last10: s.last10 && s.last10.games ? { pick: pickRate(s.last10.hitRate), over: s.last10.hitRate, games: s.last10.games } : null,
+                last5: s.last5 && s.last5.games ? { pick: pickRate(s.last5.hitRate), over: s.last5.hitRate, games: s.last5.games } : null,
+                vsOpp: s.vsOpp && s.vsOpp.games ? { pick: pickRate(s.vsOpp.hitRate), over: s.vsOpp.hitRate, games: s.vsOpp.games } : null
+            };
+
             return {
                 factors,
                 greenCount,
@@ -2623,7 +2858,17 @@
                 edge: roundedEdge,
                 matchupLabel,
                 grade,
-                gradeScore: Math.round(gradeScore * 100) / 100
+                gradeScore: Math.round(gradeScore * 100) / 100,
+                // probability layer (all estimates, not guarantees)
+                modelProb,
+                modelProbPct: Math.round(modelProb * 100),
+                impliedProb,
+                impliedProbPct: Math.round(impliedProb * 100),
+                hasRealPrice,
+                vigPct: Math.round(vig * 1000) / 10,
+                edgePct,
+                hitRates,
+                probSteps
             };
         }
 
@@ -3126,7 +3371,7 @@
                                                 <span className="top-pick-why-label">Why:</span>{' '}
                                                 {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}
                                             </div>
-                                            <div className="top-pick-meta">vs {p.player.opponent} · Model: {p.edge.projection} · Edge: {p.edge.edge >= 0 ? '+' : ''}{p.edge.edge}</div>
+                                            <div className="top-pick-meta">Prob: {p.edge.modelProbPct}% · Edge: {p.edge.edgePct >= 0 ? '+' : ''}{p.edge.edgePct}% · Model: {p.edge.projection} vs {p.prop.line} ({p.edge.edge >= 0 ? '+' : ''}{p.edge.edge})</div>
                                             <button
                                                 className="top-pick-details-btn"
                                                 onClick={(e) => { e.stopPropagation(); onOpenPick(p.player, p.propIdx); }}
@@ -6424,6 +6669,9 @@
                                                     )}
                                                 </div>
                                                 <div className={`grade-badge-sm ${GRADE_META[edge.grade].cls}`} style={{ marginTop: '0.35rem' }}>{edge.grade}</div>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem', fontVariantNumeric: 'tabular-nums' }} title="Model probability this side hits — an estimate, not a lock">
+                                                    {edge.modelProbPct}%<span style={{ color: edge.edgePct > 0.5 ? 'var(--success-green)' : edge.edgePct < -0.5 ? 'var(--danger-red)' : 'var(--text-muted)' }}> · {edge.edgePct >= 0 ? '+' : ''}{edge.edgePct}%</span>
+                                                </div>
                                                 <div className="prop-pill-dots">
                                                     {edge.factors.map((f, fIdx) => (
                                                         <span key={fIdx} className={`mini-dot ${f.supports ? 'green' : 'red'}`}></span>
@@ -6539,15 +6787,23 @@
                                                 </div>
 
                                                 <div className="factors-list">
-                                                    {edge.factors.map((f, idx) => (
-                                                        <div key={idx} className={`factor-row ${f.supports ? 'green' : 'red'}`}>
-                                                            <div className="factor-icon">{f.supports ? '🟢' : '🔴'}</div>
-                                                            <div className="factor-info">
-                                                                <div className="factor-name">{f.name}</div>
-                                                                <div className="factor-detail">{f.detail}</div>
+                                                    {edge.factors.map((f, idx) => {
+                                                        const d = f.probDelta || 0;
+                                                        const cls = f.inProjection ? 'flat' : (d > 0 ? 'up' : d < 0 ? 'down' : 'flat');
+                                                        const txt = f.inProjection
+                                                            ? 'in projection'
+                                                            : (d === 0 ? '±0' : `${d > 0 ? '+' : ''}${Math.round(d * 1000) / 10} pts`);
+                                                        return (
+                                                            <div key={idx} className={`factor-row ${f.supports ? 'green' : 'red'}`}>
+                                                                <div className="factor-icon">{f.supports ? '🟢' : '🔴'}</div>
+                                                                <div className="factor-info">
+                                                                    <div className="factor-name">{f.name}</div>
+                                                                    <div className="factor-detail">{f.detail}</div>
+                                                                </div>
+                                                                <div className={`factor-prob-delta ${cls}`} title="How this factor adjusts the model probability">{txt}</div>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </div>
 
                                                 <div className={`matchup-verdict-banner ${verdictClass}`}>
@@ -6560,8 +6816,9 @@
                                                         <div className="grade-badge-caption">Grade</div>
                                                     </div>
                                                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                        {GRADE_META[edge.grade].label}. Blends factor confluence ({edge.confidence}%)
-                                                        with model edge ({edge.edge >= 0 ? '+' : ''}{edge.edge} vs a {activeProp.line} line).
+                                                        {GRADE_META[edge.grade].label}. Model probability <strong>{edge.modelProbPct}%</strong>,
+                                                        blending factor confluence ({edge.confidence}%) with model edge
+                                                        ({edge.edge >= 0 ? '+' : ''}{edge.edge} vs a {activeProp.line} line).
                                                         {(() => {
                                                             const cal = calibrationFor(backtest, player.sport);
                                                             const c = cal && cal[edge.grade];
@@ -6588,6 +6845,64 @@
                                                         </div>
                                                     </div>
                                                 </div>
+
+                                                <div className="prob-box">
+                                                    <div className="projection-item">
+                                                        <div className="projection-label">Model Probability</div>
+                                                        <div className="projection-value" style={{ color: 'var(--accent-red)' }}>{edge.modelProbPct}%</div>
+                                                    </div>
+                                                    <div className="projection-item">
+                                                        <div className="projection-label">{edge.hasRealPrice ? 'Edge vs Price' : 'Edge vs 50%'}</div>
+                                                        <div className={`projection-value ${edge.edgePct > 0.5 ? 'edge-positive' : edge.edgePct < -0.5 ? 'edge-negative' : 'edge-neutral'}`}>
+                                                            {edge.edgePct >= 0 ? '+' : ''}{edge.edgePct}%
+                                                        </div>
+                                                    </div>
+                                                    <div className="projection-item">
+                                                        <div className="projection-label">{edge.hasRealPrice ? 'Implied (book)' : 'Fair (pick’em)'}</div>
+                                                        <div className="projection-value edge-neutral">{edge.impliedProbPct}%{edge.hasRealPrice && edge.vigPct > 0 ? <span style={{ fontSize: '0.7rem', display: 'block', color: 'var(--text-muted)' }}>vig {edge.vigPct}%</span> : null}</div>
+                                                    </div>
+                                                </div>
+
+                                                <details className="prob-breakdown">
+                                                    <summary>How this {edge.modelProbPct}% was calculated</summary>
+                                                    <div className="prob-steps">
+                                                        {edge.probSteps.map((st, i) => {
+                                                            const hasDelta = typeof st.delta === 'number';
+                                                            const val = hasDelta
+                                                                ? `${st.delta >= 0 ? '+' : ''}${Math.round(st.delta * 1000) / 10} pts`
+                                                                : (typeof st.p === 'number' ? `${Math.round(st.p * 100)}%` : '');
+                                                            const vcls = hasDelta ? (st.delta > 0 ? 'up' : st.delta < 0 ? 'down' : '') : '';
+                                                            return (
+                                                                <div key={i} className={`prob-step${st.subtotal ? ' subtotal' : ''}${st.final ? ' final' : ''}`}>
+                                                                    <span className="prob-step-label">
+                                                                        {st.label}
+                                                                        {st.detail ? <span className="prob-step-detail">{st.detail}</span> : null}
+                                                                    </span>
+                                                                    <span className={`prob-step-value ${vcls}`}>{val}</span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                        {(() => {
+                                                            const hr = edge.hitRates || {};
+                                                            const parts = [];
+                                                            if (hr.season && hr.season.pick != null) parts.push(`season ${hr.season.pick}% (${hr.season.games}g)`);
+                                                            if (hr.last10 && hr.last10.pick != null) parts.push(`L10 ${hr.last10.pick}%`);
+                                                            if (hr.last5 && hr.last5.pick != null) parts.push(`L5 ${hr.last5.pick}%`);
+                                                            if (hr.vsOpp && hr.vsOpp.pick != null && hr.vsOpp.games) parts.push(`vs opp ${hr.vsOpp.pick}% (${hr.vsOpp.games}g)`);
+                                                            return parts.length ? (
+                                                                <div className="prob-step">
+                                                                    <span className="prob-step-label">Hit rate on this side (historical, for reference)
+                                                                        <span className="prob-step-detail">{parts.join(' · ')}</span>
+                                                                    </span>
+                                                                    <span className="prob-step-value"></span>
+                                                                </div>
+                                                            ) : null;
+                                                        })()}
+                                                    </div>
+                                                    <div className="prob-disclaimer" style={{ padding: '0 0.95rem 0.9rem' }}>
+                                                        <strong>Model probability is an estimate</strong>, not a guaranteed outcome — it's built from historical game logs and matchup factors, and the real result is still one game. Even an 80% estimate misses about 1 in 5. <strong>Confidence</strong> ({edge.confidence}%) is a different number: it's how many of the independent factors agree on this side, not a probability. A higher probability and a higher confidence both add to the edge, but neither is a lock.
+                                                    </div>
+                                                </details>
 
                                                 <div style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>
                                                     A {verdictClass === 'red' ? 'red' : 'green'} matchup is a signal, not a guarantee — it means available data factors {verdictClass === 'red' ? 'work against' : 'support'} this direction.
