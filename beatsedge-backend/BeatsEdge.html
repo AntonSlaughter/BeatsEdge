@@ -2756,11 +2756,12 @@
             }
             // (NBA/NFL with no posDefense data: factor omitted, same honesty rule.)
 
-            // Football-specific factors (NFL + college), independent of the
-            // season mean: how often the player has cleared this number,
-            // history vs this opponent, and how leaky the opposing defense is.
-            if (sport === 'nfl' || sport === 'ncaaf') {
-                if (player.oppDef && player.oppDef.rank) {
+            // Game-log-driven factors (football + NBA — every one of these has
+            // a real per-game series): how often the player has cleared this
+            // number, history vs this opponent, and (football only) how leaky
+            // the opposing defense is.
+            if (sport === 'nfl' || sport === 'ncaaf' || sport === 'nba') {
+                if ((sport === 'nfl' || sport === 'ncaaf') && player.oppDef && player.oppDef.rank) {
                     const r = player.oppDef.rank;              // 1 = stingiest, 32 = leakiest
                     const leaky = r >= 23, stingy = r <= 10;
                     if (leaky || stingy) {
@@ -2800,7 +2801,7 @@
             // entirely for those sports rather than counting as a free green.
             // NBA/NFL behaviour is unchanged.
             const paceRating = player.paceRating || 'neutral';
-            const paceIsRealInput = !((sport === 'mlb' || sport === 'nhl' || sport === 'nfl' || sport === 'ncaaf') && paceRating === 'neutral');
+            const paceIsRealInput = !((sport === 'mlb' || sport === 'nhl' || sport === 'nfl' || sport === 'ncaaf' || sport === 'nba') && paceRating === 'neutral');
             if (paceIsRealInput) {
                 const paceSupports = direction === 'over' ? paceRating !== 'unfavorable' : paceRating !== 'favorable';
                 factors.push({
@@ -3487,6 +3488,20 @@
             'player_pass+rush_yds': 'passRushYds', player_pass_rush_yds: 'passRushYds',
             player_kicking_points: 'kickingPts', player_field_goal_made: 'fgMade', player_field_goals_made: 'fgMade'
         };
+        const PARLAY_BB_MKT = {
+            player_points: 'points', player_pts: 'points',
+            player_rebounds: 'rebounds', player_reb: 'rebounds', player_total_rebounds: 'rebounds',
+            player_assists: 'assists', player_ast: 'assists',
+            'player_3-pt_made': 'threes', player_threes: 'threes', player_three_pointers_made: 'threes', player_3pt_made: 'threes',
+            player_points_rebounds_assists: 'pra', player_pts_rebs_asts: 'pra', 'player_pts+rebs+asts': 'pra',
+            player_points_rebounds: 'pr', player_pts_rebs: 'pr', 'player_pts+rebs': 'pr',
+            player_points_assists: 'pa', player_pts_asts: 'pa', 'player_pts+asts': 'pa',
+            player_rebounds_assists: 'ra', player_rebs_asts: 'ra', 'player_rebs+asts': 'ra',
+            player_steals: 'steals', player_stl: 'steals',
+            player_blocks: 'blocks', player_blk: 'blocks', player_blocked_shots: 'blocks',
+            player_turnovers: 'turnovers', player_to: 'turnovers',
+            player_blocks_steals: 'blocksSteals', player_steals_blocks: 'blocksSteals', 'player_blks+stls': 'blocksSteals'
+        };
 
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
         // the report is (that's the edge — act before the line moves), and who
@@ -4054,6 +4069,7 @@
             const [mlbSlateSource, setMlbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real MLB full-slate from statsapi.mlb.com
             const [nflSlateSource, setNflSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NFL slate from ESPN + PropLine
             const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real CFB slate from ESPN + PropLine
+            const [nbaSlateSource, setNbaSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NBA slate from ESPN + PropLine
             const [backtest, setBacktest] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_backtest_v1') || 'null'); } catch (e) { return null; }
             });
@@ -4219,7 +4235,7 @@
             useEffect(() => {
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 setPlayersData(prev => {
-                    if (!prev.some(p => (p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines)) return prev;
+                    if (!prev.some(p => (p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba') && p._allLines)) return prev;
                     return prev.map(p => {
                         if (!p._allLines) return p;
                         if (p.sport === 'mlb') {
@@ -4237,6 +4253,17 @@
                             const posKeys = nflPosKeys(p.position).filter(k => p._allLines[k]);
                             const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                             let props = nflBuildProps(posKeys, nextByKey, p._allLines, wantBook, perGameFor);
+                            props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
+                            return {
+                                ...p, props, statsByKey: nextByKey,
+                                stats: props.length ? (nextByKey[props[0].statKey] || p.stats) : p.stats,
+                                _noLiveLines: !props.some(pr => pr.lineSource)
+                            };
+                        }
+                        if (p.sport === 'nba') {
+                            const nextByKey = { ...p.statsByKey };
+                            const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
+                            let props = nbaBuildProps(nextByKey, p._allLines, wantBook, perGameFor);
                             props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
                             return {
                                 ...p, props, statsByKey: nextByKey,
@@ -4325,6 +4352,30 @@
                             console.warn('CFB slate failed:', err.message);
                             if (!stale()) setCfbSlateSource('sample');
                             players = [];
+                        }
+                    } else if (selectedSport === 'nba') {
+                        setMlbSlateSource('checking');
+                        try {
+                            if (!proplineKey || !backendUrl) {
+                                setNbaSlateSource('sample');
+                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real NBA lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                players = generateMockPlayerData('nba');
+                            } else {
+                                const slate = await fetchNbaSlate(selectedDate);
+                                if (!slate.slots.length) {
+                                    if (!stale()) setNbaSlateSource('sample');
+                                    players = generateMockPlayerData('nba');
+                                } else {
+                                    players = await fetchNbaPropLines(slate, stale);
+                                    if (stale()) return;
+                                    setNbaSlateSource(players.length ? 'live' : 'sample');
+                                    if (!players.length) players = generateMockPlayerData('nba');
+                                }
+                            }
+                        } catch (err) {
+                            console.warn('NBA slate failed, falling back to sample:', err.message);
+                            if (!stale()) setNbaSlateSource('sample');
+                            players = generateMockPlayerData('nba');
                         }
                     } else {
                         players = await fetchPlayerProps();
@@ -6894,6 +6945,424 @@
                 }));
             };
 
+            // ═══════════════════════════════════════════════════════════════
+            // NBA — real slate: ESPN keyless for identity / rosters / photos /
+            // game logs, PropLine for real book lines (PrizePicks + FanDuel).
+            // Basketball has its own stat set (own PROP_DEFS / windows / build)
+            // but the DFS-line consolidation (nflConsolidate), the name join
+            // (nflNormName) and the seed-window shape (nflSeedWindows) are
+            // sport-agnostic and reused. The NBA is between seasons for part
+            // of the year — when ESPN's "today" scoreboard is empty the slate
+            // is driven off PropLine's OWN event list (the games that actually
+            // have posted lines) so the page shows the next real slate, not
+            // mock data. PropLine NBA outcomes carry no player_id → join by
+            // name. `?season=` for ESPN NBA gamelogs is the year the season
+            // ends in (2026 = the 2025-26 season).
+            // ═══════════════════════════════════════════════════════════════
+            const NBA_ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+            const NBA_ESPN_COMMON = 'https://site.api.espn.com/apis/common/v3/sports/basketball/nba';
+            const NBA_YR_CUR = MLB_SEASON + 1;   // 2026-27
+            const NBA_YR_PREV = MLB_SEASON;      // 2025-26
+            const nbaCache = React.useRef({ byNorm: {}, teamMeta: {}, games: [] });
+
+            // Static ESPN team directory — the bare `/teams` list endpoint is
+            // not CORS-open (unlike scoreboard / roster / gamelog), and the 30
+            // NBA franchises don't move. `id` is the ESPN team id used for
+            // `/teams/{id}/roster`. Nickname is how we match PropLine's
+            // "DET Pistons" / "POR Trail Blazers" / "LA Lakers" strings (their
+            // abbreviations disagree with ESPN's — PHO≠PHX, WAS≠WSH, UTA≠UTAH).
+            const NBA_TEAMS = [
+                ['1', 'ATL', 'Hawks'], ['2', 'BOS', 'Celtics'], ['17', 'BKN', 'Nets'], ['30', 'CHA', 'Hornets'],
+                ['4', 'CHI', 'Bulls'], ['5', 'CLE', 'Cavaliers'], ['6', 'DAL', 'Mavericks'], ['7', 'DEN', 'Nuggets'],
+                ['8', 'DET', 'Pistons'], ['9', 'GS', 'Warriors'], ['10', 'HOU', 'Rockets'], ['11', 'IND', 'Pacers'],
+                ['12', 'LAC', 'Clippers'], ['13', 'LAL', 'Lakers'], ['29', 'MEM', 'Grizzlies'], ['14', 'MIA', 'Heat'],
+                ['15', 'MIL', 'Bucks'], ['16', 'MIN', 'Timberwolves'], ['3', 'NO', 'Pelicans'], ['18', 'NY', 'Knicks'],
+                ['25', 'OKC', 'Thunder'], ['19', 'ORL', 'Magic'], ['20', 'PHI', '76ers'], ['21', 'PHX', 'Suns'],
+                ['22', 'POR', 'Trail Blazers'], ['23', 'SAC', 'Kings'], ['24', 'SA', 'Spurs'], ['28', 'TOR', 'Raptors'],
+                ['26', 'UTAH', 'Jazz'], ['27', 'WSH', 'Wizards']
+            ];
+            const NBA_NICK_TO_TEAM = {};
+            NBA_TEAMS.forEach(([id, abbr, nick]) => {
+                const t = { id, abbreviation: abbr, displayName: nick };
+                const k = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                NBA_NICK_TO_TEAM[k(nick)] = t;
+                NBA_NICK_TO_TEAM[k(abbr)] = t;
+            });
+            NBA_NICK_TO_TEAM['sixers'] = NBA_NICK_TO_TEAM['76ers'];
+            NBA_NICK_TO_TEAM['blazers'] = NBA_NICK_TO_TEAM['trailblazers'];
+            NBA_NICK_TO_TEAM['wolves'] = NBA_NICK_TO_TEAM['timberwolves'];
+            const nbaResolveTeam = (str) => {
+                const raw = String(str || '');
+                const k = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const noAbbr = raw.replace(/^[A-Za-z]{2,4}\s+/, '');
+                return NBA_NICK_TO_TEAM[k(noAbbr)] || NBA_NICK_TO_TEAM[k(raw)] || NBA_NICK_TO_TEAM[k(raw).replace(/^[a-z]{2,4}/, '')] || null;
+            };
+
+            // The ESPN gamelog row is `names` (camelCase) zipped onto per-game
+            // `stats` — same convention NFL uses. The threes field is a
+            // "made-attempted" string ("3-7") — parseFloat keeps the makes.
+            const NBA_3PM = 'threePointFieldGoalsMade-threePointFieldGoalsAttempted';
+            const nbaPts = r => r.points || 0, nbaReb = r => r.totalRebounds || 0, nbaAst = r => r.assists || 0;
+            const NBA_PROP_DEFS = {
+                points:       { type: 'Points',        market: 'player_points',                  get: nbaPts },
+                rebounds:     { type: 'Rebounds',      market: 'player_rebounds',                get: nbaReb },
+                assists:      { type: 'Assists',       market: 'player_assists',                 get: nbaAst },
+                threes:       { type: '3-PT Made',     market: 'player_threes',                  get: r => r[NBA_3PM] || 0 },
+                pra:          { type: 'Pts+Reb+Ast',   market: 'player_points_rebounds_assists', get: r => nbaPts(r) + nbaReb(r) + nbaAst(r) },
+                pr:           { type: 'Pts+Reb',       market: 'player_points_rebounds',         get: r => nbaPts(r) + nbaReb(r) },
+                pa:           { type: 'Pts+Ast',       market: 'player_points_assists',          get: r => nbaPts(r) + nbaAst(r) },
+                ra:           { type: 'Reb+Ast',       market: 'player_rebounds_assists',        get: r => nbaReb(r) + nbaAst(r) },
+                steals:       { type: 'Steals',        market: 'player_steals',                  get: r => r.steals || 0 },
+                blocks:       { type: 'Blocks',        market: 'player_blocks',                  get: r => r.blocks || 0 },
+                turnovers:    { type: 'Turnovers',     market: 'player_turnovers',               get: r => r.turnovers || 0 },
+                blocksSteals: { type: 'Blocks+Steals', market: 'player_blocks_steals',           get: r => (r.blocks || 0) + (r.steals || 0) }
+            };
+            const NBA_MARKET_TO_KEY = {
+                ...Object.fromEntries(Object.entries(NBA_PROP_DEFS).map(([k, v]) => [v.market, k])),
+                player_three_pointers_made: 'threes', player_threes_made: 'threes', 'player_3pt_made': 'threes', 'player_3-pt_made': 'threes',
+                player_pts_rebs_asts: 'pra', player_pts_rebs: 'pr', player_pts_asts: 'pa', player_rebs_asts: 'ra',
+                player_blocked_shots: 'blocks', player_steals_blocks: 'blocksSteals'
+            };
+            const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals'];
+            const nbaAllKeys = Object.keys(NBA_PROP_DEFS);
+
+            const nbaFetchGamelog = async (id) => {
+                const [cur, prev] = await Promise.all([
+                    nflFetch(`${NBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${NBA_YR_CUR}`).catch(() => null),
+                    nflFetch(`${NBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${NBA_YR_PREV}`).catch(() => null)
+                ]);
+                if (nflEventCount(cur) >= 3) return cur;
+                if (nflEventCount(prev) > 0) return prev;
+                return nflEventCount(cur) > 0 ? cur : null;
+            };
+            const nbaGamelogs = async (ids) => {
+                const map = {};
+                for (const grp of chunk([...new Set(ids)], 20)) {
+                    await Promise.all(grp.map(async id => {
+                        try { const gl = await nbaFetchGamelog(id); map[id] = gl ? nflParseGamelog(gl) : []; }
+                        catch (e) { map[id] = []; }
+                    }));
+                }
+                return map;
+            };
+            // L5 minutes vs the prior 10 — feeds the NBA "Minutes Trend" factor.
+            const nbaMinutesTrend = (glRows) => {
+                const mins = glRows.map(g => (g.row && g.row.minutes) || 0).filter(m => m > 0);
+                if (mins.length < 6) return 0;
+                const a = arr => arr.reduce((s, v) => s + v, 0) / arr.length;
+                const l5 = mins.slice(-5), prior = mins.slice(-15, -5);
+                return prior.length ? Math.round((a(l5) - a(prior)) * 10) / 10 : 0;
+            };
+
+            // Real windows for one player from their parsed game log — same
+            // shape MLB/NFL use, so calculateEdgeScore / PlayerCard read it
+            // unchanged.
+            const nbaComputeWindows = (glRows, lineFor, oppAbbr) => {
+                const statsByKey = {}, gameLogByKey = {};
+                const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
+                nbaAllKeys.forEach(k => {
+                    const getV = NBA_PROP_DEFS[k].get;
+                    const vals = glRows.map(g => getV(g.row) || 0);
+                    const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
+                    const rate = (arr) => arr.length ? Math.round((arr.filter(v => v > line).length / arr.length) * 100) : null;
+                    const lastN = (n) => vals.slice(-n);
+                    const sorted = [...vals].sort((a, b) => a - b);
+                    const oppVals = glRows.filter(g => g.opponent === oppAbbr).map(g => getV(g.row) || 0);
+                    statsByKey[k] = {
+                        last5: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), games: Math.min(5, vals.length) },
+                        last10: { avg: mean(lastN(10)), hitRate: rate(lastN(10)), games: Math.min(10, vals.length) },
+                        last20: { avg: mean(lastN(20)), hitRate: rate(lastN(20)), games: Math.min(20, vals.length) },
+                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length },
+                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length } : { avg: mean(vals), hitRate: rate(vals), games: 0 },
+                        recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                    };
+                    gameLogByKey[k] = glRows.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line }));
+                });
+                return { statsByKey, gameLogByKey };
+            };
+
+            // Build a player's props for ONE book from their consolidated lines.
+            // Mirrors nflBuildProps (goblin/demon = More-only, standard two-way,
+            // sportsbook N+ rung one-way, junk-line guard, alt ladder kept).
+            const nbaBuildProps = (statsByKey, allLines, book, perGameFor) => {
+                const props = [];
+                const seedK = (k, line) => { if (!statsByKey[k]) statsByKey[k] = nflSeedWindows(perGameFor(k, line), line); return statsByKey[k]; };
+                const pushLine = (k, def, e, extraIn) => {
+                    const { _stdLine, ...extra } = extraIn;
+                    const w = seedK(k, e.line);
+                    const oHR = estHitRate(w.season.avg || w.recent.avg || e.line, e.line);
+                    const base = { type: def.type, statKey: k, line: e.line, ...extra };
+                    if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
+                        props.push({ ...base, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
+                        return;
+                    }
+                    const hasO = e.over != null, hasU = e.under != null;
+                    if (hasO && hasU) {
+                        props.push({ ...base, direction: 'over', odds: extra.odds ?? -110, oppOdds: extra.oppOdds ?? -110, hitRate: oHR });
+                        props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? -110, oppOdds: extra.odds ?? -110, hitRate: Math.max(2, 100 - oHR) });
+                        return;
+                    }
+                    const side = hasO ? 'over' : 'under';
+                    props.push({
+                        ...base, direction: side, oneWay: true, ppKind: null,
+                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? -110, oppOdds: null,
+                        hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
+                    });
+                };
+                const bookOrder = [book, ...PROPLINE_BOOK_PRIORITY.filter(b => b !== book)];
+                nbaAllKeys.forEach(k => {
+                    const def = NBA_PROP_DEFS[k];
+                    const byBook = allLines[k] || {};
+                    const useBook = bookOrder.find(b => byBook[b] && byBook[b].length);
+                    if (!useBook) return;
+                    const crossBook = useBook !== book;
+                    const pg = perGameFor(k);
+                    const w = statsByKey[k];
+                    if (w && (w.season.games || 0) >= 4) {
+                        const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
+                        const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
+                        if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
+                    }
+                    let arr = byBook[useBook];
+                    if (crossBook) { const pr = arr.find(e => e.primary) || arr.slice().sort((a, c) => a.juice - c.juice)[0]; arr = pr ? [pr] : []; }
+                    const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
+                    const multi = sorted.length > 1;
+                    const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                    sorted.forEach(e => pushLine(k, def, e, {
+                        lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
+                        book: useBook, crossBook, setAt: e.setAt, move: e.move,
+                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
+                    }));
+                });
+                return props;
+            };
+
+            const fetchNbaSlate = async (date) => {
+                if (!backendUrl || !proplineKey) return { slots: [], games: [] };
+                const plFetch = async (path) => {
+                    const [p, q] = path.replace(/^\//, '').split('?');
+                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
+                    const r = await fetch(url);
+                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
+                    return r.json();
+                };
+                const resolveTeam = nbaResolveTeam;
+
+                let events;
+                try { events = await plFetch('/v1/sports/basketball_nba/events'); } catch (e) { return { slots: [], games: [] }; }
+                const evs = (Array.isArray(events) ? events : []).filter(e => e && e.commence_time)
+                    .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
+                if (!evs.length) return { slots: [], games: [] };
+                // Prefer games on the selected date; if none (offseason / nothing
+                // today) fall back to the earliest 72h cluster with posted lines.
+                const dayLo = Date.parse(String(date) + 'T00:00:00Z');
+                const dayHi = dayLo + 30 * 3600 * 1000;
+                let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
+                if (!window.length) {
+                    const t0 = Date.parse(evs[0].commence_time);
+                    window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
+                }
+                const byPair = {};
+                window.forEach(ev => {
+                    const home = resolveTeam(ev.home_team), away = resolveTeam(ev.away_team);
+                    if (!home || !away || home.id === away.id) return;
+                    const key = [home.id, away.id].sort().join('-');
+                    const ct = Date.parse(ev.commence_time);
+                    if (!byPair[key] || ct < byPair[key].ct) byPair[key] = { evId: ev.id, ct, home, away, iso: ev.commence_time };
+                });
+                const teamMeta = {}, games = [];
+                Object.values(byPair).forEach(g => {
+                    teamMeta[g.home.id] = { abbr: g.home.abbreviation, name: g.home.displayName };
+                    teamMeta[g.away.id] = { abbr: g.away.abbreviation, name: g.away.displayName };
+                    const when = new Date(g.iso);
+                    games.push({
+                        gameId: g.evId, homeId: g.home.id, awayId: g.away.id,
+                        iso: g.iso, kickoffMs: g.ct, state: 'pre', status: 'Scheduled',
+                        gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                    });
+                });
+                if (!games.length) return { slots: [], games: [] };
+
+                const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
+                const rosters = await Promise.all(teamIds.map(async tid => {
+                    try {
+                        const r = await nflFetch(`${NBA_ESPN}/teams/${tid}/roster`);
+                        return { tid, athletes: r.athletes || (r.team && r.team.athletes) || [] };
+                    } catch (e) { return { tid, athletes: [] }; }
+                }));
+
+                const byNorm = {}, slots = [];
+                rosters.forEach(({ tid, athletes }) => {
+                    const g = games.find(x => x.homeId === tid || x.awayId === tid);
+                    if (!g) return;
+                    const isHome = g.homeId === tid;
+                    const oppId = isHome ? g.awayId : g.homeId;
+                    (Array.isArray(athletes) ? athletes : []).forEach(a => {
+                        if (!a || !a.id || !a.fullName) return;
+                        const st = a.status && (a.status.type || a.status.name || a.status);
+                        if (st && /injured-reserve|g-league|suspension/i.test(String(st))) return;
+                        const pos = (a.position && (a.position.abbreviation || a.position.name)) || 'G';
+                        const rec = {
+                            id: String(a.id), name: a.fullName, pos,
+                            headshot: (a.headshot && a.headshot.href) || `https://a.espncdn.com/i/headshots/nba/players/full/${a.id}.png`,
+                            team: (teamMeta[tid] || {}).abbr, teamId: tid,
+                            opponent: (teamMeta[oppId] || {}).abbr, oppTeamId: oppId,
+                            gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
+                        };
+                        byNorm[nflNormName(a.fullName)] = rec;
+                        slots.push(rec);
+                    });
+                });
+                nbaCache.current = { byNorm, teamMeta, games };
+                return { slots, games };
+            };
+
+            const fetchNbaPropLines = async (slate, isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                const { games } = slate;
+                if (gone()) return [];
+                if (!backendUrl || !proplineKey) { setPropLineSource('sample'); return []; }
+                const plFetch = async (path) => {
+                    const [p, q] = path.replace(/^\//, '').split('?');
+                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
+                    const r = await fetch(url);
+                    if (r.status === 401 || r.status === 403) throw new Error(`PropLine key rejected (HTTP ${r.status})`);
+                    if (r.status === 429) throw new Error('PropLine rate limit hit — try again later');
+                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
+                    return r.json();
+                };
+                // Each slate game already carries its PropLine event id as gameId
+                // (the slate is built from PropLine's own event list).
+                const wantEventIds = [...new Set(games.map(g => g.gameId))];
+                if (!wantEventIds.length) { setPropLineSource('sample'); setProplineError('No NBA games on this slate matched PropLine.'); return []; }
+
+                const markets = [...new Set(Object.values(NBA_PROP_DEFS).map(d => d.market))].join(',');
+                const books = PROPLINE_BOOK_PRIORITY.join(',');
+                const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
+                await Promise.all(wantEventIds.map(async eid => {
+                    try {
+                        const data = await plFetch(`/v1/sports/basketball_nba/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
+                        (data.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => {
+                            const statKey = NBA_MARKET_TO_KEY[m.key];
+                            if (!statKey || m.suspended_at) return;
+                            (m.outcomes || []).forEach(o => {
+                                if (o.price == null || o.suspended_at) return;
+                                const nm = nflNormName(o.description || o.name);
+                                if (!nm) return;
+                                const ppType = o.dfs_odds_type || null;
+                                let line = null, side = null;
+                                if (/^over$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'over'; }
+                                else if (/^under$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'under'; }
+                                else if (!DFS_PLATFORMS.has(bm.key)) { const mm = /^(\d+)\s*\+/.exec(o.name || ''); if (mm) { line = parseInt(mm[1], 10) - 0.5; side = 'over'; } }
+                                if (line == null || side == null) return;
+                                const t2 = (linesByName[nm] || (linesByName[nm] = {}));
+                                const t3 = (t2[statKey] || (t2[statKey] = {}));
+                                const arr = (t3[bm.key] || (t3[bm.key] = []));
+                                const kk = ppType ? `${line}|${ppType}` : `${line}`;
+                                let e = arr.find(x => x._kk === kk);
+                                if (!e) { e = { _kk: kk, line, over: null, under: null, juice: 9999, setAt: null, ppType }; arr.push(e); }
+                                e[side] = o.price;
+                                const jz = Math.abs(o.price || 0); if (jz < e.juice) e.juice = jz;
+                                e.setAt = m.last_update || e.setAt;
+                            });
+                        }));
+                    } catch (e) { /* one game keeps nothing */ }
+                }));
+                if (gone()) return [];
+
+                const bySlot = nbaCache.current.byNorm || {};
+                if (parlayApiKey) {
+                    const pa = await fetchParlayProps('basketball_nba', PARLAY_BB_MKT);
+                    setParlayCount(mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null));
+                } else { setParlaySource('off'); }
+                nflConsolidate(linesByName);
+
+                const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
+                if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('PropLine returned NBA lines but none matched the roster scan (name join).'); return []; }
+
+                const glMap = await nbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
+                const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
+                const SNAP_KEY = 'beatsedge_nba_lines_v1';
+                let snap = {}; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { }
+                const nextSnap = {}, now = Date.now();
+
+                const built = [];
+                matchedNames.forEach(nm => {
+                    const slot = bySlot[nm];
+                    const keys = nbaAllKeys.filter(k => linesByName[nm][k]);
+                    if (!keys.length) return;
+                    const glRows = glMap[slot.id] || [];
+                    const lineFor = {};
+                    Object.keys(linesByName[nm]).forEach(k => {
+                        const arr = (linesByName[nm][k][wantBook]) || [];
+                        const pr = arr.find(e => e.primary) || arr[0];
+                        if (pr) lineFor[k] = pr.line;
+                    });
+                    Object.keys(linesByName[nm]).forEach(k => {
+                        const arr = (linesByName[nm][k][wantBook]) || [];
+                        const pr = arr.find(e => e.primary) || arr[0];
+                        if (!pr) return;
+                        const id = `${slot.id}:${k}:${wantBook}`;
+                        nextSnap[id] = { line: pr.line, ts: now };
+                        const prev = snap[id];
+                        if (prev && typeof prev.line === 'number' && prev.line !== pr.line) {
+                            pr.move = { from: prev.line, to: pr.line, delta: Math.round((pr.line - prev.line) * 10) / 10, sinceTs: prev.ts };
+                        }
+                    });
+                    const { statsByKey, gameLogByKey } = glRows.length
+                        ? nbaComputeWindows(glRows, lineFor, slot.opponent)
+                        : { statsByKey: {}, gameLogByKey: {} };
+                    const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
+                    let props = nbaBuildProps(statsByKey, linesByName[nm], wantBook, perGameFor);
+                    const player = {
+                        id: slot.id, name: slot.name, sport: 'nba', role: 'skill',
+                        position: slot.pos, team: slot.team, opponent: slot.opponent,
+                        teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
+                        gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        minutesTrend: nbaMinutesTrend(glRows),
+                        statsByKey, gameLogByKey, stats: {}, gameLog: [],
+                        _allLines: linesByName[nm], _isNba: true, _detailLoaded: glRows.length > 0,
+                        _seasonPerGame: perGameFor
+                    };
+                    props = sortPropsByEdge(player, props);
+                    if (!props.length) return;
+                    player.props = props;
+                    player.stats = statsByKey[props[0].statKey] || {};
+                    player.gameLog = gameLogByKey[props[0].statKey] || [];
+                    player._noLiveLines = !props.some(pr => pr.lineSource);
+                    built.push(player);
+                });
+                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
+                if (gone()) return [];
+                markFresh();
+                setPropLineSource(built.length ? 'live' : 'sample');
+                setProplineError(built.length ? null : 'PropLine reached but produced no NBA props for this slate.');
+                return built;
+            };
+
+            const fetchNbaPlayerDetail = async (player) => {
+                let glRows;
+                try { const gl = await nbaFetchGamelog(player.id); glRows = gl ? nflParseGamelog(gl) : []; }
+                catch (e) { return; }
+                if (!glRows.length) {
+                    setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nba' ? { ...p, _detailLoaded: true } : p));
+                    return;
+                }
+                setPlayersData(prev => prev.map(p => {
+                    if (p.id !== player.id || p.sport !== 'nba') return p;
+                    const lineFor = {};
+                    (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
+                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent);
+                    return {
+                        ...p, statsByKey, gameLogByKey,
+                        stats: statsByKey[p.props[0].statKey] || p.stats,
+                        gameLog: gameLogByKey[p.props[0].statKey] || [],
+                        minutesTrend: nbaMinutesTrend(glRows),
+                        _detailLoaded: true, statsSource: 'ESPN — full game log (real)'
+                    };
+                }));
+            };
+
             // ── Run the walk-forward backtest over every player on the current
             // slate (their full real game logs), for the current sport.
             const runBacktest = async () => {
@@ -7688,6 +8157,7 @@
                     if (player.sport === 'mlb' && !player._detailLoaded) fetchMlbPlayerDetail(player);
                     if (player.sport === 'nfl' && !player._detailLoaded) fetchNflPlayerDetail(player);
                     if (player.sport === 'ncaaf' && !player._detailLoaded) fetchCfbPlayerDetail(player);
+                    if (player.sport === 'nba' && !player._detailLoaded) fetchNbaPlayerDetail(player);
                 }, [activeInModal, detailModal && detailModal.propIdx]);
 
                 const cardProps = Array.isArray(player.props) ? player.props : [];
@@ -8735,7 +9205,7 @@
             // changes, NOT on every search keystroke or sort toggle.
             const gradedPlayers = React.useMemo(() => {
                 return basePlayers
-                    .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines && p._noLiveLines))
+                    .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba') && p._allLines && p._noLiveLines))
                     .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter)))
                     .map(p => ({
                         p, g: playerBestGrade(p, statFilter),
@@ -8776,10 +9246,10 @@
             const statCats = React.useMemo(() => {
                 const seen = new Set();
                 basePlayers.forEach(p => {
-                    if ((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf') && p._allLines && p._noLiveLines) return;
+                    if ((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba') && p._allLines && p._noLiveLines) return;
                     (Array.isArray(p.props) ? p.props : []).forEach(pr => { if (pr.type) seen.add(pr.type); });
                 });
-                const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : STAT_CAT_ORDER;
+                const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : (selectedSport === 'nba' ? NBA_STAT_CAT_ORDER : STAT_CAT_ORDER);
                 const ordered = order.filter(t => seen.has(t));
                 const extra = [...seen].filter(t => !order.includes(t)).sort();
                 return [...ordered, ...extra];
@@ -8883,13 +9353,18 @@
                                     {cfbSlateSource === 'live' ? '🟢 LIVE' : (cfbSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — CFB Slate (ESPN players/stats + PropLine lines)
                                 </span>
                             )}
+                            {selectedSport === 'nba' && (
+                                <span className={`source-pill ${nbaSlateSource}`}>
+                                    {nbaSlateSource === 'live' ? '🟢 LIVE' : (nbaSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — NBA Slate (ESPN players/stats + PropLine lines)
+                                </span>
+                            )}
                             <span className={`source-pill ${injuryDataSource}`}>
                                 {injuryDataSource === 'live' ? '🟢 LIVE' : (injuryDataSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Injuries
                             </span>
                             <span className={`source-pill ${scoreboardSource}`}>
                                 {scoreboardSource === 'live' ? '🟢 LIVE' : (scoreboardSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Scoreboard
                             </span>
-                            {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf') ? (
+                            {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba') ? (
                                 <span className={`source-pill ${propLineSource === 'live' ? 'live' : (propLineSource === 'sample' ? 'sample' : 'checking')}`}>
                                     {propLineSource === 'live'
                                         ? '🟢 LIVE — Prop Lines (PropLine)'
@@ -8904,7 +9379,7 @@
                                     🟡 SAMPLE — Prop Lines (no free source publishes these)
                                 </span>
                             )}
-                            {parlayApiKey && (selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf') && (
+                            {parlayApiKey && (selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba') && (
                                 <span className={`source-pill ${parlaySource === 'live' ? 'live' : (parlaySource === 'error' ? 'sample' : 'checking')}`}>
                                     {parlaySource === 'live' ? `🟢 +ParlayAPI (${parlayCount} DFS lines)` : (parlaySource === 'error' ? '🟡 ParlayAPI error' : '⏳ ParlayAPI')}
                                 </span>
