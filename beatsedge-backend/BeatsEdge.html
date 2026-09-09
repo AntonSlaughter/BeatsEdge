@@ -6482,7 +6482,11 @@
                     // PrizePicks/Underdog Goblin & Demon are "More"-only picks —
                     // no opposite side, whatever PropLine echoes back.
                     if (DFS_PLATFORMS.has(book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                        pushOne(k, def, e.line, 'over', { ...extra, ppKind: e.ppType });
+                        // Goblins/Demons are never the standard board — treat them
+                        // as alt lines even when they're the only rung for a stat,
+                        // so they sit behind the "Show Goblins & Demons" toggle and
+                        // don't headline a stat-category on their own.
+                        pushOne(k, def, e.line, 'over', { ...extra, altLine: true, ppKind: e.ppType });
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
@@ -7355,8 +7359,10 @@
                     const oHR = estHitRate(w.season.avg || w.recent.avg || e.line, e.line);
                     const base = { type: def.type, statKey: k, line: e.line, ...extra };
                     // Goblin / Demon = "More"-only picks on PrizePicks/Underdog.
+                    // Always alt-style — never the standard board, even when it's
+                    // the only rung for the stat.
                     if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                        props.push({ ...base, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
+                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
@@ -8264,7 +8270,9 @@
                         base.mktGap = Math.round((e.line - _mktLine) * 10) / 10;
                     }
                     if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                        props.push({ ...base, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
+                        // Alt-style pick, never the standard board — force altLine
+                        // even when it's the only rung for this stat.
+                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
@@ -11427,7 +11435,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             const gradedPlayers = React.useMemo(() => {
                 return basePlayers
                     .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba') && p._allLines && p._noLiveLines))
-                    .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter)))
+                    .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter && !pr.altLine)))
                     .map(p => ({
                         p, g: playerBestGrade(p, statFilter),
                         _n: norm(p.name), _t: norm(p.team), _o: norm(p.opponent), _pos: norm(p.position)
@@ -11515,7 +11523,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const seen = new Set();
                 basePlayers.forEach(p => {
                     if ((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba') && p._allLines && p._noLiveLines) return;
-                    (Array.isArray(p.props) ? p.props : []).forEach(pr => { if (pr.type) seen.add(pr.type); });
+                    // Only standard-board props seed a category chip — a stat that
+                    // exists ONLY as a Goblin/Demon (or alt rung) this slate stays
+                    // reachable via the "Show Goblins & Demons" toggle, not as its
+                    // own headline category full of Grade-D longshots.
+                    (Array.isArray(p.props) ? p.props : []).forEach(pr => { if (pr.type && !pr.altLine) seen.add(pr.type); });
                 });
                 const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : (selectedSport === 'nba' ? NBA_STAT_CAT_ORDER : STAT_CAT_ORDER);
                 const ordered = order.filter(t => seen.has(t));
