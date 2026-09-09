@@ -3786,6 +3786,91 @@
             } catch (e) { /* best-effort */ }
         }
 
+        // FULL PROP SNAPSHOTS — the whole picture behind every prop the model
+        // grades: the inputs (projection, factor values, which data was real)
+        // AND the outputs (probability, edge, grade, prime). Standard board,
+        // over-side only (the under is derivable) — no alt ladders / goblins /
+        // cross-book, so it stays ~250 rows a slate (~250 KB). Keyed
+        // "<date>|<sport>", ~14 keys kept in localStorage as a rolling buffer;
+        // use "Export JSON" in the backtest panel to bank it for the long haul.
+        const PROP_SNAP_KEY = 'beatsedge_prop_snapshots_v1';
+        function archivePropSnapshots(sport, date, players) {
+            try {
+                const store = JSON.parse(localStorage.getItem(PROP_SNAP_KEY) || '{}');
+                const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+                const rows = [];
+                (players || []).forEach(p => {
+                    if (p.sport !== sport || !Array.isArray(p.props)) return;
+                    const gl = p.gameLogByKey || {};
+                    p.props.forEach(pr => {
+                        if (!pr.lineSource || pr.altLine || pr.ppKind || pr.crossBook || (pr.direction || 'over') !== 'over') return;
+                        let e;
+                        try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
+                        if (!e) return;
+                        const factors = {};
+                        (e.factors || []).forEach(f => {
+                            factors[f.key || f.name] = {
+                                s: f.supports ? 1 : 0,
+                                d: r2(f.probDelta),
+                                inProj: f.inProjection ? 1 : 0,
+                                v: typeof f.detail === 'string' ? f.detail.slice(0, 90) : null
+                            };
+                        });
+                        rows.push({
+                            player: p.name, team: p.team, opp: p.opponent, pos: p.position || null,
+                            sport, stat: pr.statKey, type: pr.type, line: pr.line,
+                            book: pr.book || null, lineSource: pr.lineSource,
+                            // model outputs
+                            modelProjection: r2(e.projection), probability: e.modelProbPct,
+                            rawProbability: e.rawModelProbPct, edge: r2(e.edge),
+                            edgePct: r2(e.edgePct), edgeSignalPct: r2(e.edgeSignalPct),
+                            grade: e.grade, gradeScore: r2(e.gradeScore), confidence: e.confidence,
+                            factorsAligned: e.greenCount, factorsTotal: e.totalFactors, prime: !!e.prime,
+                            marketLine: pr.marketLine != null ? pr.marketLine : null,
+                            mktGap: pr.mktGap != null ? r2(pr.mktGap) : null,
+                            hitRates: e.hitRates ? {
+                                season: e.hitRates.season && e.hitRates.season.pick,
+                                last10: e.hitRates.last10 && e.hitRates.last10.pick,
+                                last5: e.hitRates.last5 && e.hitRates.last5.pick,
+                                vsOpp: e.hitRates.vsOpp && e.hitRates.vsOpp.pick
+                            } : null,
+                            factors,
+                            // was each input backed by REAL data (vs missing / placeholder)?
+                            dataQuality: {
+                                gameLog: !!(gl[pr.statKey] && gl[pr.statKey].length >= 5),
+                                oppDefense: !!(p.opponentDefense || p.oppDef),
+                                minutes: sport === 'nba' ? p.projMin != null : null,
+                                splits: sport === 'mlb' ? !!(p.splitBy || p.bvp) : null,
+                                injuryStatus: !!p.status,
+                                marketLine: pr.marketLine != null,
+                                rest: !!(p.b2b && p.b2b.restDays != null)
+                            },
+                            ts: Date.now()
+                        });
+                    });
+                });
+                if (!rows.length) return;
+                store[`${date}|${sport}`] = { at: Date.now(), rows };
+                const trim = (max) => {
+                    const keys = Object.keys(store).sort((a, b) => (store[b].at || 0) - (store[a].at || 0));
+                    keys.slice(max).forEach(k => delete store[k]);
+                };
+                trim(14);
+                try { localStorage.setItem(PROP_SNAP_KEY, JSON.stringify(store)); }
+                catch (quota) { trim(6); try { localStorage.setItem(PROP_SNAP_KEY, JSON.stringify(store)); } catch (_) { } }
+            } catch (e) { /* localStorage full / disabled — best-effort */ }
+        }
+        // Flatten every stored snapshot to one array (for export / a future
+        // results-join backtest).
+        function allPropSnapshots() {
+            try {
+                const store = JSON.parse(localStorage.getItem(PROP_SNAP_KEY) || '{}');
+                const out = [];
+                Object.entries(store).forEach(([k, v]) => (v.rows || []).forEach(row => out.push({ _key: k, ...row })));
+                return out;
+            } catch (e) { return []; }
+        }
+
         // From the bucketed (gradeScore -> hit) data, derive the gradeScore
         // cutoffs that make the LETTERS monotonic: A ≥ 57% real, B ≥ 53%,
         // C ≥ 50%, else D. calculateEdgeScore reads these when present so the
@@ -4429,6 +4514,29 @@
                                         ? `Walk-forward over ${bt.total.n.toLocaleString()} graded prop-sides from real game logs · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`
                                         : 'Never run. This checks the grade engine against what actually happened, game by game, so the letters mean something.'}
                                 </div>
+                                {(() => {
+                                    const snaps = allPropSnapshots();
+                                    if (!snaps.length) return null;
+                                    const days = new Set(snaps.map(s => (s._key || '').split('|')[0])).size;
+                                    const doExport = () => {
+                                        try {
+                                            const blob = new Blob([JSON.stringify(snaps, null, 2)], { type: 'application/json' });
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url; a.download = `beatsedge-prop-snapshots-${new Date().toISOString().slice(0, 10)}.json`;
+                                            document.body.appendChild(a); a.click(); a.remove();
+                                            setTimeout(() => URL.revokeObjectURL(url), 1000);
+                                        } catch (e) {
+                                            try { navigator.clipboard.writeText(JSON.stringify(snaps)); } catch (_) { }
+                                        }
+                                    };
+                                    return (
+                                        <div className="backtest-panel-sub" style={{ marginTop: '0.3rem' }}>
+                                            📦 {snaps.length.toLocaleString()} prop snapshots banked over {days} slate{days === 1 ? '' : 's'} (inputs + model outputs, for a future results-join).{' '}
+                                            <a onClick={doExport} style={{ color: 'var(--info-blue)', cursor: 'pointer', textDecoration: 'underline' }}>Export JSON</a>
+                                        </div>
+                                    );
+                                })()}
                             </div>
                             {canBacktest && isPro && (
                                 <button className="backtest-run-btn" disabled={backtestRunning} onClick={onRunBacktest}>
@@ -5009,7 +5117,12 @@
             useEffect(() => {
                 if (!Array.isArray(playersData)) return;
                 const hasReal = playersData.some(p => Array.isArray(p.props) && p.props.some(pr => pr.lineSource && !pr.altLine && !pr.crossBook));
-                if (hasReal) archiveLines(selectedSport, selectedDate, playersData);
+                if (hasReal) {
+                    archiveLines(selectedSport, selectedDate, playersData);
+                    // Full per-prop snapshots — inputs + model outputs + which
+                    // data was real. The seed for a results-join calibration set.
+                    archivePropSnapshots(selectedSport, selectedDate, playersData);
+                }
                 // NBA: also snapshot today's Defense-vs-Position + team-defense
                 // ranks, dated — so those factors become walk-forward testable
                 // later (right now they'd be look-ahead in the backtest).
@@ -9973,9 +10086,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         const mt = player.minutesTrend || 0;
                                                         const oppOk = isNba ? (mt >= 1 ? true : mt <= -1 ? false : null) : null;
                                                         const dvpFac = facBy('defense');
-                                                        const mlbMatchFacs = ['matchup', 'oppdef', 'bvp', 'platoon', 'venue'].map(facBy).filter(Boolean);
+                                                        const isFootball = player.sport === 'nfl' || player.sport === 'ncaaf';
+                                                        const matchFacs = ['matchup', 'oppdef', 'bvp', 'platoon', 'venue'].map(facBy).filter(Boolean);
+                                                        const matchWord = isMlb ? 'the pitcher / split matchup' : isFootball ? 'the defensive matchup' : 'the matchup';
                                                         const matchupOk = dvpFac ? !!dvpFac.supports
-                                                            : mlbMatchFacs.length ? (mlbMatchFacs.filter(f => f.supports).length >= mlbMatchFacs.filter(f => !f.supports).length) : null;
+                                                            : matchFacs.length ? (matchFacs.filter(f => f.supports).length >= matchFacs.filter(f => !f.supports).length) : null;
                                                         const availOk = (player.status === 'OUT' || player.status === 'DOUBTFUL') ? false
                                                             : (player.opportunity || player.status === 'ACTIVE' || player.status === 'PROBABLE' || !player.status) ? true : null;
                                                         // DvP grid (NBA) — full 5-position table, tucked in a sub-details.
@@ -10101,19 +10216,23 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                                 </details>
                                                                             )}
                                                                         </React.Fragment>
-                                                                    ) : mlbMatchFacs.length ? (
+                                                                    ) : matchFacs.length ? (
                                                                         <React.Fragment>
                                                                             <table className="research-tbl">
                                                                                 <tbody>
-                                                                                    {mlbMatchFacs.map((f, i) => (
+                                                                                    {matchFacs.map((f, i) => (
                                                                                         <tr key={i}><td style={{ width: '38%' }}>{f.supports ? '🟢' : '🔴'} {f.name}</td><td style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>{f.detail}</td></tr>
                                                                                     ))}
                                                                                 </tbody>
                                                                             </table>
                                                                             <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
-                                                                                Assessment: {matchupOk === true ? 'Favorable — the pitcher / split matchup leans this way' : matchupOk === false ? 'Tough — the pitcher / split matchup works against it' : 'Neutral'}
+                                                                                Assessment: {matchupOk === true ? `Favorable — ${matchWord} leans this way` : matchupOk === false ? `Tough — ${matchWord} works against it` : 'Neutral'}
                                                                             </div>
-                                                                            <div className="research-note">Full Statcast matchup (pitcher xwOBA, CSW%, pitch mix, exit-velo allowed, barrels) → Advanced Research Data below.</div>
+                                                                            <div className="research-note">
+                                                                                {isMlb ? 'Full Statcast matchup (pitcher xwOBA, CSW%, pitch mix, exit-velo allowed, barrels) → Advanced Research Data below.'
+                                                                                    : isFootball ? 'Full defensive profile (coverage splits, pressure & blitz rate, EPA allowed, YAC allowed) → Advanced Research Data below.'
+                                                                                        : 'Full matchup detail → Advanced Research Data below.'}
+                                                                            </div>
                                                                         </React.Fragment>
                                                                     ) : (
                                                                         <div className={`research-assess ${matchupOk === true ? 'g' : matchupOk === false ? 'r' : 'n'}`}>
@@ -10159,13 +10278,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     <table className="research-tbl">
                                                                         <tbody>
                                                                             <tr><td>Status</td><td className="num">{player.status || 'ACTIVE'}</td></tr>
-                                                                            <tr><td>Injury</td><td className="num">{player.injury && player.injury !== 'Injury' ? player.injury : '—'}{player.statusTrend === 'down' && player.prevStatus ? ` ▼ (was ${player.prevStatus})` : ''}</td></tr>
+                                                                            <tr><td>Injury</td><td className="num">{player.injury && !/^(injury|active|healthy|available|probable|questionable|doubtful|out|day-to-day)$/i.test(String(player.injury).trim()) ? player.injury : '—'}{player.statusTrend === 'down' && player.prevStatus ? ` ▼ (was ${player.prevStatus})` : ''}</td></tr>
                                                                             {isNba && <tr><td>Rest</td><td className="num">{player.b2b && player.b2b.tonight === 'second' ? 'Back-to-back (2nd night)' : player.b2b && player.b2b.restDays != null ? `${player.b2b.restDays} day${player.b2b.restDays === 1 ? '' : 's'}` : '—'}</td></tr>}
                                                                             <tr><td>Next man up</td><td className="num">{player.opportunity && player.opportunity.covers && player.opportunity.covers.length ? player.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ') : '—'}</td></tr>
                                                                         </tbody>
                                                                     </table>
                                                                     <div className={`research-assess ${availOk === true ? 'g' : availOk === false ? 'r' : 'n'}`}>
-                                                                        Assessment: {player.status === 'OUT' ? 'Ruled out' : player.status === 'DOUBTFUL' ? 'Doubtful — likely sits' : player.opportunity ? 'Bumped role — a teammate is sidelined at his spot' : 'Full go — no availability concern'}
+                                                                        Assessment: {player.status === 'OUT' ? 'Ruled out' : player.status === 'DOUBTFUL' ? 'Doubtful — likely sits' : player.status === 'QUESTIONABLE' ? 'Questionable — a game-time call; watch for a downgrade before the line moves' : player.opportunity ? 'Bumped role — a teammate is sidelined at his spot' : 'Full go — no availability concern'}
                                                                     </div>
                                                                 </div>
                                                             </div>
