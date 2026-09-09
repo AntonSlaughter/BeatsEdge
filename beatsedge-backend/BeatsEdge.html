@@ -4544,9 +4544,14 @@
                                     // How much confluence moves the hit rate with the GRADE held fixed…
                                     const gSpreads = ['A', 'B', 'C', 'D'].map(g => { const l = cell(g, 'low'), h = cell(g, 'high'); return (l && h && l.n >= 40 && h.n >= 40) ? h.rate - l.rate : null; }).filter(v => v != null);
                                     const gSpread = gSpreads.length ? Math.round(gSpreads.reduce((a, b) => a + b, 0) / gSpreads.length) : null;
-                                    // …and how much the grade moves it with CONFLUENCE held fixed (use the best-populated tier).
-                                    const tierSpread = (t) => { const a = cell('A', t), d = cell('D', t); return (a && d && a.n >= 40 && d.n >= 40) ? a.rate - d.rate : null; };
-                                    const tSpread = tierSpread('high') != null ? tierSpread('high') : tierSpread('med');
+                                    // …and how much the grade moves it with CONFLUENCE held fixed:
+                                    // max-min hit rate across grades within one tier (the tier with
+                                    // the most grades represented, ≥100 sample each).
+                                    const tierSpread = (t) => {
+                                        const rs = ['A', 'B', 'C', 'D'].map(g => cell(g, t)).filter(c => c && c.n >= 100).map(c => c.rate);
+                                        return rs.length >= 2 ? Math.max(...rs) - Math.min(...rs) : null;
+                                    };
+                                    const tSpread = ['high', 'med', 'low'].map(tierSpread).find(v => v != null);
                                     // Best-performing cell overall (decent sample).
                                     let best = null;
                                     ['A', 'B', 'C', 'D'].forEach(g => BT_CONF_TIERS.forEach(t => { const c = cell(g, t); if (c && c.n >= 100 && (!best || c.rate > best.rate)) best = { g, t, ...c }; }));
@@ -4575,12 +4580,12 @@
                                             <div className="backtest-calib-note">
                                                 Confluence tier = share of the factor set that agrees (low &lt;⅓, medium, high ≥⅔).
                                                 {gSpread != null && tSpread != null && Math.abs(gSpread) >= 4 && Math.abs(tSpread) >= 6
-                                                    ? ` Both carry their own signal — hold the grade fixed and moving to high confluence adds ~${gSpread} pts; hold confluence fixed and A over D is still ~${tSpread} pts${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}% (${best.n.toLocaleString()})` : ''}.`
+                                                    ? ` Both carry their own signal — hold the grade fixed and moving to high confluence adds ~${gSpread} pts; hold confluence fixed and the letter still spreads it ~${tSpread} pts${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}% (${best.n.toLocaleString()})` : ''}.`
                                                     : gSpread != null && Math.abs(gSpread) < 3
                                                         ? ` Within a grade the confluence tiers barely move (~${gSpread} pts) — once you know the letter, the aligned-factor count adds almost nothing. They're mostly measuring the same thing.`
                                                         : tSpread != null && Math.abs(tSpread) < 4
                                                             ? ` Within a confluence tier the letters barely separate (~${tSpread} pts) — confluence is doing most of the work; the letter adds little on top.`
-                                                            : ` Grade moves it ~${tSpread == null ? '?' : tSpread} pts (confluence fixed), confluence moves it ~${gSpread == null ? '?' : gSpread} pts (grade fixed)${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}%` : ''}.`}
+                                                            : ` Confluence moves it ~${gSpread == null ? '?' : gSpread} pts with the grade held fixed${tSpread != null ? `, the letter ~${tSpread} pts with confluence held fixed` : ''}${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}%` : ''}.`}
                                             </div>
                                         </div>
                                     );
