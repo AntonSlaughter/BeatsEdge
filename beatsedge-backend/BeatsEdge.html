@@ -5159,6 +5159,19 @@
                 });
             }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey, parlayApiKey]);
 
+            // Ping the backend's health endpoint so its status shows live/down
+            // for EVERY sport — not just basketball (which was the only path
+            // that ever set it, leaving MLB/NFL stuck on "checking").
+            useEffect(() => {
+                if (!backendUrl) { setBackendDataSource('sample'); return; }
+                let gone = false;
+                setBackendDataSource('checking');
+                fetch(`${backendUrl}/api/health`, { method: 'GET' })
+                    .then(r => { if (!gone) { setBackendDataSource(r.ok ? 'live' : 'sample'); if (r.ok) setBackendError(null); } })
+                    .catch(() => { if (!gone) { setBackendDataSource('sample'); setBackendError('Could not reach backend at ' + backendUrl); } });
+                return () => { gone = true; };
+            }, [backendUrl]);
+
             // Keep the cache warm with whatever's currently loaded — but ONLY
             // under the key for the sport these players actually belong to.
             // During a sport switch this effect re-runs while playersData still
