@@ -3578,6 +3578,7 @@
                     g.n++; if (hit) g.hit++;
                     acc._total.n++; if (hit) acc._total.hit++;
                     btFileProb(acc, e.modelProbPct, hit);
+                    btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -3592,7 +3593,17 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, align: {} }; }
+
+        // Factor-confluence buckets. File every graded side by how many of its
+        // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
+        // whether more agreement actually means a higher hit rate, or whether
+        // factor COUNT is mostly cosmetic.
+        function btFileAlign(acc, greenCount, totalFactors, hit) {
+            if (greenCount == null || !isFinite(greenCount)) return;
+            const b = acc.align[greenCount] || (acc.align[greenCount] = { n: 0, hit: 0, totTot: 0 });
+            b.n++; if (hit) b.hit++; b.totTot += (totalFactors || 0);
+        }
 
         // Probability-calibration buckets. Every graded side is filed by the
         // model's stated P(this side hits); comparing that to how often the
@@ -4325,6 +4336,39 @@
                                                     : hiGap != null && Math.abs(hiGap) <= 3
                                                         ? ' Its higher-confidence calls land close to what they claim — calibration looks reasonable.'
                                                         : ` Weighted across every band it runs ${wGap >= 0 ? '+' : ''}${wGap} points vs claim.`}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {bt.align && Object.keys(bt.align).length > 0 && (() => {
+                                    const rows = Object.keys(bt.align).map(k => ({ k: +k, ...bt.align[k] })).sort((a, b) => a.k - b.k);
+                                    const solid = rows.filter(r => r.n >= 200);
+                                    const lo = solid[0] || rows[0];
+                                    const hiR = solid.length ? solid.reduce((a, b) => b.k > a.k ? b : a) : rows[rows.length - 1];
+                                    const spread = (lo && hiR && lo !== hiR) ? hiR.rate - lo.rate : null;
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Factor confluence — does more agreement mean a higher hit rate?</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Factors aligned</th><th>Actually hit</th><th>Sample</th></tr></thead>
+                                                <tbody>
+                                                    {rows.map(r => (
+                                                        <tr key={r.k}>
+                                                            <td>{r.k} of ~{r.avgTotal}</td>
+                                                            <td><strong>{r.rate}%</strong></td>
+                                                            <td>{r.n.toLocaleString()}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {spread == null
+                                                    ? 'Not enough spread in aligned-factor counts to judge.'
+                                                    : spread >= 8
+                                                        ? `Clear monotonic lift — going from ${lo.k} aligned to ${hiR.k} aligned moves the hit rate ${lo.rate}% → ${hiR.rate}% (${spread >= 0 ? '+' : ''}${spread} pts). Factor confluence is a real signal; the "X/Y aligned" line is earning its place.`
+                                                        : spread >= 4
+                                                            ? `Some lift (${lo.rate}% → ${hiR.rate}%, ${spread >= 0 ? '+' : ''}${spread} pts across the range) — confluence helps a little but isn't a dominant input.`
+                                                            : `Almost flat (${lo.rate}% → ${hiR.rate}%, only ${spread} pts across the whole range). Factor COUNT is mostly cosmetic here — the model's edge is in which factors fire, not how many.`}
                                             </div>
                                         </div>
                                     );
@@ -8303,6 +8347,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         g.n++; if (hit) g.hit++;
                         acc._total.n++; if (hit) acc._total.hit++;
                         btFileProb(acc, e.modelProbPct, hit);
+                        btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -8414,10 +8459,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.prob[k];
                         if (b && b.n >= 20) prob[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), mid: BT_PROB_MID[k] };
                     });
+                    // Factor confluence — hit rate by number of aligned factors.
+                    const align = {};
+                    Object.keys(acc.align).forEach(k => {
+                        const b = acc.align[k];
+                        if (b && b.n >= 20) align[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), avgTotal: Math.round((b.totTot / b.n) * 10) / 10 };
+                    });
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors, prob
+                        grades, factors, prob, align
                     };
                     setBacktest(prev => {
                         const base = (prev && !prev.grades) ? prev : {}; // drop legacy single-object shape
