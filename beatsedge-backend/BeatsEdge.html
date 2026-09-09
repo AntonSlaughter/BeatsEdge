@@ -2155,6 +2155,16 @@
         .backtest-panel-note { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.75rem; line-height: 1.5; }
         .backtest-factors { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin-top: 0.7rem; font-size: 0.74rem; color: var(--text-secondary); }
         .backtest-factor-n { color: var(--text-muted); }
+        .backtest-calib { margin-top: 1rem; border-top: 1px solid var(--border-hairline, #2a2f3a); padding-top: 0.9rem; }
+        .backtest-calib-title { font-size: 0.8rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem; }
+        .backtest-calib-tbl { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+        .backtest-calib-tbl th { text-align: left; font-weight: 600; color: var(--text-muted); padding: 0.3rem 0.6rem 0.3rem 0; border-bottom: 1px solid var(--border-hairline, #2a2f3a); }
+        .backtest-calib-tbl td { padding: 0.32rem 0.6rem 0.32rem 0; color: var(--text-secondary); border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .backtest-calib-tbl td strong { color: var(--text-primary); }
+        .backtest-calib-tbl td.calib-ok { color: var(--success-green, #35c46a); font-weight: 700; }
+        .backtest-calib-tbl td.calib-over { color: var(--danger-red, #ff4436); font-weight: 700; }
+        .backtest-calib-tbl td.calib-under { color: var(--accent-amber, #f5a623); font-weight: 700; }
+        .backtest-calib-note { font-size: 0.73rem; color: var(--text-muted); margin-top: 0.55rem; line-height: 1.5; }
 
         .top-picks-heading {
             font-family: var(--font-display);
@@ -3567,6 +3577,7 @@
                     const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                     g.n++; if (hit) g.hit++;
                     acc._total.n++; if (hit) acc._total.hit++;
+                    btFileProb(acc, e.modelProbPct, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -3581,7 +3592,30 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {} }; }
+
+        // Probability-calibration buckets. Every graded side is filed by the
+        // model's stated P(this side hits); comparing that to how often the
+        // side ACTUALLY landed tells you whether a "70%" is really a 70% or an
+        // overconfident 57%.
+        const BT_PROB_BUCKETS = ['<50', '50-54', '55-59', '60-64', '65-69', '70-74', '75+'];
+        const BT_PROB_MID = { '<50': 46, '50-54': 52, '55-59': 57, '60-64': 62, '65-69': 67, '70-74': 72, '75+': 77 };
+        function btProbBucket(pct) {
+            if (pct == null || !isFinite(pct)) return null;
+            if (pct < 50) return '<50';
+            if (pct < 55) return '50-54';
+            if (pct < 60) return '55-59';
+            if (pct < 65) return '60-64';
+            if (pct < 70) return '65-69';
+            if (pct < 75) return '70-74';
+            return '75+';
+        }
+        function btFileProb(acc, pct, hit) {
+            const k = btProbBucket(pct);
+            if (!k) return;
+            const b = acc.prob[k] || (acc.prob[k] = { n: 0, hit: 0 });
+            b.n++; if (hit) b.hit++;
+        }
 
         // Daily line archive — snapshot every STANDARD posted line so that, after
         // a few weeks, a REAL market backtest (line + juice + settled result)
@@ -3609,6 +3643,33 @@
                 keys.slice(42).forEach(k => delete store[k]);
                 localStorage.setItem(LINE_ARCHIVE_KEY, JSON.stringify(store));
             } catch (e) { /* localStorage full / disabled — archive is best-effort */ }
+        }
+
+        // Daily Defense-vs-Position + team-defense snapshot. The backtest can't
+        // test the DvP / opponent-strength factors yet because we only hold ONE
+        // current-season DvP table (feeding it to a past game = look-ahead).
+        // Snapshotting it dated, starting now, means an as-of DvP is available
+        // for every future date — so in a few weeks those factors CAN be
+        // walk-forward tested honestly. Keeps ~120 daily keys.
+        const DVP_ARCHIVE_KEY = 'beatsedge_dvp_archive_v1';
+        // dvpByTeam = NBA_DVP shape {TEAM: {POS: {ptsRank, rebRank, astRank, tpmRank, stlRank, blkRank, toRank}}}
+        function archiveDvpSnapshot(date, dvpByTeam, teamDefByAbbr) {
+            try {
+                if (!dvpByTeam || typeof dvpByTeam !== 'object') return;
+                const store = JSON.parse(localStorage.getItem(DVP_ARCHIVE_KEY) || '{}');
+                if (store[date]) return; // one snapshot per calendar day
+                const rows = [];
+                Object.entries(dvpByTeam).forEach(([team, byPos]) => {
+                    Object.entries(byPos).forEach(([pos, r]) => {
+                        rows.push({ t: team, p: pos, pts: r.ptsRank, reb: r.rebRank, ast: r.astRank, tpm: r.tpmRank, stl: r.stlRank, blk: r.blkRank, to: r.toRank });
+                    });
+                });
+                if (!rows.length) return;
+                store[date] = { at: Date.now(), dvp: rows, teamDef: teamDefByAbbr || null };
+                const keys = Object.keys(store).sort();
+                keys.slice(0, Math.max(0, keys.length - 120)).forEach(k => delete store[k]);
+                localStorage.setItem(DVP_ARCHIVE_KEY, JSON.stringify(store));
+            } catch (e) { /* best-effort */ }
         }
 
         // From the bucketed (gradeScore -> hit) data, derive the gradeScore
@@ -4229,6 +4290,45 @@
                                         ? ` D's side lands just ${cal.D.rate}% — fading D picks is the sharpest read.`
                                         : ''}
                                 </div>
+                                {bt.prob && Object.keys(bt.prob).length > 0 && (() => {
+                                    const rows = BT_PROB_BUCKETS.filter(k => bt.prob[k]).map(k => bt.prob[k] && ({ k, ...bt.prob[k] }));
+                                    const wN = rows.reduce((s, r) => s + r.n, 0);
+                                    const wGap = wN ? Math.round(rows.reduce((s, r) => s + (r.rate - r.mid) * r.n, 0) / wN) : 0;
+                                    const hi = rows.filter(r => r.mid >= 60);
+                                    const hiN = hi.reduce((s, r) => s + r.n, 0);
+                                    const hiGap = hiN ? Math.round(hi.reduce((s, r) => s + (r.rate - r.mid) * r.n, 0) / hiN) : null;
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Probability calibration — when it says a number, does that side hit that often?</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>BeatsEdge says</th><th>Actually hit</th><th>Sample</th><th>Gap</th></tr></thead>
+                                                <tbody>
+                                                    {rows.map(r => {
+                                                        const gap = r.rate - r.mid;
+                                                        const cls = Math.abs(gap) <= 3 ? 'calib-ok' : gap < 0 ? 'calib-over' : 'calib-under';
+                                                        return (
+                                                            <tr key={r.k}>
+                                                                <td>{r.k === '<50' ? 'under 50%' : r.k === '75+' ? '75%+' : r.k + '%'}</td>
+                                                                <td><strong>{r.rate}%</strong></td>
+                                                                <td>{r.n.toLocaleString()}</td>
+                                                                <td className={cls}>{gap >= 0 ? '+' : ''}{gap}</td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                Gap = actual minus the midpoint of what the number claims. A negative gap means the model is
+                                                <strong> overconfident</strong> in that band.
+                                                {hiGap != null && hiGap <= -4
+                                                    ? ` Across its 60%+ calls the model runs about ${Math.abs(hiGap)} points hot — a stated 70% is really closer to ${70 + hiGap}%. Treat the confidence as a ranking, not a true probability, until this is recalibrated.`
+                                                    : hiGap != null && Math.abs(hiGap) <= 3
+                                                        ? ' Its higher-confidence calls land close to what they claim — calibration looks reasonable.'
+                                                        : ` Weighted across every band it runs ${wGap >= 0 ? '+' : ''}${wGap} points vs claim.`}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                                 {Object.keys(bt.factors || {}).length > 0 && (
                                     <div className="backtest-factors">
                                         {Object.entries(bt.factors).sort((a, b) => b[1].rate - a[1].rate).map(([name, f]) => (
@@ -4563,6 +4663,12 @@
                 if (!Array.isArray(playersData)) return;
                 const hasReal = playersData.some(p => Array.isArray(p.props) && p.props.some(pr => pr.lineSource && !pr.altLine && !pr.crossBook));
                 if (hasReal) archiveLines(selectedSport, selectedDate, playersData);
+                // NBA: also snapshot today's Defense-vs-Position + team-defense
+                // ranks, dated — so those factors become walk-forward testable
+                // later (right now they'd be look-ahead in the backtest).
+                if (selectedSport === 'nba' && hasReal) {
+                    try { archiveDvpSnapshot(new Date().toISOString().slice(0, 10), NBA_DVP, (nbaCache.current && nbaCache.current.oppRankByAbbr) || null); } catch (e) { }
+                }
             }, [playersData, selectedSport, selectedDate]);
 
             const fetchData = async (mySeq) => {
@@ -8135,13 +8241,21 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 return map;
             };
 
-            // Walk-forward for ONE NBA player-stat series — same as the generic
-            // backtestSeries, but the fake player is fully populated with the
-            // context the live model uses (opponent Defense-vs-Position, that
-            // opponent's team rank, day-of-week / rest / home-road annotated
-            // history, projected & trending minutes) so the backtest measures
-            // the REAL grade, new factors included — not just the projection.
-            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, oppRankByAbbr) => {
+            // Walk-forward for ONE NBA player-stat series. The fake player
+            // carries the model context that can be rebuilt HONESTLY from
+            // games before game i — trailing windows, projected & trending
+            // minutes, rest, home/road, recent-vs-opponent.
+            //
+            // What it deliberately does NOT carry: Defense-vs-Position and
+            // opponent team-defense rank. Both of those only exist as a single
+            // CURRENT-season snapshot (NBA_DVP_CSV / statistics/byteam), so
+            // feeding them to a 2024-25 or mid-2025-26 game would be
+            // look-ahead leakage — the prediction would "know" how the
+            // defense played the rest of that season. They stay in the LIVE
+            // model (there they're best-available info, not leakage); they're
+            // just out of the backtest until we have dated DvP snapshots
+            // (archiveDvpSnapshot, seeded now, usable in a few weeks).
+            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc) => {
                 const MIN = 14;
                 const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
                 for (let i = MIN; i < vals.length; i++) {
@@ -8165,7 +8279,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         points: v, line, opponent: ho[j],
                         vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
                         dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null,
-                        oppRank: oppRankByAbbr[ho[j]] || null,
+                        oppRank: null,  // leak-safe: no as-of opponent-strength snapshot exists
                         rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
                     }));
                     const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
@@ -8173,8 +8287,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const fake = {
                         sport: 'nba', position: group, opponent: tonightOpp,
                         statsByKey: { [statKey]: w }, gameLogByKey: { [statKey]: glHist },
-                        opponentDefense: nbaDvpFor(tonightOpp, group),
-                        oppRank: oppRankByAbbr[tonightOpp] || null,
+                        opponentDefense: null,  // leak-safe — see note above (DvP is a current-season-only snapshot)
+                        oppRank: null,          // leak-safe — team-defense rank is a full-season aggregate
                         gameDow: Number.isFinite(tss[i]) && tss[i] > 0 ? new Date(tss[i]).getDay() : null,
                         b2b: tRest != null ? { restDays: tRest, tonight: tRest <= 1 ? 'second' : null, first: null } : null,
                         isHomeTonight: !!homes[i],
@@ -8188,6 +8302,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                         g.n++; if (hit) g.hit++;
                         acc._total.n++; if (hit) acc._total.hit++;
+                        btFileProb(acc, e.modelProbPct, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -8253,7 +8368,6 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     } else if (selectedSport === 'nba') {
                         const ids = [...new Set(roster.map(p => p.id))];
                         const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1]);
-                        const oppRankByAbbr = nbaCache.current.oppRankByAbbr || {};
                         roster.forEach(p => {
                             const rows = glMap[p.id] || [];
                             if (rows.length < 20) return;
@@ -8265,7 +8379,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             nbaAllKeys.forEach(k => {
                                 const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
                                 if (vals.every(v => v === 0)) return;
-                                nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc, oppRankByAbbr);
+                                nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc);
                                 evaluated++;
                             });
                         });
@@ -8294,10 +8408,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     Object.entries(acc.factors).forEach(([name, b]) => {
                         if (b.n >= 30) factors[name] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Probability calibration — stated % vs what actually landed.
+                    const prob = {};
+                    BT_PROB_BUCKETS.forEach(k => {
+                        const b = acc.prob[k];
+                        if (b && b.n >= 20) prob[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), mid: BT_PROB_MID[k] };
+                    });
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors
+                        grades, factors, prob
                     };
                     setBacktest(prev => {
                         const base = (prev && !prev.grades) ? prev : {}; // drop legacy single-object shape
