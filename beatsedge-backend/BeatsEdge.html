@@ -58,6 +58,7 @@
             color: var(--text-primary);
             line-height: 1.6;
             font-variant-numeric: tabular-nums;
+            overflow-x: hidden; /* nothing should ever scroll the page sideways */
         }
 
         .app-container {
@@ -1242,8 +1243,8 @@
         }
 
         .chart-bar-col {
-            flex: 1 0 20px;
-            min-width: 20px;
+            flex: 1 0 42px;
+            min-width: 42px;   /* fits "@ WSH" / "12/20/25" without colliding — the plot scrolls if the row is wider than the modal */
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -1529,6 +1530,45 @@
 
             .game-bars {
                 overflow-x: auto;
+            }
+        }
+
+        /* Narrow screens: the header stacks into a logo+actions row, then the
+           two pill groups as their own full-width horizontal-scroll strips —
+           nothing pushes the page sideways. */
+        @media (max-width: 880px) {
+            .header { padding: 0.7rem 0.9rem; }
+            .header-content {
+                flex-wrap: wrap;
+                gap: 0.5rem 0.55rem;
+                justify-content: space-between;
+            }
+            .logo { font-size: 1.3rem; order: 1; }
+            .settings-btn, .parlay-builder-btn { order: 2; padding: 0.4rem 0.6rem; font-size: 0.72rem; }
+            .view-toggle { order: 3; }
+            .sport-switcher { order: 4; }
+            .view-toggle, .sport-switcher {
+                flex: 1 1 100%;
+                max-width: 100%;
+                overflow-x: auto;
+                overflow-y: hidden;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+            .view-toggle::-webkit-scrollbar, .sport-switcher::-webkit-scrollbar { display: none; }
+            .view-toggle-btn, .sport-switcher-btn {
+                flex: 0 0 auto;
+                white-space: nowrap;
+                padding: 0.45rem 0.75rem;
+                font-size: 0.8rem;
+            }
+        }
+        @media (max-width: 430px) {
+            .header-content { gap: 0.4rem; }
+            .logo { font-size: 1.15rem; }
+            .settings-btn, .parlay-builder-btn {
+                font-size: 0.68rem; padding: 0.4rem 0.5rem;
+                white-space: nowrap; overflow: hidden;
             }
         }
 
@@ -7263,6 +7303,10 @@
                 posKeys.forEach(k => {
                     const getV = NFL_PROP_DEFS[k].get;
                     const vals = glRows.map(g => getV(g.row) || 0);
+                    // No real data for this stat (ESPN gamelog had no column for
+                    // it, or every game is 0) → leave the window unbuilt so the
+                    // prop seeds off the posted line instead of charting zeros.
+                    if (!vals.some(v => v > 0)) return;
                     const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
                     const rate = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
                     const lastN = (n) => vals.slice(-n);
@@ -9630,8 +9674,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                 const bySport = { nba: nbaData, nfl: nflData, mlb: mlbData, nhl: nhlData };
                 // Tag every sample player so the slate cache / "LIVE" pills never
-                // treat a mock fallback as a real slate.
-                return (bySport[sport] || []).map(p => ({ ...p, _mock: true }));
+                // treat a mock fallback as a real slate. And — since a mock
+                // player carries ONE game log / stats block (scaled for its
+                // headline stat) — keep only the props that read that same
+                // stat, so a "Receptions" prop never renders rushing-yard bars.
+                return (bySport[sport] || []).map(p => {
+                    const headKey = p.props && p.props[0] && p.props[0].statKey;
+                    const props = Array.isArray(p.props)
+                        ? p.props.filter(pr => !headKey || pr.statKey === headKey)
+                        : p.props;
+                    return { ...p, _mock: true, props: props && props.length ? props : p.props };
+                });
             };
 
             const togglePlayer = (playerId) => openDetail(playerId, 0);
@@ -10879,7 +10932,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <div className="chart-line" style={{ bottom: (dateH + px(line)) + 'px' }}>
                                                         <span className="chart-line-label">Line {line}</span>
                                                     </div>
-                                                    <div className="chart-bars" style={{ minWidth: shown.length > 14 ? (shown.length * 30) + 'px' : 'auto' }}>
+                                                    <div className="chart-bars" style={{ minWidth: (shown.length * 46) + 'px' }}>
                                                         {shown.map((g, i) => {
                                                             const good = cleared(g);
                                                             return (
