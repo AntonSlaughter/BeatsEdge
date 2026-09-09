@@ -4046,16 +4046,16 @@
         // Which PropLine bookmaker key each platform tab maps to.
         const PLATFORM_BOOK = {
             prizepicks: 'prizepicks', underdog: 'underdog', sleeper: 'sleeper',
-            parlayplay: 'parlayplay', betr: 'betr', pick6: 'pick6',
             fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm'
         };
-        const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper', 'parlayplay', 'betr', 'pick6']);
+        const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper']);
 
         // ── ParlayAPI (parlay-api.com) — optional SECOND DFS line source ─────
-        // Fills the DFS books PropLine is thin on (Sleeper) and adds
-        // ParlayPlay / Betr / Pick6. Merged as gap-fill only — PropLine stays
-        // primary where both have a line. Rows carry no player_id → name join.
-        const PARLAY_DFS_BOOKS = 'prizepicks,underdog,sleeper,parlayplay,betr,pick6';
+        // Fills the DFS books PropLine is thin on (Sleeper especially). Merged
+        // as gap-fill only — PropLine stays primary where both have a line, and
+        // a book only ever shows lines that book actually posted. Rows carry no
+        // player_id → name join.
+        const PARLAY_DFS_BOOKS = 'prizepicks,underdog,sleeper';
         // ParlayAPI market_key → BeatsEdge statKey. Only the clean, gradeable
         // ones; its DFS-oddity markets ("halves with 25+ rec yds") are skipped.
         const PARLAY_MLB_MKT = {
@@ -5039,13 +5039,14 @@
                 ncaaf: 'football/college-football'
             };
 
+            // Only books our data sources (PropLine + ParlayAPI) actually carry
+            // prop lines for. ParlayPlay / Betr / Pick6 return nothing from
+            // either feed, so they're not shown — an empty tab is worse than
+            // no tab.
             const platforms = [
                 { id: 'prizepicks', name: 'PrizePicks' },
                 { id: 'underdog', name: 'Underdog' },
                 { id: 'sleeper', name: 'Sleeper' },
-                { id: 'parlayplay', name: 'ParlayPlay', srcKey: 'parlayApiKey' },
-                { id: 'betr', name: 'Betr', srcKey: 'parlayApiKey' },
-                { id: 'pick6', name: 'Pick6', srcKey: 'parlayApiKey' },
                 { id: 'fanduel', name: 'FanDuel' },
                 { id: 'draftkings', name: 'DraftKings' },
                 { id: 'betmgm', name: 'BetMGM' }
@@ -6751,7 +6752,7 @@
             // ============================================================
             // Sharp sportsbooks first, then the DFS apps this app is themed
             // around. First book in this list that has a line for a player wins.
-            const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'parlayplay', 'betr', 'pick6', 'bovada'];
+            const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'bovada'];
 
             // ── ParlayAPI: fetch DFS props for one sport, shaped as
             //   { normName: { statKey: { book: [ {line,over,under,juice,setAt,ppType,_src} ] } } }
@@ -7290,13 +7291,13 @@
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
-                const bookOrder = [book, ...PROPLINE_BOOK_PRIORITY.filter(b => b !== book)];
                 posKeys.forEach(k => {
                     const def = NFL_PROP_DEFS[k];
                     const byBook = allLines[k] || {};
-                    const useBook = bookOrder.find(b => byBook[b] && byBook[b].length);
-                    if (!useBook) return;
-                    const crossBook = useBook !== book; // selected book has no line; showing another's
+                    // ONLY the selected book. Never borrow another book's line —
+                    // each tab shows exactly what that book has posted.
+                    if (!byBook[book] || !byBook[book].length) return;
+                    const useBook = book, crossBook = false;
                     // Drop obvious bad data — e.g. a niche book listing a WR's
                     // "rush yards" at 43.5 when he averages ~1.
                     const pg = perGameFor(k);
@@ -7307,9 +7308,6 @@
                         if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
                     }
                     let arr = byBook[useBook];
-                    // A sportsbook fallback carries an extreme-odds alt ladder
-                    // ("150+ pass yds -1300") — only surface its main number.
-                    if (crossBook) { const pr = arr.find(e => e.primary) || arr.slice().sort((a, c) => a.juice - c.juice)[0]; arr = pr ? [pr] : []; }
                     const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                     const multi = sorted.length > 1;
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
@@ -8201,13 +8199,13 @@
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
-                const bookOrder = [book, ...PROPLINE_BOOK_PRIORITY.filter(b => b !== book)];
                 nbaAllKeys.forEach(k => {
                     const def = NBA_PROP_DEFS[k];
                     const byBook = allLines[k] || {};
-                    const useBook = bookOrder.find(b => byBook[b] && byBook[b].length);
-                    if (!useBook) return;
-                    const crossBook = useBook !== book;
+                    // ONLY the selected book. Never borrow another book's line —
+                    // each tab shows exactly what that book has posted.
+                    if (!byBook[book] || !byBook[book].length) return;
+                    const useBook = book, crossBook = false;
                     const pg = perGameFor(k);
                     const w = statsByKey[k];
                     if (w && (w.season.games || 0) >= 4) {
@@ -8216,7 +8214,6 @@
                         if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
                     }
                     let arr = byBook[useBook];
-                    if (crossBook) { const pr = arr.find(e => e.primary) || arr.slice().sort((a, c) => a.juice - c.juice)[0]; arr = pr ? [pr] : []; }
                     const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                     const multi = sorted.length > 1;
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
@@ -11174,11 +11171,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         onChange={(e) => setParlayApiKeyInput(e.target.value)}
                                     />
                                     <div className="settings-note">
-                                        Optional. Fills DFS books PropLine is thin on (Sleeper) and adds
-                                        <strong> ParlayPlay / Betr / Pick6</strong> for MLB, NFL &amp; CFB. Merged as
-                                        gap-fill — PropLine stays primary where both have a line. Also proxied
-                                        through your backend. Free tier is ~330 prop calls/month (3 credits each),
-                                        so use it as a supplement, not the main feed. No player IDs → matched by name.
+                                        Optional. A second source for the DFS books PropLine is thin on
+                                        (<strong>Sleeper</strong> especially) across MLB, NFL, CFB &amp; NBA. Merged as
+                                        gap-fill — PropLine stays primary where both have a line, and a book only
+                                        ever shows lines that book actually posted. Also proxied through your
+                                        backend. Free tier is ~330 prop calls/month (3 credits each), so use it as a
+                                        supplement, not the main feed. No player IDs → matched by name.
                                     </div>
                                     <button
                                         className="settings-save-btn"
