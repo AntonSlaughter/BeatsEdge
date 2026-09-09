@@ -3600,6 +3600,7 @@
                     btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                     btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                     btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                    btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -3614,7 +3615,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {} }; }
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -3659,6 +3660,14 @@
             if (!ct || !et) return;
             const k = ct + '|' + et;
             const b = acc.confEdge[k] || (acc.confEdge[k] = { n: 0, hit: 0 });
+            b.n++; if (hit) b.hit++;
+        }
+        // Full 3-way: grade × confluence × edge. Keyed "<grade>|<conf>|<edge>".
+        function btFileGCE(acc, grade, green, total, sigPct, hit) {
+            const ct = btConfTier(green, total), et = btEdgeTier(sigPct);
+            if (!grade || !ct || !et) return;
+            const k = grade + '|' + ct + '|' + et;
+            const b = acc.gce[k] || (acc.gce[k] = { n: 0, hit: 0 });
             b.n++; if (hit) b.hit++;
         }
 
@@ -4584,6 +4593,46 @@
                                                           ? ` The corner also beats large-edge-alone (${edgeOnlyR}%) and high-confluence-alone (${confOnlyR}%)${corner.rate - Math.max(edgeOnlyR, confOnlyR) >= 4 ? ' by a clear margin — stacking the two is its own tier, a strong candidate for the top of the ranking.' : ', but only slightly — the two overlap more than they stack.'}`
                                                           : '')
                                                     : ' Not enough sample in the corner cells yet.'}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {bt.gce && Object.keys(bt.gce).length >= 3 && (() => {
+                                    const gc = (g, c, e2) => bt.gce[g + '|' + c + '|' + e2] || null;
+                                    const gcAny = (g, c) => (bt.gradeConf && bt.gradeConf[g + '|' + c]) || null;
+                                    const gAll = (g) => (bt.grades && bt.grades[g] && bt.grades[g].rate != null) ? bt.grades[g] : null;
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 55 ? 'calib-ok' : rate >= 50 ? 'calib-under' : 'calib-over';
+                                    const rows = ['A', 'B', 'C', 'D'].map(g => ({ g, corner: gc(g, 'high', 'large'), hiAny: gcAny(g, 'high'), all: gAll(g) })).filter(r => r.corner || r.hiAny);
+                                    if (!rows.length) return null;
+                                    const corners = rows.filter(r => r.corner && r.corner.n >= 30);
+                                    const cRow = corners.find(r => r.g === 'C'), aRow = corners.find(r => r.g === 'A');
+                                    const spread = corners.length >= 2 ? Math.max(...corners.map(r => r.corner.rate)) - Math.min(...corners.map(r => r.corner.rate)) : null;
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Grade × confluence × edge — does the strong corner survive across grades?</div>
+                                            <table className="backtest-calib-tbl backtest-xtab">
+                                                <thead><tr><th>Grade</th><th>High conf. + large edge</th><th>High conf. (any edge)</th><th>Grade overall</th></tr></thead>
+                                                <tbody>
+                                                    {rows.map(r => (
+                                                        <tr key={r.g}>
+                                                            <td><strong>{r.g}</strong></td>
+                                                            <td className={clsFor(r.corner && r.corner.rate)}>{r.corner ? <React.Fragment><strong>{r.corner.rate}%</strong> <span className="backtest-factor-n">({r.corner.n.toLocaleString()})</span></React.Fragment> : '—'}</td>
+                                                            <td className={clsFor(r.hiAny && r.hiAny.rate)}>{r.hiAny ? <React.Fragment>{r.hiAny.rate}% <span className="backtest-factor-n">({r.hiAny.n.toLocaleString()})</span></React.Fragment> : '—'}</td>
+                                                            <td className="backtest-factor-n">{r.all ? `${r.all.rate}% (${r.all.n.toLocaleString()})` : '—'}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {cRow
+                                                    ? `C + high confluence + large edge lands ${cRow.corner.rate}% (${cRow.corner.n.toLocaleString()}) — ` +
+                                                      (aRow
+                                                          ? (Math.abs(cRow.corner.rate - aRow.corner.rate) <= 4
+                                                              ? `right alongside A's own corner (${aRow.corner.rate}%), and well above C's ${cRow.all ? cRow.all.rate + '%' : 'baseline'} overall. The letter grade IS hiding signal: put a C in this corner and it performs like a top pick.`
+                                                              : `vs A's corner at ${aRow.corner.rate}%. `)
+                                                          : '') +
+                                                      (spread != null && spread <= 6 ? ` Across A/B/C the corner barely moves (~${spread} pts spread) — once you're high-confluence + large-edge, the letter adds little.` : spread != null ? ` The corner still ranges ~${spread} pts across grades, so the letter isn't irrelevant.` : '')
+                                                    : 'Not enough sample in the C corner yet — re-run once the slate has more history.'}
                                             </div>
                                         </div>
                                     );
@@ -8565,6 +8614,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                         btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                         btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -8734,10 +8784,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.confEdge[k];
                         if (b && b.n >= 20) confEdge[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Full grade × confluence × edge (n>=15 — cells are thinner 3 deep).
+                    const gce = {};
+                    Object.keys(acc.gce).forEach(k => {
+                        const b = acc.gce[k];
+                        if (b && b.n >= 15) gce[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
+                    });
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors, prob, probRaw, align, gradeConf, confEdge,
+                        grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
                     };
                     setBacktest(prev => {
