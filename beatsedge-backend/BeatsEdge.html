@@ -2960,22 +2960,10 @@
                 const glRows = (player.gameLogByKey && player.gameLogByKey[prop.statKey]) || [];
                 const avg = (arr) => arr.length ? arr.reduce((x, y) => x + y, 0) / arr.length : null;
                 const r1 = (x) => Math.round(x * 10) / 10;
-                if (player.gameDow != null && glRows.length >= 12) {
-                    const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-                    const on = glRows.filter(g => g.dow === player.gameDow).map(g => g.points);
-                    const off = glRows.filter(g => g.dow != null && g.dow !== player.gameDow).map(g => g.points);
-                    if (on.length >= 4 && off.length >= 4) {
-                        const onA = avg(on), offA = avg(off);
-                        if (offA && Math.abs(onA - offA) / offA >= 0.08) {
-                            factors.push({
-                                key: 'dow',
-                                name: `On ${DOW[player.gameDow]}s`,
-                                supports: direction === 'over' ? onA > offA : onA < offA,
-                                detail: `${r1(onA)} avg on ${DOW[player.gameDow]}s (${on.length}g) vs ${r1(offA)} other days`
-                            });
-                        }
-                    }
-                }
+                // Day-of-week was DROPPED — the walk-forward backtest over
+                // 20k+ real prop-sides showed NBA weekday splits don't persist
+                // (mid-week fires landed ~44-46%, i.e. slightly anti-predictive
+                // even after tightening). Weekday performance is noise.
                 if (player.oppRank != null && glRows.length >= 12) {
                     const sim = glRows.filter(g => g.oppRank != null && Math.abs(g.oppRank - player.oppRank) <= 6).map(g => g.points);
                     if (sim.length >= 4) {
@@ -4131,7 +4119,7 @@
             const otherReadySports = Object.keys(SPORT_STATUS).filter(s => SPORT_STATUS[s] === 'ready' && s !== selectedSport);
             const bt = backtestForSport(backtest, selectedSport);
             const cal = bt ? bt.grades : null;
-            const canBacktest = (selectedSport === 'mlb' || selectedSport === 'nfl') && Array.isArray(playersData) && playersData.some(p => p.sport === selectedSport);
+            const canBacktest = (selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'nba') && Array.isArray(playersData) && playersData.some(p => p.sport === selectedSport);
 
             const PickCard = ({ p, n }) => {
                 const why = p.edge.factors.filter(f => f.supports).map(f => f.name);
@@ -8129,6 +8117,90 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 }));
             };
 
+            // Multi-season NBA game logs for the backtest (one season is ~70
+            // games — pull two so the walk-forward has a real sample).
+            const nbaGamelogsMulti = async (ids, years) => {
+                const map = {};
+                for (const grp of chunk([...new Set(ids)], 16)) {
+                    await Promise.all(grp.map(async id => {
+                        const rows = [];
+                        for (const yr of years) {
+                            try { const gl = await nflFetch(`${NBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${yr}`); if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl)); }
+                            catch (e) { /* skip year */ }
+                        }
+                        rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+                        map[id] = rows;
+                    }));
+                }
+                return map;
+            };
+
+            // Walk-forward for ONE NBA player-stat series — same as the generic
+            // backtestSeries, but the fake player is fully populated with the
+            // context the live model uses (opponent Defense-vs-Position, that
+            // opponent's team rank, day-of-week / rest / home-road annotated
+            // history, projected & trending minutes) so the backtest measures
+            // the REAL grade, new factors included — not just the projection.
+            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, oppRankByAbbr) => {
+                const MIN = 14;
+                const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
+                for (let i = MIN; i < vals.length; i++) {
+                    const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                    const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                    if (seasonAvg <= 0) continue;
+                    let line = null, bestGap = 99;
+                    for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                        const over = hv.filter(v => v > cand).length / hv.length;
+                        const gap = Math.abs(over - 0.48);
+                        if (gap < bestGap) { bestGap = gap; line = cand; }
+                    }
+                    if (line == null || line <= 0) continue;
+                    const actual = vals[i], tonightOpp = opps[i];
+                    if (actual === line) continue;
+                    const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                    w.last5.minAvg = mMean(hm.slice(-5)); w.last10.minAvg = mMean(hm.slice(-10));
+                    w.last20.minAvg = mMean(hm.slice(-20)); w.season.minAvg = mMean(hm);
+                    w.vsOpp.minAvg = w.season.minAvg; w.recent.minAvg = w.last5.minAvg;
+                    const glHist = hv.map((v, j) => ({
+                        points: v, line, opponent: ho[j],
+                        vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
+                        dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null,
+                        oppRank: oppRankByAbbr[ho[j]] || null,
+                        rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
+                    }));
+                    const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
+                    const projMin = nbaProjMinutes(hm.map(m => ({ row: { minutes: m } })));
+                    const fake = {
+                        sport: 'nba', position: group, opponent: tonightOpp,
+                        statsByKey: { [statKey]: w }, gameLogByKey: { [statKey]: glHist },
+                        opponentDefense: nbaDvpFor(tonightOpp, group),
+                        oppRank: oppRankByAbbr[tonightOpp] || null,
+                        gameDow: Number.isFinite(tss[i]) && tss[i] > 0 ? new Date(tss[i]).getDay() : null,
+                        b2b: tRest != null ? { restDays: tRest, tonight: tRest <= 1 ? 'second' : null, first: null } : null,
+                        isHomeTonight: !!homes[i],
+                        minutesTrend: nbaMinutesTrend(hm.map(m => ({ row: { minutes: m } }))),
+                        projMin,
+                        opponentContext: null, oppDef: null, situational: null
+                    };
+                    for (const dir of ['over', 'under']) {
+                        const e = calculateEdgeScore(fake, { statKey, type: statKey, line, direction: dir, lineSource: 'backtest' });
+                        const hit = dir === 'over' ? actual > line : actual < line;
+                        const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
+                        g.n++; if (hit) g.hit++;
+                        acc._total.n++; if (hit) acc._total.hit++;
+                        const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
+                        const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
+                        sb.n++; if (hit) sb.hit++;
+                        e.factors.forEach(f => {
+                            if (!f.supports) return;
+                            const name = /^[A-Z]{2,4} vs (guards|forwards|centers)$/.test(f.name) ? 'Defense vs position' : /^vs\s+[A-Z]{2,4}$/.test(f.name) ? 'Recent vs opponent' : f.name;
+                            const fb = acc.factors[name] || (acc.factors[name] = { n: 0, hit: 0 });
+                            fb.n++; if (hit) fb.hit++;
+                        });
+                    }
+                }
+            };
+
             // ── Run the walk-forward backtest over every player on the current
             // slate (their full real game logs), for the current sport.
             const runBacktest = async () => {
@@ -8175,6 +8247,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 const vals = rows.map(r => def.get(r.row) || 0);
                                 if (vals.every(v => v === 0)) return;
                                 backtestSeries(vals, opps, 'nfl', p.position, acc, 6);
+                                evaluated++;
+                            });
+                        });
+                    } else if (selectedSport === 'nba') {
+                        const ids = [...new Set(roster.map(p => p.id))];
+                        const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1]);
+                        const oppRankByAbbr = nbaCache.current.oppRankByAbbr || {};
+                        roster.forEach(p => {
+                            const rows = glMap[p.id] || [];
+                            if (rows.length < 20) return;
+                            const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                            const opps = rows.map(r => r.opponent || '');
+                            const tss = rows.map(r => r.ts || 0);
+                            const mins = rows.map(r => (r.row && r.row.minutes) || null);
+                            const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
+                            nbaAllKeys.forEach(k => {
+                                const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
+                                if (vals.every(v => v === 0)) return;
+                                nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc, oppRankByAbbr);
                                 evaluated++;
                             });
                         });
