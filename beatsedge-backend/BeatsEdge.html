@@ -3333,12 +3333,25 @@
                 });
             }
 
-            // clamp — a model estimate is never a certainty. 78% is about as
-            // confident as a single-game prop model should ever sound.
-            const PROB_FLOOR = 0.22, PROB_CEIL = 0.78;
-            const modelProb = Math.max(PROB_FLOOR, Math.min(PROB_CEIL, pAdj));
+            // Raw estimate — kept inside the band the estimator was tuned for.
+            const RAW_FLOOR = 0.22, RAW_CEIL = 0.78;
+            const rawModelProb = Math.max(RAW_FLOOR, Math.min(RAW_CEIL, pAdj));
+            // Map the raw estimate onto how often calls at that confidence have
+            // ACTUALLY landed for this sport (see PROB_CALIB / the backtest).
+            // No curve stored (well-calibrated sport, or never backtested) → the
+            // raw estimate passes straight through. The calibrated value is
+            // allowed a wider band (a backtested "90%" should be able to say so).
+            const pCal = applyProbCalib(rawModelProb, sport);
+            const modelProb = Math.max(0.03, Math.min(0.97, pCal));
+            if (Math.abs(modelProb - rawModelProb) >= 0.01) {
+                probSteps.push({
+                    label: 'Backtest calibration',
+                    p: modelProb,
+                    detail: `raw estimate ${Math.round(rawModelProb * 100)}% → ${Math.round(modelProb * 100)}%, matching ${String(sport || '').toUpperCase()} calls at this confidence to how often they've actually hit walk-forward`
+                });
+            }
             probSteps.push({
-                label: modelProb === pAdj ? 'Model probability' : `Model probability (held inside the ${Math.round(PROB_FLOOR * 100)}–${Math.round(PROB_CEIL * 100)}% band — no estimate is a lock)`,
+                label: 'Model probability',
                 p: modelProb, subtotal: true, final: true
             });
 
@@ -3416,6 +3429,7 @@
                 // probability layer (all estimates, not guarantees)
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
+                rawModelProbPct: Math.round(rawModelProb * 100),
                 impliedProb,
                 impliedProbPct: Math.round(impliedProb * 100),
                 hasRealPrice,
@@ -3577,7 +3591,7 @@
                     const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                     g.n++; if (hit) g.hit++;
                     acc._total.n++; if (hit) acc._total.hit++;
-                    btFileProb(acc, e.modelProbPct, hit);
+                    btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                     btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
@@ -3593,7 +3607,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, align: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {} }; }
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -3621,11 +3635,15 @@
             if (pct < 75) return '70-74';
             return '75+';
         }
-        function btFileProb(acc, pct, hit) {
+        // `pct` = the probability the app SHOWS (post-calibration) → acc.prob,
+        // used for the displayed calibration table. `rawPct` = the model's raw
+        // estimate → acc.probRaw, which is what `deriveProbCalib` fits the curve
+        // to (so replacing the curve is always raw→actual, never curve-on-curve).
+        function btFileProb(acc, pct, rawPct, hit) {
             const k = btProbBucket(pct);
-            if (!k) return;
-            const b = acc.prob[k] || (acc.prob[k] = { n: 0, hit: 0 });
-            b.n++; if (hit) b.hit++;
+            if (k) { const b = acc.prob[k] || (acc.prob[k] = { n: 0, hit: 0, sumPct: 0 }); b.n++; if (hit) b.hit++; b.sumPct += pct; }
+            const rk = btProbBucket(rawPct == null ? pct : rawPct);
+            if (rk) { const rb = acc.probRaw[rk] || (acc.probRaw[rk] = { n: 0, hit: 0, sumPct: 0 }); rb.n++; if (hit) rb.hit++; rb.sumPct += (rawPct == null ? pct : rawPct); }
         }
 
         // Daily line archive — snapshot every STANDARD posted line so that, after
@@ -3720,6 +3738,59 @@
             if (raw && typeof raw.A === 'number') GRADE_CUTOFFS = { mlb: raw };
             else if (raw) GRADE_CUTOFFS = raw;
         } catch (e) { }
+
+        // Per-sport PROBABILITY calibration curve, populated by each sport's
+        // backtest. The model's raw probability is a good RANKING but the scale
+        // can be off (MLB backtest: raw "75%" calls actually landed ~94%, raw
+        // "45%" calls ~33% — the estimate was squashed toward 50%). This maps
+        // the raw estimate onto the frequency those estimates have actually hit.
+        // Shape: { mlb: [[rawPct, actualPct], ...] } sorted by rawPct.
+        let PROB_CALIB = {};
+        try {
+            const raw = JSON.parse(localStorage.getItem('beatsedge_prob_calib_v1') || 'null');
+            if (raw && typeof raw === 'object') PROB_CALIB = raw;
+        } catch (e) { }
+        // Build a raw→actual curve from a backtest's probability buckets
+        // ({ '<50': {n, hit, sumPct}, ... }). Returns null when the sample is
+        // thin or the model is already well calibrated (nothing to correct).
+        function deriveProbCalib(probBuckets) {
+            const pts = [];
+            let tot = 0;
+            BT_PROB_BUCKETS.forEach(k => {
+                const b = probBuckets[k];
+                if (b && b.n >= 200 && b.sumPct != null) { pts.push({ x: b.sumPct / b.n, y: (b.hit / b.n) * 100, n: b.n }); tot += b.n; }
+            });
+            if (pts.length < 3 || tot < 4000) return null;
+            pts.sort((a, b) => a.x - b.x);
+            // Enforce a non-decreasing curve (weighted pool-adjacent-violators).
+            for (let i = 1; i < pts.length; i++) {
+                if (pts[i].y < pts[i - 1].y) {
+                    const w = pts[i - 1].n + pts[i].n;
+                    const m = (pts[i - 1].y * pts[i - 1].n + pts[i].y * pts[i].n) / w;
+                    pts[i - 1].y = pts[i].y = m;
+                }
+            }
+            const maxDev = Math.max(...pts.map(p => Math.abs(p.y - p.x)));
+            if (maxDev < 3) return null; // already calibrated — don't store noise
+            return pts.map(p => [Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10]);
+        }
+        // Apply the stored curve to a 0-1 probability. Piecewise-linear between
+        // anchors; OUTSIDE the fitted range the endpoint value is held flat
+        // (no extrapolation — there's no data out there, and a steep last
+        // segment would otherwise fling an 80% raw estimate to 99%). Monotone,
+        // re-clamped 1-99%.
+        function applyProbCalib(p01, sport) {
+            const cal = PROB_CALIB && PROB_CALIB[sport];
+            if (!Array.isArray(cal) || cal.length < 2) return p01;
+            const x = p01 * 100;
+            if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
+            if (x >= cal[cal.length - 1][0]) return Math.max(0.01, Math.min(0.99, cal[cal.length - 1][1] / 100));
+            let seg;
+            for (let i = 1; i < cal.length; i++) { if (x <= cal[i][0]) { seg = [cal[i - 1], cal[i]]; break; } }
+            const [[x0, y0], [x1, y1]] = seg;
+            const y = y0 + (y1 - y0) * (x - x0) / ((x1 - x0) || 1);
+            return Math.max(0.01, Math.min(0.99, y / 100));
+        }
 
         // ESPN returns some fields (injury type, status) as either a plain
         // string OR an object like {name, description, abbreviation}. Everything
@@ -4308,6 +4379,10 @@
                                     const hi = rows.filter(r => r.mid >= 60);
                                     const hiN = hi.reduce((s, r) => s + r.n, 0);
                                     const hiGap = hiN ? Math.round(hi.reduce((s, r) => s + (r.rate - r.mid) * r.n, 0) / hiN) : null;
+                                    const rawRows = bt.probRaw ? BT_PROB_BUCKETS.filter(k => bt.probRaw[k]).map(k => ({ k, ...bt.probRaw[k] })) : [];
+                                    const rawHi = rawRows.filter(r => r.mid >= 60);
+                                    const rawHiN = rawHi.reduce((s, r) => s + r.n, 0);
+                                    const rawHiGap = rawHiN ? Math.round(rawHi.reduce((s, r) => s + (r.rate - r.mid) * r.n, 0) / rawHiN) : null;
                                     return (
                                         <div className="backtest-calib">
                                             <div className="backtest-calib-title">Probability calibration — when it says a number, does that side hit that often?</div>
@@ -4315,7 +4390,7 @@
                                                 <thead><tr><th>BeatsEdge says</th><th>Actually hit</th><th>Sample</th><th>Gap</th></tr></thead>
                                                 <tbody>
                                                     {rows.map(r => {
-                                                        const gap = r.rate - r.mid;
+                                                        const gap = Math.round((r.rate - r.mid) * 10) / 10;
                                                         const cls = Math.abs(gap) <= 3 ? 'calib-ok' : gap < 0 ? 'calib-over' : 'calib-under';
                                                         return (
                                                             <tr key={r.k}>
@@ -4329,13 +4404,17 @@
                                                 </tbody>
                                             </table>
                                             <div className="backtest-calib-note">
-                                                Gap = actual minus the midpoint of what the number claims. A negative gap means the model is
-                                                <strong> overconfident</strong> in that band.
+                                                Gap = actual minus what the number claims (the mean stated probability in that band).
                                                 {hiGap != null && hiGap <= -4
-                                                    ? ` Across its 60%+ calls the model runs about ${Math.abs(hiGap)} points hot — a stated 70% is really closer to ${70 + hiGap}%. Treat the confidence as a ranking, not a true probability, until this is recalibrated.`
+                                                    ? ` The app's 60%+ calls still run about ${Math.abs(hiGap)} points hot — a shown 70% is really closer to ${70 + hiGap}%.`
                                                     : hiGap != null && Math.abs(hiGap) <= 3
-                                                        ? ' Its higher-confidence calls land close to what they claim — calibration looks reasonable.'
-                                                        : ` Weighted across every band it runs ${wGap >= 0 ? '+' : ''}${wGap} points vs claim.`}
+                                                        ? ' The shown numbers land within a few points of reality — calibration looks good.'
+                                                        : ` Weighted across every band the shown number runs ${wGap >= 0 ? '+' : ''}${wGap} points vs reality.`}
+                                                {bt.probCurve && rawHiGap != null && Math.abs(rawHiGap) >= 4
+                                                    ? ` A backtest calibration curve is applied: before it, this sport's raw 60%+ estimates were ${rawHiGap >= 0 ? '+' : ''}${rawHiGap} pts off — the shown probability is the corrected one.`
+                                                    : bt.probCurve
+                                                        ? ' A backtest calibration curve is applied so the shown probability tracks real frequency.'
+                                                        : ''}
                                             </div>
                                         </div>
                                     );
@@ -8346,7 +8425,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                         g.n++; if (hit) g.hit++;
                         acc._total.n++; if (hit) acc._total.hit++;
-                        btFileProb(acc, e.modelProbPct, hit);
+                        btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                         btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -8450,23 +8529,32 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         return;
                     }
 
-                    // Pass 1 — tally with whatever cutoffs are live, then derive
-                    // this sport's own cutoffs from the gradeScore histogram
-                    // (histogram is cutoff-independent, so one derivation is enough).
+                    // Pass 1 — tally with whatever cutoffs / calibration are live,
+                    // then derive this sport's own from pass-1 outcomes: grade
+                    // cutoffs from the (cutoff-independent) gradeScore histogram,
+                    // and the probability curve from the RAW-estimate buckets
+                    // (acc1.probRaw, so it's always a raw→actual map).
                     const acc1 = emptyBacktestAcc();
                     runPass(acc1);
                     const cutoffs = deriveGradeCutoffs(acc1.score);
+                    const probCal = deriveProbCalib(acc1.probRaw);
 
-                    // Pass 2 — apply the new cutoffs and re-tally so the reported
-                    // grade hit-rates are anchored to THIS run's cutoffs (fixes the
-                    // one-run lag where letters reflected the previous run).
+                    // Pass 2 — apply the new cutoffs + calibration and re-tally, so
+                    // the reported grade hit-rates AND the probability-calibration
+                    // table reflect THIS run's corrections (not the previous run's).
                     let acc = acc1;
-                    if (cutoffs) {
-                        GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
+                    if (cutoffs || probCal) {
+                        if (cutoffs) {
+                            GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
+                            try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { }
+                        }
+                        if (probCal) {
+                            PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
+                            try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { }
+                        }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
                         runPass(acc);
-                        try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { }
                         bumpEdgeCache();
                         setGradeVersion(v => v + 1); // invalidate memoized grades
                     }
@@ -8480,11 +8568,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     Object.entries(acc.factors).forEach(([name, b]) => {
                         if (b.n >= 30) factors[name] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
-                    // Probability calibration — stated % vs what actually landed.
-                    const prob = {};
+                    // Probability calibration — the % the app SHOWS vs what
+                    // actually landed (acc.prob is post-calibration). `probRaw`
+                    // keeps the pre-calibration picture for the "before" note.
+                    const prob = {}, probRaw = {};
                     BT_PROB_BUCKETS.forEach(k => {
                         const b = acc.prob[k];
-                        if (b && b.n >= 20) prob[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), mid: BT_PROB_MID[k] };
+                        if (b && b.n >= 20) prob[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), mid: b.sumPct != null && b.n ? Math.round((b.sumPct / b.n) * 10) / 10 : BT_PROB_MID[k] };
+                        const r = acc.probRaw[k];
+                        if (r && r.n >= 20) probRaw[k] = { n: r.n, rate: Math.round((r.hit / r.n) * 100), mid: r.sumPct != null && r.n ? Math.round((r.sumPct / r.n) * 10) / 10 : BT_PROB_MID[k] };
                     });
                     // Factor confluence — hit rate by number of aligned factors.
                     const align = {};
@@ -8495,7 +8587,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors, prob, align
+                        grades, factors, prob, probRaw, align,
+                        probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
                     };
                     setBacktest(prev => {
                         const base = (prev && !prev.grades) ? prev : {}; // drop legacy single-object shape
