@@ -819,6 +819,25 @@
         .grade-badge-sm.grade-c { color: var(--warning-yellow); border-color: var(--warning-yellow); }
         .grade-badge-sm.grade-d { color: var(--danger-red); border-color: var(--danger-red); }
 
+        /* "Prime corner" — high confluence + large edge (backtest finding) */
+        .grade-badge.is-prime {
+            border-color: #ff8a3d;
+            box-shadow: 0 0 0 1px rgba(255,138,61,0.35), 0 0 14px rgba(255,138,61,0.28);
+        }
+        .grade-badge.is-prime .grade-badge-caption { color: #ff8a3d; font-weight: 700; }
+        .prime-tag { color: #ff8a3d; font-weight: 800; letter-spacing: 0.02em; }
+        .prime-banner {
+            margin: -0.4rem 0 1.1rem;
+            padding: 0.6rem 0.8rem;
+            border-radius: 8px;
+            font-size: 0.78rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+            background: rgba(255,138,61,0.10);
+            border: 1px solid rgba(255,138,61,0.35);
+        }
+        .prime-banner em { color: #ff8a3d; font-style: normal; font-weight: 700; }
+
         .expand-icon {
             color: var(--text-muted);
             font-size: 1.25rem;
@@ -3199,7 +3218,7 @@
             // Model edge (which direction the projection leans vs the line) is
             // by far the most predictive input in the backtest, so it carries
             // most of the weight; factor confluence is a modifier.
-            const gradeScore = 0.25 * (confidence / 100) + 0.75 * edgeComponent;
+            let gradeScore = 0.25 * (confidence / 100) + 0.75 * edgeComponent;
             let grade;
             const cut = GRADE_CUTOFFS && GRADE_CUTOFFS[sport];
             if (cut) {
@@ -3241,6 +3260,22 @@
             // adds a season-not-started guard (Week 1-3 = prior-year logs only).
             if (_football && grade === 'A' && totalFactors < 4) grade = 'B';
             if (sport === 'ncaaf' && grade === 'A' && (s.season && s.season.games || 0) < 6) grade = 'B';
+
+            // ── "Prime corner" — confluence × edge, from the walk-forward.
+            // A pick with a strong majority of factors aligned (≥⅔) AND a
+            // large model edge (≥11% of the line) landed ~63–66% in the
+            // backtest REGARDLESS of the letter — a C in this corner
+            // performed like an A. The letter was burying those, so promote
+            // and flag it. RED-matchup / thin-sample caps still win (they're
+            // applied above and re-checked here).
+            const confShare = totalFactors > 0 ? greenCount / totalFactors : 0;
+            const edgeSigPct = Math.round(signal * 1000) / 10;
+            const primeCorner = !thinData && matchupLabel !== 'RED MATCHUP'
+                && confShare >= 0.67 && edgeSigPct >= 11;
+            if (prop.lineSource !== 'backtest' && primeCorner && (grade === 'C' || grade === 'D')) {
+                grade = 'A';
+                gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
+            }
 
             // ---- Model probability + betting edge --------------------------
             // P(this side hits) — a calibrated ESTIMATE, not a lock. Three
@@ -3427,7 +3462,8 @@
                 projection,
                 thinData,
                 edge: roundedEdge,
-                edgeSignalPct: Math.round(signal * 1000) / 10, // directional (projection vs line) / line, %
+                edgeSignalPct: edgeSigPct, // directional (projection vs line) / line, %
+                prime: primeCorner,        // high confluence + large edge (backtest "prime corner")
                 matchupLabel,
                 grade,
                 gradeScore: Math.round(gradeScore * 100) / 100,
@@ -3466,7 +3502,7 @@
                     const e = calculateEdgeScore(player, prop);
                     if (!best || GRADE_RANK[e.grade] < GRADE_RANK[best.grade] ||
                         (e.grade === best.grade && e.gradeScore > best.gradeScore)) {
-                        best = { grade: e.grade, gradeScore: e.gradeScore, edge: e.edge };
+                        best = { grade: e.grade, gradeScore: e.gradeScore, edge: e.edge, prime: e.prime };
                     }
                 });
                 return best;
@@ -3489,7 +3525,7 @@
         // `direction` ('over' | 'under') to restrict to that side only — used
         // by the research page to show the best overs and the best unders.
         function findTopPicks(players, n = 6, direction = null) {
-            const rank = (e) => [GRADE_RANK[e.grade], -e.gradeScore, -Math.abs(e.edge)];
+            const rank = (e) => [GRADE_RANK[e.grade], e.prime ? 0 : 1, -e.gradeScore, -Math.abs(e.edge)];
             const rows = [];
             (players || []).forEach(player => {
                 if (player.status === 'OUT' || !Array.isArray(player.props) || !player.props.length) return;
@@ -3506,18 +3542,15 @@
                     const edge = calculateEdgeScore(player, prop);
                     if (edge.thinData) return; // not enough game log to trust the projection
                     if (!bestForPlayer) { bestForPlayer = { player, prop, propIdx: idx, edge }; return; }
-                    const [ar, ag, ae] = rank(edge);
-                    const [br, bg, be] = rank(bestForPlayer.edge);
-                    if (ar < br || (ar === br && ag < bg) || (ar === br && ag === bg && ae < be)) {
-                        bestForPlayer = { player, prop, propIdx: idx, edge };
-                    }
+                    const ra = rank(edge), rb = rank(bestForPlayer.edge);
+                    for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) { if (ra[i] < rb[i]) bestForPlayer = { player, prop, propIdx: idx, edge }; break; } }
                 });
                 if (bestForPlayer) rows.push(bestForPlayer);
             });
             rows.sort((a, b) => {
-                const [ar, ag, ae] = rank(a.edge);
-                const [br, bg, be] = rank(b.edge);
-                return ar - br || ag - bg || ae - be;
+                const ra = rank(a.edge), rb = rank(b.edge);
+                for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) return ra[i] - rb[i]; }
+                return 0;
             });
             return rows.slice(0, n);
         }
@@ -4341,9 +4374,9 @@
                                     </div>
                                 </div>
                             </div>
-                            <div className={`grade-badge ${GRADE_META[p.edge.grade].cls}`} title={GRADE_META[p.edge.grade].label}>
+                            <div className={`grade-badge ${GRADE_META[p.edge.grade].cls}${p.edge.prime ? ' is-prime' : ''}`} title={p.edge.prime ? 'Prime corner — high confluence + large edge (backtest ~63–66%)' : GRADE_META[p.edge.grade].label}>
                                 <div className="grade-badge-letter">{p.edge.grade}</div>
-                                <div className="grade-badge-caption">Grade</div>
+                                <div className="grade-badge-caption">{p.edge.prime ? '🔥 Prime' : 'Grade'}</div>
                             </div>
                         </div>
                         <div className="top-pick-confidence-row">
@@ -4352,6 +4385,7 @@
                         </div>
                         <div className={`top-pick-verdict ${verdictClass(p.edge.matchupLabel)}`}>
                             {p.edge.matchupLabel} • {p.edge.greenCount}/{p.edge.totalFactors} aligned
+                            {p.edge.prime && <span className="prime-tag"> • 🔥 PRIME</span>}
                         </div>
                         <div className="top-pick-why">
                             <span className="top-pick-why-label">Why:</span>{' '}
@@ -9594,9 +9628,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 {player.status !== 'OUT' && player.props && player.props.length > 0 && (() => {
                                     const bg = playerBestGrade(player, statFilter);
                                     return (
-                                        <div className={`grade-badge ${GRADE_META[bg.grade].cls}`} title={GRADE_META[bg.grade].label}>
+                                        <div className={`grade-badge ${GRADE_META[bg.grade].cls}${bg.prime ? ' is-prime' : ''}`} title={bg.prime ? 'Prime corner — high confluence + large edge (backtest ~63–66%)' : GRADE_META[bg.grade].label}>
                                             <div className="grade-badge-letter">{bg.grade}</div>
-                                            <div className="grade-badge-caption">Grade</div>
+                                            <div className="grade-badge-caption">{bg.prime ? '🔥 Prime' : 'Grade'}</div>
                                         </div>
                                     );
                                 })()}
@@ -9854,6 +9888,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 <div className={`matchup-verdict-banner ${verdictClass}`}>
                                                     {verdictEmoji} {edge.matchupLabel} • {edge.greenCount}/{edge.totalFactors} FACTORS ALIGNED • {edge.confidence}% CONFIDENCE
                                                 </div>
+                                                {edge.prime && (
+                                                    <div className="prime-banner">
+                                                        🔥 PRIME CORNER — a strong majority of factors align <em>and</em> the model edge is large.
+                                                        In the walk-forward this combination landed ~63–66% whatever the letter, so it's graded A here.
+                                                    </div>
+                                                )}
 
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', margin: '0 0 1.25rem' }}>
                                                     <div className={`grade-badge ${GRADE_META[edge.grade].cls}`}>
@@ -11108,6 +11148,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     : gradedPlayers.slice();
                 const cmp = {
                     grade: (a, b) => (GRADE_RANK[a.g.grade] - GRADE_RANK[b.g.grade])
+                        || ((b.g.prime ? 1 : 0) - (a.g.prime ? 1 : 0))
                         || (b.g.gradeScore - a.g.gradeScore)
                         || (Math.abs(b.g.edge) - Math.abs(a.g.edge)),
                     edge: (a, b) => (b.g.edge - a.g.edge),
