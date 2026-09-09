@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BeatsEdge - Premium Sports Betting Intelligence</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b0d10'/%3E%3Ctext x='50' y='50' font-size='58' font-family='Georgia,serif' font-weight='700' fill='%23ff4436' text-anchor='middle' dominant-baseline='central'%3EB%3C/text%3E%3C/svg%3E">
+    <meta name="theme-color" content="#0b0d10">
+    <meta name="description" content="BeatsEdge — model-graded player props with the full research behind every pick.">
+    <meta name="robots" content="noindex">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -4436,9 +4441,11 @@
             );
         }
         // NBA and NFL have real backend pipelines built (see beatsedge-backend).
-        // NHL/MLB aren't wired up yet — shown but disabled rather than hidden,
-        // so it's honest about what's coming vs. what silently doesn't exist.
-        const SPORT_STATUS = { nba: 'ready', nfl: 'ready', nhl: 'ready', mlb: 'ready', ncaaf: 'ready' };
+        // 'ready' = real slate + real prop lines wired. 'soon' = shown but
+        // locked (no real pipeline yet), so we never serve sample picks that
+        // look analyzed. NHL: no free source publishes NHL props and there's
+        // no real NHL slate builder — locked until that exists.
+        const SPORT_STATUS = { nba: 'ready', nfl: 'ready', nhl: 'soon', mlb: 'ready', ncaaf: 'ready' };
 
         // The backtest result for one sport (state holds { mlb: {...}, nfl: {...} }).
         function backtestForSport(backtest, sport) {
@@ -11456,30 +11463,36 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // best overs + 2 best unders) — each card trimmed to just the one
             // prop that is the pick (not the player's whole prop menu), with its
             // FULL research modal intact. Everyone/everything else is Pro.
-            const researchPickIds = React.useMemo(() => {
-                if (!Array.isArray(playersData) || !playersData.length) return new Set();
-                const r = findResearchPicks(playersData);
-                return new Set([...r.overs, ...r.unders].map(x => x.player.id));
-            }, [playersData, gradeVersion]);
-            const pickPropKeys = React.useMemo(() => {
-                const m = {};
+            // One computation, shared by the id set and the per-player prop-key
+            // map — so the Browse grid can't disagree with the Research page.
+            const research = React.useMemo(() => {
+                const ids = new Set(), propKeys = {};
                 if (Array.isArray(playersData) && playersData.length) {
                     const r = findResearchPicks(playersData);
                     [...r.overs, ...r.unders].forEach(x => {
+                        ids.add(x.player.id);
                         const k = x.prop.statKey + '|' + (x.prop.direction || 'over');
-                        (m[x.player.id] = m[x.player.id] || new Set()).add(k);
+                        (propKeys[x.player.id] = propKeys[x.player.id] || new Set()).add(k);
                     });
                 }
-                return m;
+                return { ids, propKeys };
             }, [playersData, gradeVersion]);
+            const researchPickIds = research.ids;
+            const pickPropKeys = research.propKeys;
             const browsePlayers = isPro
                 ? filteredPlayers
-                : filteredPlayers.filter(p => researchPickIds.has(p.id)).map(p => {
-                    const keep = pickPropKeys[p.id];
-                    if (!keep || !Array.isArray(p.props)) return p;
-                    const props = p.props.filter(pr => keep.has(pr.statKey + '|' + (pr.direction || 'over')));
-                    return props.length ? { ...p, props } : p;
-                });
+                // FREE: the ≤4 research picks, each trimmed to its pick prop —
+                // PLUS whatever player a deep-link is currently pointed at (the
+                // pick set can shift a little while the slate is still loading,
+                // and "See full research" must always land somewhere).
+                : filteredPlayers
+                    .filter(p => researchPickIds.has(p.id) || (detailModal && detailModal.playerId === p.id))
+                    .map(p => {
+                        const keep = pickPropKeys[p.id];
+                        if (!keep || !Array.isArray(p.props)) return p;
+                        const props = p.props.filter(pr => keep.has(pr.statKey + '|' + (pr.direction || 'over')));
+                        return props.length ? { ...p, props } : p;
+                    });
             const freePickCount = isPro ? 0 : browsePlayers.reduce((n, p) => n + (Array.isArray(p.props) ? p.props.length : 0), 0);
             const lockedCount = isPro ? 0 : Math.max(0, filteredPlayers.length - browsePlayers.length);
 
@@ -11518,14 +11531,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 <button
                                     className={`view-toggle-btn ${currentView === 'news' ? 'active' : ''}`}
                                     onClick={() => setCurrentView('news')}
+                                    title={isPro ? '' : 'Pro'}
                                 >
-                                    News{Array.isArray(lineups) && lineups.some(g => g.confirmed) ? ' 🟢' : ''}
+                                    News{isPro ? (Array.isArray(lineups) && lineups.some(g => g.confirmed) ? ' 🟢' : '') : ' 🔒'}
                                 </button>
                                 <button
                                     className={`view-toggle-btn ${currentView === 'injuries' ? 'active' : ''}`}
                                     onClick={() => setCurrentView('injuries')}
+                                    title={isPro ? '' : 'Pro'}
                                 >
-                                    Injuries{Array.isArray(injuryNews) && injuryNews.length > 0 ? ` (${injuryNews.length})` : ''}
+                                    Injuries{isPro ? (Array.isArray(injuryNews) && injuryNews.length > 0 ? ` (${injuryNews.length})` : '') : ' 🔒'}
                                 </button>
                             </div>
                             <div className="sport-switcher">
@@ -11640,20 +11655,37 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </div>
                         )}
 
-                        {Array.isArray(injuryNews) && injuryNews.length > 0 && (
+                        {(() => {
+                            if (!Array.isArray(injuryNews) || !injuryNews.length) return null;
+                            // FREE: only injuries that touch one of the 4 research
+                            // picks (their player, team, or opponent). PRO: the
+                            // full wire + a link to the Injuries page.
+                            let items = injuryNews, scoped = false;
+                            if (!isPro) {
+                                const norm = s => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
+                                const pk = (Array.isArray(playersData) ? playersData : []).filter(p => research.ids.has(p.id));
+                                const names = new Set(pk.map(p => norm(p.name)));
+                                const teams = new Set(pk.flatMap(p => [String(p.team || '').toUpperCase(), String(p.opponent || '').toUpperCase()]).filter(Boolean));
+                                items = injuryNews.filter(n => names.has(norm(n.player)) || teams.has(String(n.team || '').toUpperCase()));
+                                scoped = true;
+                            }
+                            if (!items.length) return null;
+                            return (
                             <div className="news-banner">
                                 <div className="news-icon">⚠️</div>
                                 <div className="news-content">
                                     <div className="news-title">
-                                        Injury wire {injuryDataSource === 'live' ? '· live' : '· sample'}
-                                        <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}> — newest first · </span>
-                                        <span
-                                            style={{ fontWeight: 700, color: 'var(--info-blue)', cursor: 'pointer' }}
-                                            onClick={() => setCurrentView('injuries')}
-                                        >open the Injuries page →</span>
+                                        {scoped ? 'Injuries affecting your picks' : 'Injury wire'} {injuryDataSource === 'live' ? '· live' : '· sample'}
+                                        {isPro && <>
+                                            <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}> — newest first · </span>
+                                            <span
+                                                style={{ fontWeight: 700, color: 'var(--info-blue)', cursor: 'pointer' }}
+                                                onClick={() => setCurrentView('injuries')}
+                                            >open the Injuries page →</span>
+                                        </>}
                                     </div>
                                     <div className="news-text">
-                                        {injuryNews.slice(0, 14).map((news, i) => (
+                                        {items.slice(0, 14).map((news, i) => (
                                             <span key={i} style={{ whiteSpace: 'nowrap' }}>
                                                 <strong style={{ color: 'var(--text-primary)' }}>{news.player}</strong>
                                                 {news.team ? ` ${news.team}` : ''} · {news.status}
@@ -11663,7 +11695,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     </div>
                                 </div>
                             </div>
-                        )}
+                            );
+                        })()}
 
                         <div className="content-header">
                             <div className="page-title">
