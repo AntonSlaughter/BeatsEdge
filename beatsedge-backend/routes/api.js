@@ -10,6 +10,7 @@ const { getDefenseByPosition: getNhlDefenseByPosition } = require('../lib/nhlEng
 const nhlDb = require('../lib/nhlDb');
 const db = require('../lib/db');
 const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapshotDb');
+const { runSettleSnapshots } = require('../cron/settleSnapshots');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -322,6 +323,19 @@ router.post('/snapshots', (req, res) => {
 router.get('/snapshots/summary', (req, res) => {
   try { res.json(snapshotSummary()); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/snapshots/settle — run the results-join now (also on a nightly cron)
+let _settling = false;
+router.post('/snapshots/settle', async (req, res) => {
+  if (_settling) return res.status(409).json({ error: 'a settle pass is already running' });
+  _settling = true;
+  try {
+    const out = await runSettleSnapshots({ minAgeDays: Math.max(1, Number(req.query.minAgeDays) || 1) });
+    res.json({ ok: true, ...out, ...snapshotSummary() });
+  } catch (err) {
+    res.status(500).json({ error: 'settle failed: ' + err.message });
+  } finally { _settling = false; }
 });
 
 // GET /api/snapshots?since=YYYY-MM-DD&sport=mlb&limit=N — full export

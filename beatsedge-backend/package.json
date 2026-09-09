@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node scripts/seed-from-csv.js",
+    "settle": "node cron/settleSnapshots.js",
+    "audit:books": "node scripts/audit-book-coverage.js",
     "test:dvp": "node scripts/test-dvp-engine.js"
   },
   "dependencies": {

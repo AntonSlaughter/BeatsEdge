@@ -5,6 +5,7 @@ const apiRoutes = require('./routes/api');
 const { runNightlyUpdate } = require('./cron/nightlyUpdate');
 const { runMlbNightlyUpdate } = require('./cron/mlbNightlyUpdate');
 const { runNhlNightlyUpdate } = require('./cron/nhlNightlyUpdate');
+const { runSettleSnapshots } = require('./cron/settleSnapshots');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -38,7 +39,8 @@ app.get('/', (req, res) => {
       'GET /api/nhl/team-shooting/:team?window=season|last10',
       'POST /api/snapshots  { date, sport, rows: [...] }',
       'GET /api/snapshots/summary',
-      'GET /api/snapshots?since=YYYY-MM-DD&sport=&limit='
+      'GET /api/snapshots?since=YYYY-MM-DD&sport=&limit=',
+      'POST /api/snapshots/settle'
     ]
   });
 });
@@ -58,6 +60,12 @@ cron.schedule('0 6 * * *', () => {
 
   console.log('[cron] Running scheduled NHL nightly update...');
   runNhlNightlyUpdate().catch(err => console.error('[cron] NHL nightly update failed:', err));
+});
+
+// A bit later — settle yesterday's prop snapshots against real box scores.
+cron.schedule('30 7 * * *', () => {
+  console.log('[cron] Settling prop snapshots...');
+  runSettleSnapshots().catch(err => console.error('[cron] snapshot settle failed:', err));
 });
 
 // Run once shortly after boot too, so a fresh deploy doesn't wait a full

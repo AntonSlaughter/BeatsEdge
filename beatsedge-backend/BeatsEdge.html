@@ -4572,6 +4572,13 @@
                                                 : <>{snaps.length.toLocaleString()} prop snapshots banked over {days} slate{days === 1 ? '' : 's'} in this browser</>}
                                             {' '}(inputs + model outputs, for a future results-join).{' '}
                                             {snaps.length ? <a onClick={doExport} style={{ color: 'var(--info-blue)', cursor: 'pointer', textDecoration: 'underline' }}>Export JSON</a> : null}
+                                            {backendUrl && snapSrv ? <>{' · '}<a onClick={() => {
+                                                setSnapSrv({ ...snapSrv, _settling: true });
+                                                fetch(`${backendUrl}/api/snapshots/settle`, { method: 'POST' })
+                                                    .then(r => r.json()).then(j => setSnapSrv(s => ({ ...s, ...j, _settling: false, _settleMsg: j.error ? j.error : `settled ${j.settled || 0}, ${j.dnp || 0} DNP` })))
+                                                    .catch(() => setSnapSrv(s => ({ ...s, _settling: false, _settleMsg: 'settle failed' })));
+                                            }} style={{ color: 'var(--info-blue)', cursor: 'pointer', textDecoration: 'underline' }}>{snapSrv._settling ? 'Settling…' : 'Settle now'}</a></> : null}
+                                            {snapSrv && snapSrv._settleMsg ? <span style={{ color: 'var(--text-muted)' }}> — {snapSrv._settleMsg}</span> : null}
                                         </div>
                                     );
                                 })()}
