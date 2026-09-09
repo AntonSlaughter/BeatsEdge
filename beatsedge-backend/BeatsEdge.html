@@ -469,6 +469,8 @@
             display: flex;
             align-items: center;
             gap: 1rem;
+            max-width: 100%;
+            overflow: hidden;
         }
 
         .data-source-bar {
@@ -545,6 +547,7 @@
 
         .news-content {
             flex: 1;
+            min-width: 0; /* let it shrink so nowrap children don't stretch the page */
         }
 
         .news-title {
@@ -556,7 +559,19 @@
         .news-text {
             color: var(--text-secondary);
             font-size: 0.9rem;
+            display: flex;
+            gap: 0.9rem;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            padding-bottom: 0.15rem;
+            -webkit-mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 20px), transparent 100%);
+            mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 20px), transparent 100%);
         }
+        .news-text > span { flex: 0 0 auto; }
+        .news-text::-webkit-scrollbar { height: 4px; }
+        .news-text::-webkit-scrollbar-thumb { background: rgba(245,166,35,0.4); border-radius: 4px; }
 
         /* Player Grid */
         .players-grid {
@@ -2496,6 +2511,8 @@
         .research-side-label:first-of-type { margin-top: 0.5rem; }
 
         /* ── Free → Pro soft gate ───────────────────────────────────── */
+        .view-pro-gate { max-width: 640px; }
+        .view-pro-gate .pro-lock-card { margin-top: 1.25rem; }
         .pro-lock-card {
             background: linear-gradient(165deg, var(--bg-surface) 0%, var(--bg-raised) 100%);
             border: 1px solid var(--accent-red);
@@ -11041,8 +11058,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
             const UpgradeModal = () => {
                 if (!showUpgrade) return null;
-                const FREE = ['Today\'s BeatsEdge Research — 2 best overs + 2 best unders per sport', 'Grade + confidence / factor alignment', 'Model projection, line & edge', 'Model probability + basic "Why"', 'Full research breakdown on those picks', 'News & Lineups + Injury wire'];
-                const PRO = ['Every available prop, full Browse', 'Full player research on everyone', 'L5 / L10 / L20 splits + game-by-game history', 'Matchup analysis, defense data, usage, minutes', 'Advanced filters — search, sort, stat categories', 'Historical model performance (backtest)', 'Line-movement + alerts'];
+                const FREE = ['Today\'s BeatsEdge Research — 2 best overs + 2 best unders per sport', 'Grade + confidence / factor alignment', 'Model projection, line & edge', 'Model probability + basic "Why"', 'Full research breakdown on those 4 picks', 'Injury alert if it touches one of your picks'];
+                const PRO = ['Every available prop, full Browse', 'Full player research on everyone', 'L5 / L10 / L20 splits + game-by-game history', 'Matchup analysis, defense data, usage, minutes', 'Advanced filters — search, sort, stat categories', 'Full News & Lineups + cross-slate Injury Report', 'Historical model performance (backtest)', 'Line-movement + alerts'];
                 return (
                     <div className="modal-overlay" onClick={() => setShowUpgrade(false)}>
                         <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
@@ -11382,15 +11399,35 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 return out;
             }, [gradedPlayers, sortBy, playerSearchDebounced, norm, detailModal]);
 
-            // Free plan: Browse only renders today's research picks (the 2 best
-            // overs + 2 best unders), each with its FULL research modal intact.
-            // Every other player + the advanced filters are Pro.
+            // Free plan: Browse renders EXACTLY today's 4 research picks (the 2
+            // best overs + 2 best unders) — each card trimmed to just the one
+            // prop that is the pick (not the player's whole prop menu), with its
+            // FULL research modal intact. Everyone/everything else is Pro.
             const researchPickIds = React.useMemo(() => {
                 if (!Array.isArray(playersData) || !playersData.length) return new Set();
                 const r = findResearchPicks(playersData);
                 return new Set([...r.overs, ...r.unders].map(x => x.player.id));
             }, [playersData, gradeVersion]);
-            const browsePlayers = isPro ? filteredPlayers : filteredPlayers.filter(p => researchPickIds.has(p.id));
+            const pickPropKeys = React.useMemo(() => {
+                const m = {};
+                if (Array.isArray(playersData) && playersData.length) {
+                    const r = findResearchPicks(playersData);
+                    [...r.overs, ...r.unders].forEach(x => {
+                        const k = x.prop.statKey + '|' + (x.prop.direction || 'over');
+                        (m[x.player.id] = m[x.player.id] || new Set()).add(k);
+                    });
+                }
+                return m;
+            }, [playersData, gradeVersion]);
+            const browsePlayers = isPro
+                ? filteredPlayers
+                : filteredPlayers.filter(p => researchPickIds.has(p.id)).map(p => {
+                    const keep = pickPropKeys[p.id];
+                    if (!keep || !Array.isArray(p.props)) return p;
+                    const props = p.props.filter(pr => keep.has(pr.statKey + '|' + (pr.direction || 'over')));
+                    return props.length ? { ...p, props } : p;
+                });
+            const freePickCount = isPro ? 0 : browsePlayers.reduce((n, p) => n + (Array.isArray(p.props) ? p.props.length : 0), 0);
             const lockedCount = isPro ? 0 : Math.max(0, filteredPlayers.length - browsePlayers.length);
 
             // Stat categories actually present on the current slate, ordered
@@ -11563,8 +11600,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         >open the Injuries page →</span>
                                     </div>
                                     <div className="news-text">
-                                        {injuryNews.slice(0, 12).map((news, i) => (
-                                            <span key={i} style={{ marginRight: '0.9rem', whiteSpace: 'nowrap' }}>
+                                        {injuryNews.slice(0, 14).map((news, i) => (
+                                            <span key={i} style={{ whiteSpace: 'nowrap' }}>
                                                 <strong style={{ color: 'var(--text-primary)' }}>{news.player}</strong>
                                                 {news.team ? ` ${news.team}` : ''} · {news.status}
                                                 {news.ageLabel ? <span style={{ color: 'var(--text-muted)' }}> · {news.ageLabel}</span> : ''}
@@ -11650,7 +11687,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 {!isPro && (
                                     <div className="pro-gate-banner">
                                         <div>
-                                            <strong>Free plan — today's research picks.</strong> You're seeing the {browsePlayers.length} best plays with full research. {lockedCount > 0 ? `${lockedCount} more player${lockedCount === 1 ? '' : 's'} on this slate` : 'Every other player, every prop'}, plus search, sort, filters, alerts and historical model performance are Pro.
+                                            <strong>Free plan — today's {freePickCount} research picks.</strong> The same 2 overs + 2 unders from the Research page, each with its full breakdown. {lockedCount > 0 ? `${lockedCount} more player${lockedCount === 1 ? '' : 's'} on this slate` : 'Every other player, every prop'}, plus search, sort, filters, alerts and historical model performance are Pro.
                                         </div>
                                         <button className="pro-lock-btn" onClick={onUnlock}>Unlock full BeatsEdge research</button>
                                     </div>
@@ -11658,7 +11695,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 <div className="grid-count">
                                     {isPro
                                         ? <>{filteredPlayers.length} {filteredPlayers.length === 1 ? 'player' : 'players'}{statFilter !== 'all' ? ` · ${statFilter}` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}</>
-                                        : <>Showing {browsePlayers.length} free research pick{browsePlayers.length === 1 ? '' : 's'}</>}
+                                        : <>Showing your {freePickCount} free research pick{freePickCount === 1 ? '' : 's'}</>}
                                 </div>
                                 {browsePlayers.length === 0 ? (
                                     <div className="loading" style={{ padding: '2.5rem' }}>
@@ -11714,27 +11751,49 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                         {currentView === 'news' && (
                             <ErrorBoundary name="News" resetKey={selectedSport}>
-                            <NewsView
-                                lineups={lineups}
-                                lineupSource={lineupSource}
-                                slateNews={slateNews}
-                                slateNewsSource={slateNewsSource}
-                                selectedSport={selectedSport}
-                                playersData={playersData}
-                                onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
-                            />
+                            {isPro ? (
+                                <NewsView
+                                    lineups={lineups}
+                                    lineupSource={lineupSource}
+                                    slateNews={slateNews}
+                                    slateNewsSource={slateNewsSource}
+                                    selectedSport={selectedSport}
+                                    playersData={playersData}
+                                    onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
+                                />
+                            ) : (
+                                <div className="view-pro-gate">
+                                    <h1 className="top-picks-heading">News &amp; Lineups</h1>
+                                    <p className="top-picks-subhead">Confirmed lineups, starters, roles and the full slate news wire.</p>
+                                    <ProLock title="News &amp; Lineups" onUnlock={onUnlock}
+                                        text="Confirmed lineups and role news across every game on the slate — not just your picks. Pro." />
+                                </div>
+                            )}
                             </ErrorBoundary>
                         )}
 
                         {currentView === 'injuries' && (
                             <ErrorBoundary name="Injuries" resetKey={selectedSport}>
-                            <InjuriesView
-                                injuryNews={injuryNews}
-                                playersData={playersData}
-                                selectedSport={selectedSport}
-                                injuryDataSource={injuryDataSource}
-                                onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
-                            />
+                            {isPro ? (
+                                <InjuriesView
+                                    injuryNews={injuryNews}
+                                    playersData={playersData}
+                                    selectedSport={selectedSport}
+                                    injuryDataSource={injuryDataSource}
+                                    onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
+                                />
+                            ) : (
+                                <div className="view-pro-gate">
+                                    <h1 className="top-picks-heading">Injury Report</h1>
+                                    <p className="top-picks-subhead">
+                                        The free plan flags an injury only when it touches one of today's 4 research picks —
+                                        that's the strip on the Research page. The full cross-slate injury report, next-man-up
+                                        chains and status-change alerts are Pro.
+                                    </p>
+                                    <ProLock title="Full Injury Report" onUnlock={onUnlock}
+                                        text="Every ruled-out / questionable player on the slate, who moves up when they sit, and an alert the moment a status downgrades — before the line moves." />
+                                </div>
+                            )}
                             </ErrorBoundary>
                         )}
                     </main>
