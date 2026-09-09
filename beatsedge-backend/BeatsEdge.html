@@ -3427,6 +3427,7 @@
                 projection,
                 thinData,
                 edge: roundedEdge,
+                edgeSignalPct: Math.round(signal * 1000) / 10, // directional (projection vs line) / line, %
                 matchupLabel,
                 grade,
                 gradeScore: Math.round(gradeScore * 100) / 100,
@@ -3598,6 +3599,7 @@
                     btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                     btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                     btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                    btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -3612,7 +3614,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {} }; }
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -3640,6 +3642,23 @@
             if (!grade || !tier) return;
             const k = grade + '|' + tier;
             const b = acc.gradeConf[k] || (acc.gradeConf[k] = { n: 0, hit: 0 });
+            b.n++; if (hit) b.hit++;
+        }
+
+        // Confluence × model-edge cross-tab. Edge tier = how far the projection
+        // sits past the line, as a % of the line (`edgeSignalPct`, directional).
+        // Shows whether "high confluence AND a big edge" is a materially stronger
+        // group than either signal alone.
+        const BT_EDGE_TIERS = ['small', 'med', 'large'];
+        function btEdgeTier(sigPct) {
+            if (sigPct == null || !isFinite(sigPct)) return null;
+            return sigPct < 4 ? 'small' : sigPct < 11 ? 'med' : 'large';
+        }
+        function btFileConfEdge(acc, green, total, sigPct, hit) {
+            const ct = btConfTier(green, total), et = btEdgeTier(sigPct);
+            if (!ct || !et) return;
+            const k = ct + '|' + et;
+            const b = acc.confEdge[k] || (acc.confEdge[k] = { n: 0, hit: 0 });
             b.n++; if (hit) b.hit++;
         }
 
@@ -4519,6 +4538,52 @@
                                                         : tSpread != null && Math.abs(tSpread) < 4
                                                             ? ` Within a confluence tier the letters barely separate (~${tSpread} pts) — confluence is doing most of the work; the letter adds little on top.`
                                                             : ` Grade moves it ~${tSpread == null ? '?' : tSpread} pts (confluence fixed), confluence moves it ~${gSpread == null ? '?' : gSpread} pts (grade fixed)${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}%` : ''}.`}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {bt.confEdge && Object.keys(bt.confEdge).length >= 4 && (() => {
+                                    const cell = (c, e2) => bt.confEdge[c + '|' + e2] || null;
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 55 ? 'calib-ok' : rate >= 50 ? 'calib-under' : 'calib-over';
+                                    const corner = cell('high', 'large');
+                                    const weak = cell('low', 'small');
+                                    // marginals: best "large edge / any confluence" and "high confluence / any edge"
+                                    const edgeOnly = BT_CONF_TIERS.map(c => cell(c, 'large')).filter(Boolean);
+                                    const confOnly = BT_EDGE_TIERS.map(e2 => cell('high', e2)).filter(Boolean);
+                                    const avg = (xs) => xs.length ? Math.round(xs.reduce((a, b) => a + b.rate * b.n, 0) / xs.reduce((a, b) => a + b.n, 0)) : null;
+                                    const edgeOnlyR = avg(edgeOnly), confOnlyR = avg(confOnly);
+                                    const cornerVsWeak = (corner && weak) ? corner.rate - weak.rate : null;
+                                    const tierLbl = { small: 'small edge', med: 'medium edge', large: 'large edge' };
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Confluence × model edge — is the corner (both strong) a different animal?</div>
+                                            <table className="backtest-calib-tbl backtest-xtab">
+                                                <thead><tr><th></th><th>Small edge</th><th>Medium</th><th>Large edge</th></tr></thead>
+                                                <tbody>
+                                                    {BT_CONF_TIERS.map(c => (
+                                                        <tr key={c}>
+                                                            <td><strong>{c === 'low' ? 'Low conf.' : c === 'med' ? 'Med conf.' : 'High conf.'}</strong></td>
+                                                            {BT_EDGE_TIERS.map(e2 => {
+                                                                const x = cell(c, e2);
+                                                                return (
+                                                                    <td key={e2} className={clsFor(x && x.rate)}>
+                                                                        {x ? <React.Fragment><strong>{x.rate}%</strong> <span className="backtest-factor-n">({x.n.toLocaleString()})</span></React.Fragment> : '—'}
+                                                                    </td>
+                                                                );
+                                                            })}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                Edge tier = how far the projection sits past the line (% of the line): small &lt;4%, medium 4–11%, large ≥11%.
+                                                {corner && cornerVsWeak != null
+                                                    ? ` High confluence + large edge lands ${corner.rate}% (${corner.n.toLocaleString()})` +
+                                                      (weak ? ` vs ${weak.rate}% for low confluence + small edge — a ${cornerVsWeak >= 0 ? '+' : ''}${cornerVsWeak}-pt swing across the diagonal.` : '.') +
+                                                      (edgeOnlyR != null && confOnlyR != null
+                                                          ? ` The corner also beats large-edge-alone (${edgeOnlyR}%) and high-confluence-alone (${confOnlyR}%)${corner.rate - Math.max(edgeOnlyR, confOnlyR) >= 4 ? ' by a clear margin — stacking the two is its own tier, a strong candidate for the top of the ranking.' : ', but only slightly — the two overlap more than they stack.'}`
+                                                          : '')
+                                                    : ' Not enough sample in the corner cells yet.'}
                                             </div>
                                         </div>
                                     );
@@ -8499,6 +8564,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                         btFileAlign(acc, e.greenCount, e.totalFactors, hit);
                         btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                        btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -8662,10 +8728,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.gradeConf[k];
                         if (b && b.n >= 20) gradeConf[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Confluence × model-edge cross-tab.
+                    const confEdge = {};
+                    Object.keys(acc.confEdge).forEach(k => {
+                        const b = acc.confEdge[k];
+                        if (b && b.n >= 20) confEdge[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
+                    });
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors, prob, probRaw, align, gradeConf,
+                        grades, factors, prob, probRaw, align, gradeConf, confEdge,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
                     };
                     setBacktest(prev => {
