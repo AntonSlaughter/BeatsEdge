@@ -8367,12 +8367,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 if (backtestRunning) return;
                 setBacktestRunning(true);
                 try {
-                    const acc = emptyBacktestAcc();
                     const roster = (Array.isArray(playersData) ? playersData : []).filter(p => p.sport === selectedSport);
                     let evaluated = 0;
 
+                    // Gather the raw series data ONCE (the async part), then expose
+                    // a synchronous `runPass(acc)` that tallies it. That lets us
+                    // run the walk-forward twice: pass 1 derives this sport's
+                    // grade cutoffs, pass 2 re-tallies WITH those cutoffs so the
+                    // grade distribution we show reflects them — not whatever was
+                    // in GRADE_CUTOFFS from the previous run.
+                    let runPass = null;
+
                     if (selectedSport === 'mlb') {
                         const seen = new Set();
+                        const gathered = [];
                         for (const grp of chunk(roster.filter(p => !seen.has(p.id) && seen.add(p.id)), 6)) {
                             await Promise.all(grp.map(async p => {
                                 const isPitcher = !!p._isPitcher || p.role === 'pitcher';
@@ -8381,64 +8389,83 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     const splits = (data.stats && data.stats[0] && data.stats[0].splits) || [];
                                     if (splits.length < 12) return;
                                     const opps = splits.map(sp => (sp.opponent && (mlbCache.current.abbrById[sp.opponent.id] || sp.opponent.name)) || '');
-                                    Object.keys(MLB_PROP_DEFS).forEach(k => {
-                                        const def = MLB_PROP_DEFS[k];
-                                        if (!!def.pitcher !== isPitcher) return;
-                                        const vals = splits.map(sp => def.get(sp.stat || {}) || 0);
-                                        if (vals.every(v => v === 0)) return;
-                                        backtestSeries(vals, opps, 'mlb', p.position, acc);
-                                        evaluated++;
-                                    });
+                                    gathered.push({ p, isPitcher, splits, opps });
                                 } catch (e) { /* skip this player */ }
                             }));
                         }
+                        runPass = (acc) => {
+                            gathered.forEach(({ p, isPitcher, splits, opps }) => {
+                                Object.keys(MLB_PROP_DEFS).forEach(k => {
+                                    const def = MLB_PROP_DEFS[k];
+                                    if (!!def.pitcher !== isPitcher) return;
+                                    const vals = splits.map(sp => def.get(sp.stat || {}) || 0);
+                                    if (vals.every(v => v === 0)) return;
+                                    backtestSeries(vals, opps, 'mlb', p.position, acc);
+                                    evaluated++;
+                                });
+                            });
+                        };
                     } else if (selectedSport === 'nfl') {
                         const ids = [...new Set(roster.map(p => p.id))];
                         // one NFL season is only ~17 games — pull several so the
                         // walk-forward has a real sample.
                         const years = [NFL_SEASON - 1, NFL_SEASON - 2, NFL_SEASON - 3];
                         const glMap = await nflGamelogsMulti(ids, years);
-                        roster.forEach(p => {
-                            const rows = glMap[p.id] || [];
-                            if (rows.length < 10) return;
-                            const opps = rows.map(r => r.opponent || '');
-                            nflPosKeys(p.position).forEach(k => {
-                                const def = NFL_PROP_DEFS[k];
-                                const vals = rows.map(r => def.get(r.row) || 0);
-                                if (vals.every(v => v === 0)) return;
-                                backtestSeries(vals, opps, 'nfl', p.position, acc, 6);
-                                evaluated++;
+                        runPass = (acc) => {
+                            roster.forEach(p => {
+                                const rows = glMap[p.id] || [];
+                                if (rows.length < 10) return;
+                                const opps = rows.map(r => r.opponent || '');
+                                nflPosKeys(p.position).forEach(k => {
+                                    const def = NFL_PROP_DEFS[k];
+                                    const vals = rows.map(r => def.get(r.row) || 0);
+                                    if (vals.every(v => v === 0)) return;
+                                    backtestSeries(vals, opps, 'nfl', p.position, acc, 6);
+                                    evaluated++;
+                                });
                             });
-                        });
+                        };
                     } else if (selectedSport === 'nba') {
                         const ids = [...new Set(roster.map(p => p.id))];
                         const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1]);
-                        roster.forEach(p => {
-                            const rows = glMap[p.id] || [];
-                            if (rows.length < 20) return;
-                            const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
-                            const opps = rows.map(r => r.opponent || '');
-                            const tss = rows.map(r => r.ts || 0);
-                            const mins = rows.map(r => (r.row && r.row.minutes) || null);
-                            const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
-                            nbaAllKeys.forEach(k => {
-                                const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
-                                if (vals.every(v => v === 0)) return;
-                                nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc);
-                                evaluated++;
+                        runPass = (acc) => {
+                            roster.forEach(p => {
+                                const rows = glMap[p.id] || [];
+                                if (rows.length < 20) return;
+                                const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                                const opps = rows.map(r => r.opponent || '');
+                                const tss = rows.map(r => r.ts || 0);
+                                const mins = rows.map(r => (r.row && r.row.minutes) || null);
+                                const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
+                                nbaAllKeys.forEach(k => {
+                                    const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
+                                    if (vals.every(v => v === 0)) return;
+                                    nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc);
+                                    evaluated++;
+                                });
                             });
-                        });
+                        };
                     } else {
                         setBacktestRunning(false);
                         return;
                     }
 
-                    // Re-derive this sport's grade cutoffs from its own outcomes
-                    // and apply immediately (per-sport, so a small NFL sample
-                    // doesn't overwrite MLB's calibration).
-                    const cutoffs = deriveGradeCutoffs(acc.score);
+                    // Pass 1 — tally with whatever cutoffs are live, then derive
+                    // this sport's own cutoffs from the gradeScore histogram
+                    // (histogram is cutoff-independent, so one derivation is enough).
+                    const acc1 = emptyBacktestAcc();
+                    runPass(acc1);
+                    const cutoffs = deriveGradeCutoffs(acc1.score);
+
+                    // Pass 2 — apply the new cutoffs and re-tally so the reported
+                    // grade hit-rates are anchored to THIS run's cutoffs (fixes the
+                    // one-run lag where letters reflected the previous run).
+                    let acc = acc1;
                     if (cutoffs) {
                         GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
+                        evaluated = 0;
+                        acc = emptyBacktestAcc();
+                        runPass(acc);
                         try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { }
                         bumpEdgeCache();
                         setGradeVersion(v => v + 1); // invalidate memoized grades
