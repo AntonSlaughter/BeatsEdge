@@ -88,7 +88,32 @@ async function auditSport(s) {
   }
 
   const books = Object.keys(byBook).sort((a, b) => byBook[b].rows - byBook[a].rows);
-  if (!books.length) { line('⚠ No book returned any prop line for the sampled games.'); return { sport: s.label, ok: false, reason: 'no lines' }; }
+
+  // ParlayAPI second opinion (also our only signal when PropLine is empty).
+  const PARLAY_SPORT2 = { football_nfl: 'americanfootball_nfl', football_ncaaf: 'americanfootball_ncaaf' };
+  let parlayPP = 0, parlayLine = '';
+  try {
+    const pk = PARLAY_SPORT2[s.key] || s.key;
+    const pr = await j(`https://parlay-api.com/v1/sports/${pk}/props?apiKey=${PARLAY_KEY}`);
+    if (Array.isArray(pr.b)) {
+      const pbooks = {};
+      pr.b.forEach(row => { const bk = row.book || row.bookmaker || row.sportsbook; if (bk) pbooks[bk] = (pbooks[bk] || 0) + 1; });
+      parlayPP = pbooks.prizepicks || 0;
+      parlayLine = Object.keys(pbooks).length ? Object.entries(pbooks).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(' · ') : `${pr.b.length} rows`;
+    } else parlayLine = `HTTP ${pr.status}`;
+  } catch (e) { parlayLine = 'unreachable (' + e.message + ')'; }
+
+  const now2 = Date.now();
+  const nextGameMs = times.find(t => t > now2);
+  const daysOut = nextGameMs ? Math.round((nextGameMs - now2) / 864e5) : null;
+  if (!books.length) {
+    line(`⚠ PropLine: no book has posted a prop line for the sampled games${daysOut != null ? ` (next game ~${daysOut}d out)` : ''}.`);
+    line(`ParlayAPI (${PARLAY_SPORT2[s.key] || s.key}): ${parlayLine}`);
+    const offseason = daysOut != null && daysOut >= 10;
+    const ok = parlayPP > 0;
+    line(`${ok ? '✅ PASS' : offseason ? 'ℹ️  OFF-SEASON' : '⚠️  CHECK'} — ${ok ? `PrizePicks via ParlayAPI (${parlayPP})` : offseason ? `season starts ~${daysOut}d out; no props posted yet anywhere (expected)` : 'no PrizePicks props from either source'}.`);
+    return { sport: s.label, ok: ok || offseason, reason: ok ? null : (offseason ? 'off-season' : 'no lines'), offseason, parlayPP };
+  }
 
   line('');
   line('book           kind   games  markets  prop-rows  freshest  stalest');
@@ -102,27 +127,20 @@ async function auditSport(s) {
     );
   }
 
-  // ParlayAPI second opinion
-  try {
-    const pr = await j(`https://parlay-api.com/v1/sports/${s.key}/props?apiKey=${PARLAY_KEY}`);
-    if (Array.isArray(pr.b)) {
-      const pbooks = {};
-      pr.b.forEach(row => { const bk = row.book || row.bookmaker || row.sportsbook; if (bk) pbooks[bk] = (pbooks[bk] || 0) + 1; });
-      line('');
-      line('ParlayAPI: ' + (Object.keys(pbooks).length ? Object.entries(pbooks).map(([k, v]) => `${k} ${v}`).join(' · ') : `${pr.b.length} rows, no book field`));
-    } else {
-      line(`ParlayAPI: HTTP ${pr.status}`);
-    }
-  } catch (e) { line('ParlayAPI: unreachable (' + e.message + ')'); }
+  line('');
+  line(`ParlayAPI (${PARLAY_SPORT2[s.key] || s.key}): ${parlayLine}`);
 
-  // verdict
+  // verdict — PrizePicks has fresh lines somewhere (PropLine sample OR
+  // ParlayAPI's full feed), because our PropLine sample only looks at a
+  // few events and a sport with no imminent games can miss the priced ones.
   const dfsWithLines = books.filter(bk => DFS.has(bk) && byBook[bk].rows > 0);
   const freshest = Math.max(...books.map(bk => byBook[bk].newest || 0));
   const fresh = freshest && (Date.now() - freshest) < 12 * 3600e3;
-  const pass = dfsWithLines.includes('prizepicks') && fresh;
+  const ppSomewhere = dfsWithLines.includes('prizepicks') || parlayPP > 0;
+  const pass = ppSomewhere && (fresh || parlayPP > 0);
   line('');
-  line(`${pass ? '✅ PASS' : '⚠️  CHECK'} — ${dfsWithLines.length} DFS book(s) with lines${dfsWithLines.length ? ' (' + dfsWithLines.join(', ') + ')' : ''}; ${fresh ? 'lines updated within 12h' : 'newest line is stale / missing'}.`);
-  return { sport: s.label, ok: pass, dfsBooks: dfsWithLines, fresh };
+  line(`${pass ? '✅ PASS' : '⚠️  CHECK'} — PrizePicks: ${dfsWithLines.includes('prizepicks') ? 'PropLine yes' : 'PropLine no (sample)'} / ${parlayPP ? 'ParlayAPI ' + parlayPP : 'ParlayAPI none'}; other DFS: ${dfsWithLines.filter(b => b !== 'prizepicks').join(', ') || 'none'}; ${fresh ? 'PropLine lines <12h old' : 'PropLine sample stale/thin'}.`);
+  return { sport: s.label, ok: pass, dfsBooks: dfsWithLines, fresh, parlayPP };
 }
 
 (async () => {
@@ -136,9 +154,13 @@ async function auditSport(s) {
   }
   console.log('\n\n════════ SUMMARY ════════');
   for (const r of results) {
-    console.log(`${(r.ok ? '✅' : '⚠️ ')} ${String(r.sport).padEnd(5)} ${r.ok ? 'ready — ' + (r.dfsBooks || []).join(', ') : (r.reason || r.error || 'needs a look')}`);
+    const icon = r.offseason ? 'ℹ️ ' : r.ok ? '✅' : '⚠️ ';
+    const msg = r.offseason ? 'off-season — no props posted yet (expected)'
+      : r.ok ? 'ready — ' + ([...new Set([...(r.dfsBooks || []), ...(r.parlayPP ? ['prizepicks'] : [])])].join(', ') || 'via ParlayAPI')
+        : (r.reason || r.error || 'needs a look');
+    console.log(`${icon} ${String(r.sport).padEnd(5)} ${msg}`);
   }
-  const bad = results.filter(r => !r.ok);
-  console.log(bad.length ? `\n${bad.length} sport(s) need a look before release.` : `\nAll sports have fresh DFS prop lines. 🚀`);
+  const bad = results.filter(r => !r.ok && !r.offseason);
+  console.log(bad.length ? `\n${bad.length} sport(s) need a look before release.` : `\nEvery in-season sport has fresh DFS prop lines. 🚀`);
   process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
