@@ -2165,6 +2165,10 @@
         .backtest-calib-tbl td.calib-over { color: var(--danger-red, #ff4436); font-weight: 700; }
         .backtest-calib-tbl td.calib-under { color: var(--accent-amber, #f5a623); font-weight: 700; }
         .backtest-calib-note { font-size: 0.73rem; color: var(--text-muted); margin-top: 0.55rem; line-height: 1.5; }
+        .backtest-xtab td { text-align: center; }
+        .backtest-xtab td:first-child { text-align: left; width: 2rem; }
+        .backtest-xtab th { text-align: center; }
+        .backtest-xtab th:first-child { width: 2rem; }
 
         .top-picks-heading {
             font-family: var(--font-display);
@@ -3593,6 +3597,7 @@
                     acc._total.n++; if (hit) acc._total.hit++;
                     btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                     btFileAlign(acc, e.greenCount, e.totalFactors, hit);
+                    btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                     // gradeScore -> hit, bucketed at 0.05, to re-derive letter cutoffs
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -3607,7 +3612,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {} }; }
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -3617,6 +3622,25 @@
             if (greenCount == null || !isFinite(greenCount)) return;
             const b = acc.align[greenCount] || (acc.align[greenCount] = { n: 0, hit: 0, totTot: 0 });
             b.n++; if (hit) b.hit++; b.totTot += (totalFactors || 0);
+        }
+
+        // Grade × confluence cross-tab. Confluence tier = share of the factor set
+        // that points at this side (denominator-independent, so it works whatever
+        // the sport's factor count is). Shows whether the letter and the
+        // aligned-factor count carry INDEPENDENT information or just restate
+        // each other.
+        const BT_CONF_TIERS = ['low', 'med', 'high'];
+        function btConfTier(green, total) {
+            if (!total) return null;
+            const f = green / total;
+            return f < 0.34 ? 'low' : f < 0.67 ? 'med' : 'high';
+        }
+        function btFileGradeConf(acc, grade, green, total, hit) {
+            const tier = btConfTier(green, total);
+            if (!grade || !tier) return;
+            const k = grade + '|' + tier;
+            const b = acc.gradeConf[k] || (acc.gradeConf[k] = { n: 0, hit: 0 });
+            b.n++; if (hit) b.hit++;
         }
 
         // Probability-calibration buckets. Every graded side is filed by the
@@ -4448,6 +4472,53 @@
                                                         : spread >= 4
                                                             ? `Some lift (${lo.rate}% → ${hiR.rate}%, ${spread >= 0 ? '+' : ''}${spread} pts across the range) — confluence helps a little but isn't a dominant input.`
                                                             : `Almost flat (${lo.rate}% → ${hiR.rate}%, only ${spread} pts across the whole range). Factor COUNT is mostly cosmetic here — the model's edge is in which factors fire, not how many.`}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {bt.gradeConf && Object.keys(bt.gradeConf).length >= 4 && (() => {
+                                    const cell = (g, t) => bt.gradeConf[g + '|' + t] || null;
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 55 ? 'calib-ok' : rate >= 50 ? 'calib-under' : 'calib-over';
+                                    // How much confluence moves the hit rate with the GRADE held fixed…
+                                    const gSpreads = ['A', 'B', 'C', 'D'].map(g => { const l = cell(g, 'low'), h = cell(g, 'high'); return (l && h && l.n >= 40 && h.n >= 40) ? h.rate - l.rate : null; }).filter(v => v != null);
+                                    const gSpread = gSpreads.length ? Math.round(gSpreads.reduce((a, b) => a + b, 0) / gSpreads.length) : null;
+                                    // …and how much the grade moves it with CONFLUENCE held fixed (use the best-populated tier).
+                                    const tierSpread = (t) => { const a = cell('A', t), d = cell('D', t); return (a && d && a.n >= 40 && d.n >= 40) ? a.rate - d.rate : null; };
+                                    const tSpread = tierSpread('high') != null ? tierSpread('high') : tierSpread('med');
+                                    // Best-performing cell overall (decent sample).
+                                    let best = null;
+                                    ['A', 'B', 'C', 'D'].forEach(g => BT_CONF_TIERS.forEach(t => { const c = cell(g, t); if (c && c.n >= 100 && (!best || c.rate > best.rate)) best = { g, t, ...c }; }));
+                                    const tierWord = { low: 'low', med: 'medium', high: 'high' };
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Grade × confluence — independent signals, or the same thing twice?</div>
+                                            <table className="backtest-calib-tbl backtest-xtab">
+                                                <thead><tr><th></th><th>Low confluence</th><th>Medium</th><th>High</th></tr></thead>
+                                                <tbody>
+                                                    {['A', 'B', 'C', 'D'].map(g => (
+                                                        <tr key={g}>
+                                                            <td><strong>{g}</strong></td>
+                                                            {BT_CONF_TIERS.map(t => {
+                                                                const c = cell(g, t);
+                                                                return (
+                                                                    <td key={t} className={clsFor(c && c.rate)}>
+                                                                        {c ? <React.Fragment><strong>{c.rate}%</strong> <span className="backtest-factor-n">({c.n.toLocaleString()})</span></React.Fragment> : '—'}
+                                                                    </td>
+                                                                );
+                                                            })}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                Confluence tier = share of the factor set that agrees (low &lt;⅓, medium, high ≥⅔).
+                                                {gSpread != null && tSpread != null && Math.abs(gSpread) >= 4 && Math.abs(tSpread) >= 6
+                                                    ? ` Both carry their own signal — hold the grade fixed and moving to high confluence adds ~${gSpread} pts; hold confluence fixed and A over D is still ~${tSpread} pts${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}% (${best.n.toLocaleString()})` : ''}.`
+                                                    : gSpread != null && Math.abs(gSpread) < 3
+                                                        ? ` Within a grade the confluence tiers barely move (~${gSpread} pts) — once you know the letter, the aligned-factor count adds almost nothing. They're mostly measuring the same thing.`
+                                                        : tSpread != null && Math.abs(tSpread) < 4
+                                                            ? ` Within a confluence tier the letters barely separate (~${tSpread} pts) — confluence is doing most of the work; the letter adds little on top.`
+                                                            : ` Grade moves it ~${tSpread == null ? '?' : tSpread} pts (confluence fixed), confluence moves it ~${gSpread == null ? '?' : gSpread} pts (grade fixed)${best ? `. Strongest cell: ${best.g} + ${tierWord[best.t]} confluence at ${best.rate}%` : ''}.`}
                                             </div>
                                         </div>
                                     );
@@ -8427,6 +8498,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         acc._total.n++; if (hit) acc._total.hit++;
                         btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
                         btFileAlign(acc, e.greenCount, e.totalFactors, hit);
+                        btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -8584,10 +8656,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.align[k];
                         if (b && b.n >= 20) align[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100), avgTotal: Math.round((b.totTot / b.n) * 10) / 10 };
                     });
+                    // Grade × confluence cross-tab.
+                    const gradeConf = {};
+                    Object.keys(acc.gradeConf).forEach(k => {
+                        const b = acc.gradeConf[k];
+                        if (b && b.n >= 20) gradeConf[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
+                    });
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
-                        grades, factors, prob, probRaw, align,
+                        grades, factors, prob, probRaw, align, gradeConf,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
                     };
                     setBacktest(prev => {
