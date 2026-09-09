@@ -9,6 +9,7 @@ const mlbDb = require('../lib/mlbDb');
 const { getDefenseByPosition: getNhlDefenseByPosition } = require('../lib/nhlEngine');
 const nhlDb = require('../lib/nhlDb');
 const db = require('../lib/db');
+const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapshotDb');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -291,6 +292,45 @@ router.get('/parlayapi/*', async (req, res) => {
       .send(body);
   } catch (err) {
     res.status(502).json({ error: 'ParlayAPI unreachable: ' + err.message });
+  }
+});
+
+// ── Prop snapshots ─────────────────────────────────────────────────────
+// The client pushes the full picture behind every prop it grades (inputs +
+// factor values + data-quality + model outputs) each slate. Stored in its
+// own SQLite file so it accumulates across sessions and deploys. A
+// results-join job fills in `actual` / `result` later.
+
+// POST /api/snapshots  { date, sport, rows: [...] }
+router.post('/snapshots', (req, res) => {
+  const { date, sport, rows } = req.body || {};
+  if (!date || !sport || !Array.isArray(rows)) {
+    return res.status(400).json({ error: 'need { date, sport, rows: [] }' });
+  }
+  if (rows.length > 20000) {
+    return res.status(413).json({ error: 'too many rows in one post (max 20000)' });
+  }
+  try {
+    const { written } = saveSnapshots(date, sport, rows);
+    res.json({ ok: true, written, ...snapshotSummary() });
+  } catch (err) {
+    res.status(500).json({ error: 'snapshot save failed: ' + err.message });
+  }
+});
+
+// GET /api/snapshots/summary — counts, for the panel
+router.get('/snapshots/summary', (req, res) => {
+  try { res.json(snapshotSummary()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/snapshots?since=YYYY-MM-DD&sport=mlb&limit=N — full export
+router.get('/snapshots', (req, res) => {
+  try {
+    const out = getSnapshots({ since: req.query.since, sport: req.query.sport, limit: req.query.limit });
+    res.json({ count: out.length, rows: out });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
