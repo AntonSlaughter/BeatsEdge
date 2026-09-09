@@ -1,5 +1,7 @@
 node_modules/
 data/beatsedge.db-*
+data/snapshots.db
+data/snapshots.db-*
 data/kaggle-boxscores.csv
 *.log
 .env

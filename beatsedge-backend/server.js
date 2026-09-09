@@ -14,7 +14,9 @@ const PORT = process.env.PORT || 3001;
 // sensitive-data reason to restrict origins. If you later add anything
 // user-specific, lock this down to your actual site's origin.
 app.use(cors());
-app.use(express.json());
+// 16mb ceiling so the client can push a full slate of prop snapshots in one
+// POST (see /api/snapshots). Everything else is tiny; the limit is just a cap.
+app.use(express.json({ limit: '16mb' }));
 
 app.use('/api', apiRoutes);
 
@@ -33,7 +35,10 @@ app.get('/', (req, res) => {
       'GET /api/mlb/pitcher/:playerId?window=season|last5starts',
       'GET /api/mlb/team-batting/:team?window=season|last15games',
       'GET /api/nhl/defense/by-position/:team?window=season|last10|last5',
-      'GET /api/nhl/team-shooting/:team?window=season|last10'
+      'GET /api/nhl/team-shooting/:team?window=season|last10',
+      'POST /api/snapshots  { date, sport, rows: [...] }',
+      'GET /api/snapshots/summary',
+      'GET /api/snapshots?since=YYYY-MM-DD&sport=&limit='
     ]
   });
 });
@@ -56,14 +61,17 @@ cron.schedule('0 6 * * *', () => {
 });
 
 // Run once shortly after boot too, so a fresh deploy doesn't wait a full
-// day for its first data refresh attempt.
-setTimeout(() => {
-  console.log('[startup] Running initial NBA update pass...');
-  runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
+// day for its first data refresh attempt. Set SKIP_STARTUP_JOBS=1 in dev to
+// keep the process from churning the DB right after start.
+if (!process.env.SKIP_STARTUP_JOBS) {
+  setTimeout(() => {
+    console.log('[startup] Running initial NBA update pass...');
+    runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
 
-  console.log('[startup] Running initial MLB update pass...');
-  runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
+    console.log('[startup] Running initial MLB update pass...');
+    runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
 
-  console.log('[startup] Running initial NHL update pass...');
-  runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
-}, 10_000);
+    console.log('[startup] Running initial NHL update pass...');
+    runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
+  }, 10_000);
+}

@@ -3790,11 +3790,15 @@
         // grades: the inputs (projection, factor values, which data was real)
         // AND the outputs (probability, edge, grade, prime). Standard board,
         // over-side only (the under is derivable) — no alt ladders / goblins /
-        // cross-book, so it stays ~250 rows a slate (~250 KB). Keyed
-        // "<date>|<sport>", ~14 keys kept in localStorage as a rolling buffer;
-        // use "Export JSON" in the backtest panel to bank it for the long haul.
+        // cross-book, so it stays ~250 rows a slate (~250 KB).
+        //   • localStorage `beatsedge_prop_snapshots_v1`: ~14-slate rolling
+        //     buffer (with "Export JSON" in the backtest panel).
+        //   • backend POST `${backendUrl}/api/snapshots`: the DURABLE store —
+        //     accumulates across sessions/deploys in data/snapshots.db, and a
+        //     results-join job fills in the settled outcome later.
         const PROP_SNAP_KEY = 'beatsedge_prop_snapshots_v1';
-        function archivePropSnapshots(sport, date, players) {
+        let _snapPostKey = null; // don't re-POST the same slate every render
+        function archivePropSnapshots(sport, date, players, backendUrl) {
             try {
                 const store = JSON.parse(localStorage.getItem(PROP_SNAP_KEY) || '{}');
                 const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
@@ -3820,6 +3824,11 @@
                             player: p.name, team: p.team, opp: p.opponent, pos: p.position || null,
                             sport, stat: pr.statKey, type: pr.type, line: pr.line,
                             book: pr.book || null, lineSource: pr.lineSource,
+                            // opportunity — NBA minutes / MLB plate volume
+                            projMin: sport === 'nba' ? (p.projMin ?? null) : null,
+                            paPerGame: sport === 'mlb' ? (p.paPerGame ?? null) : null,
+                            abPerGame: sport === 'mlb' ? (p.abPerGame ?? null) : null,
+                            battingOrder: sport === 'mlb' ? (p.battingOrder ?? null) : null,
                             // model outputs
                             modelProjection: r2(e.projection), probability: e.modelProbPct,
                             rawProbability: e.rawModelProbPct, edge: r2(e.edge),
@@ -3858,6 +3867,19 @@
                 trim(14);
                 try { localStorage.setItem(PROP_SNAP_KEY, JSON.stringify(store)); }
                 catch (quota) { trim(6); try { localStorage.setItem(PROP_SNAP_KEY, JSON.stringify(store)); } catch (_) { } }
+
+                // Durable copy → backend. Once per slate per session (row count
+                // guards against re-posting a half-built slate).
+                const postKey = `${date}|${sport}|${rows.length}`;
+                if (backendUrl && postKey !== _snapPostKey) {
+                    _snapPostKey = postKey;
+                    fetch(`${backendUrl}/api/snapshots`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ date, sport, rows })
+                    }).then(r => r.ok || Promise.reject(r.status))
+                      .catch(() => { _snapPostKey = null; }); // let a later render retry
+                }
             } catch (e) { /* localStorage full / disabled — best-effort */ }
         }
         // Flatten every stored snapshot to one array (for export / a future
@@ -4422,7 +4444,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -4433,6 +4455,19 @@
             const bt = backtestForSport(backtest, selectedSport);
             const cal = bt ? bt.grades : null;
             const canBacktest = (selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'nba') && Array.isArray(playersData) && playersData.some(p => p.sport === selectedSport);
+
+            // Server-side snapshot count (durable store). Refreshed when the
+            // slate changes so it reflects a just-completed POST.
+            const [snapSrv, setSnapSrv] = useState(null);
+            useEffect(() => {
+                if (!backendUrl) { setSnapSrv(null); return; }
+                let gone = false;
+                const t = setTimeout(() => {
+                    fetch(`${backendUrl}/api/snapshots/summary`).then(r => r.ok ? r.json() : null)
+                        .then(j => { if (!gone && j) setSnapSrv(j); }).catch(() => { });
+                }, 1500);
+                return () => { gone = true; clearTimeout(t); };
+            }, [backendUrl, selectedSport, dataUpdatedAt]);
 
             const PickCard = ({ p, n }) => {
                 const why = p.edge.factors.filter(f => f.supports).map(f => f.name);
@@ -4516,7 +4551,7 @@
                                 </div>
                                 {(() => {
                                     const snaps = allPropSnapshots();
-                                    if (!snaps.length) return null;
+                                    if (!snaps.length && !(snapSrv && snapSrv.total)) return null;
                                     const days = new Set(snaps.map(s => (s._key || '').split('|')[0])).size;
                                     const doExport = () => {
                                         try {
@@ -4532,8 +4567,11 @@
                                     };
                                     return (
                                         <div className="backtest-panel-sub" style={{ marginTop: '0.3rem' }}>
-                                            📦 {snaps.length.toLocaleString()} prop snapshots banked over {days} slate{days === 1 ? '' : 's'} (inputs + model outputs, for a future results-join).{' '}
-                                            <a onClick={doExport} style={{ color: 'var(--info-blue)', cursor: 'pointer', textDecoration: 'underline' }}>Export JSON</a>
+                                            📦 {snapSrv && snapSrv.total
+                                                ? <>{snapSrv.total.toLocaleString()} prop snapshots on the backend ({snapSrv.slates ? snapSrv.slates.length : 0} slate{(snapSrv.slates && snapSrv.slates.length === 1) ? '' : 's'}{snapSrv.graded ? `, ${snapSrv.graded.toLocaleString()} settled` : ''}) · {snaps.length.toLocaleString()} in this browser</>
+                                                : <>{snaps.length.toLocaleString()} prop snapshots banked over {days} slate{days === 1 ? '' : 's'} in this browser</>}
+                                            {' '}(inputs + model outputs, for a future results-join).{' '}
+                                            {snaps.length ? <a onClick={doExport} style={{ color: 'var(--info-blue)', cursor: 'pointer', textDecoration: 'underline' }}>Export JSON</a> : null}
                                         </div>
                                     );
                                 })()}
@@ -5120,8 +5158,8 @@
                 if (hasReal) {
                     archiveLines(selectedSport, selectedDate, playersData);
                     // Full per-prop snapshots — inputs + model outputs + which
-                    // data was real. The seed for a results-join calibration set.
-                    archivePropSnapshots(selectedSport, selectedDate, playersData);
+                    // data was real. Local rolling buffer + durable backend copy.
+                    archivePropSnapshots(selectedSport, selectedDate, playersData, backendUrl);
                 }
                 // NBA: also snapshot today's Defense-vs-Position + team-defense
                 // ranks, dated — so those factors become walk-forward testable
@@ -5129,7 +5167,7 @@
                 if (selectedSport === 'nba' && hasReal) {
                     try { archiveDvpSnapshot(new Date().toISOString().slice(0, 10), NBA_DVP, (nbaCache.current && nbaCache.current.oppRankByAbbr) || null); } catch (e) { }
                 }
-            }, [playersData, selectedSport, selectedDate]);
+            }, [playersData, selectedSport, selectedDate, backendUrl]);
 
             const fetchData = async (mySeq) => {
                 // True once the user has navigated to a different sport/date (or
@@ -6452,6 +6490,13 @@
                     _detailLoaded: false,
                     _seasonStat: seasonStat,
                     _isPitcher: isPitcher,
+                    // Batter "opportunity" — how many times he comes to the plate
+                    // a game (PA), and how many of those are official at-bats (AB).
+                    paPerGame: (!isPitcher && seasonStat && seasonStat.gamesPlayed)
+                        ? Math.round((seasonStat.plateAppearances || 0) / seasonStat.gamesPlayed * 10) / 10 : null,
+                    abPerGame: (!isPitcher && seasonStat && seasonStat.gamesPlayed)
+                        ? Math.round((seasonStat.atBats || 0) / seasonStat.gamesPlayed * 10) / 10 : null,
+                    battingOrder: slot.battingOrder || slot.battingOrderSpot || null,
                     oppPitcherId: slot.oppPitcherId || null,
                     oppPitcherName: slot.oppPitcherName || null
                 };
@@ -9739,6 +9784,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     {player.sport === 'nba' && player.projMin != null && (
                                         <span className="opponent" title="Projected minutes tonight (weighted L5/L10/L20)"> · ~{player.projMin} min</span>
                                     )}
+                                    {player.sport === 'mlb' && player.abPerGame != null && (
+                                        <span className="opponent" title={`Season: ~${player.paPerGame} plate appearances / game, ~${player.abPerGame} official at-bats / game${player.battingOrder ? ` · bats ${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'}` : ''}`}> · ~{player.abPerGame} AB/g</span>
+                                    )}
                                 </div>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -9917,6 +9965,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             {player.sport === 'nba' && player.projMin != null && (
                                                                 <span title="Projected minutes tonight — weighted blend of L5 / L10 / L20 minutes played">
                                                                     {' • '}~{player.projMin} proj min
+                                                                </span>
+                                                            )}
+                                                            {player.sport === 'mlb' && !player._isPitcher && player.abPerGame != null && (
+                                                                <span title={`Season: ~${player.paPerGame} plate appearances / game, ~${player.abPerGame} official at-bats / game`}>
+                                                                    {' • '}~{player.abPerGame} AB/g
                                                                 </span>
                                                             )}
                                                         </div>
@@ -10135,6 +10188,35 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 </div>
                                                             </div>
                                                             )}
+
+                                                            {isMlb && !player._isPitcher && (player.paPerGame != null || (player._seasonStat && player._seasonStat.gamesPlayed)) && (() => {
+                                                                const ss = player._seasonStat || {};
+                                                                const g = ss.gamesPlayed || 0;
+                                                                const paG = player.paPerGame != null ? player.paPerGame : (g ? Math.round((ss.plateAppearances || 0) / g * 10) / 10 : null);
+                                                                const abG = player.abPerGame != null ? player.abPerGame : (g ? Math.round((ss.atBats || 0) / g * 10) / 10 : null);
+                                                                const oppOkPa = paG == null ? null : paG >= 4.2 ? true : paG < 3.6 ? false : null;
+                                                                return (
+                                                                    <div className="research-sec">
+                                                                        <div className="research-sec-head">{dot(oppOkPa)}<span className="rs-num">{N()}</span> OPPORTUNITY</div>
+                                                                        <div className="research-sec-body">
+                                                                            <table className="research-tbl">
+                                                                                <thead><tr><th>Metric</th><th style={{ textAlign: 'right' }}>Value</th></tr></thead>
+                                                                                <tbody>
+                                                                                    <tr><td>At-bats / game</td><td className="num">{abG ?? '—'}</td></tr>
+                                                                                    <tr><td>Plate appearances / game</td><td className="num">{paG ?? '—'}</td></tr>
+                                                                                    <tr><td>Batting order</td><td className="num">{player.battingOrder ? `${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'}` : '—'}</td></tr>
+                                                                                    <tr><td>Games played</td><td className="num">{g || '—'}</td></tr>
+                                                                                    <tr><td>Season PA · AB</td><td className="num">{ss.plateAppearances != null ? ss.plateAppearances : '—'} · {ss.atBats != null ? ss.atBats : '—'}</td></tr>
+                                                                                </tbody>
+                                                                            </table>
+                                                                            <div className={`research-assess ${oppOkPa === true ? 'g' : oppOkPa === false ? 'r' : 'n'}`}>
+                                                                                Assessment: {paG == null ? 'No plate-appearance rate yet' : paG >= 4.2 ? `Strong — ~${paG} trips to the plate a game (top-of-order volume)` : paG < 3.6 ? `Light — only ~${paG} plate appearances a game` : `Regular — ~${paG} plate appearances a game`}
+                                                                            </div>
+                                                                            <div className="research-note">More at-bats = more chances to clear a counting-stat line (hits, TB, HR, K). Batting order fills in when the confirmed lineup posts.</div>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })()}
 
                                                             <div className="research-sec">
                                                                 <div className="research-sec-head">{dot(formOk)}<span className="rs-num">{N()}</span> RECENT FORM</div>
@@ -11612,6 +11694,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 playersData={playersData}
                                 loading={loading}
                                 selectedSport={selectedSport}
+                                backendUrl={backendUrl}
                                 backtest={backtest}
                                 backtestRunning={backtestRunning}
                                 onRunBacktest={runBacktest}
