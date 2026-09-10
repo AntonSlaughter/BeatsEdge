@@ -3473,12 +3473,29 @@
             // raw estimate passes straight through. The calibrated value is
             // allowed a wider band (a backtested "90%" should be able to say so).
             const pCal = applyProbCalib(rawModelProb, sport);
-            const modelProb = Math.max(0.03, Math.min(0.97, pCal));
-            if (Math.abs(modelProb - rawModelProb) >= 0.01) {
+            // Sport-level calibration only — this is the value the grade
+            // reconciliation guards and the betting-edge % below still use, so
+            // their behaviour is byte-for-byte unchanged by the family layer.
+            const modelProbSport = Math.max(0.03, Math.min(0.97, pCal));
+            if (Math.abs(modelProbSport - rawModelProb) >= 0.01) {
                 probSteps.push({
                     label: 'Backtest calibration',
-                    p: modelProb,
-                    detail: `raw estimate ${Math.round(rawModelProb * 100)}% → ${Math.round(modelProb * 100)}%, matching ${String(sport || '').toUpperCase()} calls at this confidence to how often they've actually hit walk-forward`
+                    p: modelProbSport,
+                    detail: `raw estimate ${Math.round(rawModelProb * 100)}% → ${Math.round(modelProbSport * 100)}%, matching ${String(sport || '').toUpperCase()} calls at this confidence to how often they've actually hit walk-forward`
+                });
+            }
+            // Stat-family calibration — a second, isolated layer on top of the
+            // sport curve (see familyCalibAdj / the OOS diagnostic). Adjusts the
+            // DISPLAYED / returned probability only; grade, Prime, gradeScore,
+            // cutoffs, confluence, edge and ranking are untouched.
+            const _famName = statFamilyOf(sport, prop.statKey);
+            const familyAdj = familyCalibAdj(modelProbSport, sport, prop.statKey);
+            const modelProb = Math.max(0.03, Math.min(0.97, modelProbSport + familyAdj));
+            if (Math.abs(familyAdj) >= 0.0001) {
+                probSteps.push({
+                    label: 'Stat-family calibration',
+                    delta: familyAdj,
+                    detail: `${_famName ? _famName.replace(/_/g, ' ') : 'family'} runs ${familyAdj >= 0 ? 'under' : 'over'}-called at this level in the frozen NBA hold-out — ${Math.round(modelProbSport * 100)}% → ${Math.round(modelProb * 100)}% (½-shrunk gap)`
                 });
             }
             probSteps.push({
@@ -3498,13 +3515,17 @@
             else if (direction === 'under' && impUnder != null) impliedProb = impUnder;
             const hasRealPrice = !!prop.lineSource && prop.lineSource !== 'backtest' && (impOver != null || impUnder != null);
             if (impliedProb == null) impliedProb = 0.5; // DFS pick'em / unpriced baseline
-            const edgePct = Math.round((modelProb - impliedProb) * 1000) / 10;
+            // Betting-edge % and the grade reconciliation guards below keep
+            // using the SPORT-calibrated probability (pre stat-family layer) —
+            // this commit does not let the family adjustment move the letter,
+            // the edge number, or anything Prime/ranking derives.
+            const edgePct = Math.round((modelProbSport - impliedProb) * 1000) / 10;
 
             // Keep the letter honest against a REAL market price: an A/B claims
             // a genuine edge over the book, so if the model doesn't actually
             // beat the (de-vigged) price it's a C at best. Same spirit as the
             // RED MATCHUP / thinData / crossBook caps above.
-            if (hasRealPrice && (grade === 'A' || grade === 'B') && modelProb <= impliedProb) grade = 'C';
+            if (hasRealPrice && (grade === 'A' || grade === 'B') && modelProbSport <= impliedProb) grade = 'C';
             // The letter and the probability must never openly contradict:
             //  - model has this side below a coin flip → not an A/B.
             //  - model actively dislikes this side → D, whatever the raw
@@ -3515,13 +3536,13 @@
             // driven by the same signal (nothing to reconcile) and the
             // calibration must stay stable.
             if (prop.lineSource !== 'backtest') {
-                if ((grade === 'A' || grade === 'B') && modelProb < 0.50) grade = 'C';
-                if (grade !== 'D' && modelProb < 0.44) grade = 'D';
+                if ((grade === 'A' || grade === 'B') && modelProbSport < 0.50) grade = 'C';
+                if (grade !== 'D' && modelProbSport < 0.44) grade = 'D';
                 // ...and the reverse: don't call it a D if the model clearly
                 // likes the side (keeps the letter from disagreeing with a
                 // 58%+ probability). C is as high as this bump goes — a true
                 // A/B still has to earn it through the factor + edge score.
-                if (grade === 'D' && modelProb >= 0.58) grade = 'C';
+                if (grade === 'D' && modelProbSport >= 0.58) grade = 'C';
             }
 
             const pickRate = (hr) => (hr == null ? null : (direction === 'over' ? Math.round(hr) : Math.round(100 - hr)));
@@ -3563,6 +3584,11 @@
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
                 rawModelProbPct: Math.round(rawModelProb * 100),
+                // stat-family calibration diagnostics (layer sits between the
+                // sport curve and the final displayed probability)
+                sportCalibProbPct: Math.round(modelProbSport * 100),
+                familyAdjPts: Math.round(familyAdj * 1000) / 10,
+                statFamily: _famName,
                 impliedProb,
                 impliedProbPct: Math.round(impliedProb * 100),
                 hasRealPrice,
@@ -4083,6 +4109,61 @@
             const [[x0, y0], [x1, y1]] = seg;
             const y = y0 + (y1 - y0) * (x - x0) / ((x1 - x0) || 1);
             return Math.max(0.01, Math.min(0.99, y / 100));
+        }
+
+        // ── Stat-family calibration ──────────────────────────────────────────
+        // A SECOND calibration layer, applied AFTER the sport-level curve
+        // (applyProbCalib) and BEFORE the final clamp. The frozen NBA OOS
+        // diagnostic (train through 2024-12-19, held-out after; see the
+        // "Prime · Family × Probability Calibration" panel) showed the model's
+        // stated probability is biased in OPPOSITE directions by stat family,
+        // and the two errors cancel in the aggregate so the single sport curve
+        // can't touch it: scoring/combo runs ~+10 under-confident, volatile
+        // counting ~-3 over-confident, core roughly honest.
+        //
+        // Values below are the observed OOS gaps SHRUNK ~50% (a first, cautious
+        // correction — not the full gap, and deliberately NOT re-tuned on that
+        // same hold-out). Adjustments are in probability POINTS, keyed by the
+        // sport-calibrated probability bucket. Isolated on purpose: change the
+        // table, the shrink, or disable a sport here without touching anything
+        // else in the probability path.
+        const STAT_FAMILY_BY_SPORT = {
+            nba: {
+                points: 'scoring_combo', pra: 'scoring_combo', pr: 'scoring_combo', pa: 'scoring_combo', ra: 'scoring_combo',
+                rebounds: 'core_individual', assists: 'core_individual', blocks: 'core_individual',
+                threes: 'volatile_counting', steals: 'volatile_counting', turnovers: 'volatile_counting', blocksSteals: 'volatile_counting'
+            }
+        };
+        const FAMILY_CALIB = {
+            nba: {
+                scoring_combo:    { '50-54': 3.9,  '55-59': 4.75, '60-64': 6.1,  '65-69': 5.2,  '70-74': 6.55 },
+                core_individual:  { '50-54': -0.9, '55-59': -0.25, '60-64': 1.5, '65-69': 1.1,  '70-74': 0.2,  '75+': 2.0 },
+                volatile_counting:{ '50-54': -1.85, '55-59': -2.2, '60-64': -1.0, '65-69': -0.9, '70-74': -1.75, '75+': -2.65 }
+            }
+        };
+        function statFamilyOf(sport, statKey) {
+            return (STAT_FAMILY_BY_SPORT[sport] || {})[statKey] || null;
+        }
+        function familyCalibBucket(pct) {
+            if (pct == null || !isFinite(pct)) return null;
+            if (pct < 50) return '<50';
+            if (pct < 55) return '50-54';
+            if (pct < 60) return '55-59';
+            if (pct < 65) return '60-64';
+            if (pct < 70) return '65-69';
+            if (pct < 75) return '70-74';
+            return '75+';
+        }
+        // The stat-family adjustment for an already sport-calibrated probability,
+        // returned in 0-1 units. 0 when the sport/stat/bucket has no entry.
+        function familyCalibAdj(pSportCal01, sport, statKey) {
+            const fam = statFamilyOf(sport, statKey);
+            if (!fam) return 0;
+            const table = (FAMILY_CALIB[sport] || {})[fam];
+            if (!table) return 0;
+            const bk = familyCalibBucket(pSportCal01 * 100);
+            const pts = bk && table[bk] != null ? table[bk] : 0;
+            return pts / 100;
         }
 
         // ESPN returns some fields (injury type, status) as either a plain
@@ -4953,6 +5034,33 @@
                                                     </table>
                                                 </div>
                                             )}
+                                        </div>
+                                    );
+                                })()}
+                                {Array.isArray(bt.primeFamily) && bt.primeFamily.some(f => f.meanProbAfter != null) && (() => {
+                                    const rows = bt.primeFamily.filter(f => f.n);
+                                    const anyAdj = rows.some(f => Math.abs(f.meanFamAdj || 0) > 0.01);
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Prime · Family Calibration Test{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Family</th><th>Probability (before → after)</th><th>Avg adjustment</th><th>Prime count</th></tr></thead>
+                                                <tbody>
+                                                    {rows.map(f => (
+                                                        <tr key={f.fam}>
+                                                            <td>{f.label}</td>
+                                                            <td>{f.meanProbBefore == null ? '—' : `${f.meanProbBefore}% → `}<strong>{f.meanProbAfter == null ? '—' : f.meanProbAfter + '%'}</strong></td>
+                                                            <td className={f.meanFamAdj == null ? '' : Math.abs(f.meanFamAdj) < 0.5 ? '' : f.meanFamAdj > 0 ? 'calib-under' : 'calib-over'}>{f.meanFamAdj == null ? '—' : (f.meanFamAdj >= 0 ? '+' : '') + f.meanFamAdj + ' pts'}</td>
+                                                            <td>{f.n.toLocaleString()}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {anyAdj
+                                                    ? 'The stat-family calibration layer is LIVE. It shifts only the displayed / model probability, applied after the sport curve. Grade, Prime, gradeScore, cutoffs, confluence, edge and ranking are untouched — the Prime count is identical before and after by construction. Adjustments are the ½-shrunk NBA OOS gaps (see the "Prime · Family × Probability Calibration" panel); not re-tuned on that data.'
+                                                    : 'Stat-family calibration produced no adjustment on this run (no NBA Prime picks in a bucket with a family entry).'}
+                                            </div>
                                         </div>
                                     );
                                 })()}
@@ -9301,8 +9409,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 }
                                 const conf = e.totalFactors ? e.greenCount / e.totalFactors : 0;
                                 const eSig = e.edgeSignalPct || 0;
-                                const pf = acc.primeFam[fam] || (acc.primeFam[fam] = { n: 0, hit: 0, sumEdge: 0, sumConf: 0 });
+                                const pf = acc.primeFam[fam] || (acc.primeFam[fam] = { n: 0, hit: 0, sumEdge: 0, sumConf: 0, sumProbBefore: 0, sumProbAfter: 0, sumFamAdj: 0 });
                                 pf.n++; if (hit) pf.hit++; pf.sumEdge += eSig; pf.sumConf += conf;
+                                pf.sumProbBefore += (e.sportCalibProbPct != null ? e.sportCalibProbPct : e.modelProbPct);
+                                pf.sumProbAfter += e.modelProbPct;
+                                pf.sumFamAdj += (e.familyAdjPts || 0);
                                 // Control cells: does family still separate once
                                 // edge size, confluence share, and GRADE are held fixed?
                                 const eb = eSig < 16 ? 'e11' : eSig < 22 ? 'e16' : eSig < 30 ? 'e22' : 'e30';
@@ -9567,8 +9678,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const btPrimeFamily = (a) => FAM_ORDER.map(f => {
                         const b = a.primeFam[f];
                         return (b && b.n)
-                            ? { fam: f, label: FAM_LABEL[f], n: b.n, rate: Math.round((b.hit / b.n) * 100), meanEdge: Math.round((b.sumEdge / b.n) * 10) / 10, meanConf: Math.round((b.sumConf / b.n) * 100) }
-                            : { fam: f, label: FAM_LABEL[f], n: 0, rate: null, meanEdge: null, meanConf: null };
+                            ? {
+                                fam: f, label: FAM_LABEL[f], n: b.n, rate: Math.round((b.hit / b.n) * 100),
+                                meanEdge: Math.round((b.sumEdge / b.n) * 10) / 10, meanConf: Math.round((b.sumConf / b.n) * 100),
+                                meanProbBefore: b.sumProbBefore != null ? Math.round((b.sumProbBefore / b.n) * 10) / 10 : null,
+                                meanProbAfter: b.sumProbAfter != null ? Math.round((b.sumProbAfter / b.n) * 10) / 10 : null,
+                                meanFamAdj: b.sumFamAdj != null ? Math.round((b.sumFamAdj / b.n) * 100) / 100 : null
+                              }
+                            : { fam: f, label: FAM_LABEL[f], n: 0, rate: null, meanEdge: null, meanConf: null, meanProbBefore: null, meanProbAfter: null, meanFamAdj: null };
                     });
                     const primeFamily = btPrimeFamily(acc);
                     const primeFamCells = {};
@@ -9673,6 +9790,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         FAM_ORDER.forEach(f => push(FAM_LABEL[f], primeFamProb.byFam[f]));
                         console.log(`%cPrime · Family × Probability Calibration${holdoutTs ? '  (OUT-OF-SAMPLE, train through ' + new Date(holdoutTs).toISOString().slice(0, 10) + ')' : ''}`, 'font-weight:bold');
                         (console.table ? console.table : console.log).call(console, flat);
+                        // Prime · Family Calibration Test — before vs after the new
+                        // stat-family layer (probability only; grade/Prime/ranking
+                        // unchanged, so Prime count is identical).
+                        console.log('%cPrime · Family Calibration Test  (probability before → after; Prime count unchanged)', 'font-weight:bold');
+                        (console.table ? console.table : console.log).call(console, primeFamily.filter(f => f.n).map(f => ({
+                            family: f.label, primeCount: f.n,
+                            probBeforePct: f.meanProbBefore, probAfterPct: f.meanProbAfter,
+                            avgFamilyAdjPts: f.meanFamAdj, oosHitPct: f.rate
+                        })));
                     }
                 } catch (e) {
                     console.error('Backtest failed:', e);
