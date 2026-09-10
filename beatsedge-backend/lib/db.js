@@ -93,6 +93,48 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (sport, team, window_type)
   );
+
+  -- Full historical NBA player box scores, one row per player per game.
+  -- Ingested from the free sportsdataverse / hoopR bulk release repo
+  -- (scripts/fetch-hoopr-nba.js + scripts/ingest-hoopr-nba.js). ESPN-sourced,
+  -- so athlete_id = ESPN athlete id and game_id = ESPN event id — same id
+  -- space the live BeatsEdge NBA pipeline uses. Powers the walk-forward
+  -- backtest in the offseason (no live slate to iterate) and a fresh,
+  -- nightly-updatable defense-vs-position grid.
+  CREATE TABLE IF NOT EXISTS nba_player_box (
+    game_id TEXT NOT NULL,
+    athlete_id TEXT NOT NULL,
+    athlete_name TEXT,
+    season INTEGER,                     -- season END year: 2026 = 2025-26
+    season_type INTEGER,                -- 2 = regular, 3 = postseason
+    game_date TEXT NOT NULL,            -- YYYY-MM-DD
+    team TEXT,                          -- player's own team abbr (ESPN)
+    opponent TEXT,                      -- opponent team abbr (ESPN)
+    home_away TEXT,                     -- 'home' | 'away'
+    pos TEXT,                           -- ESPN position abbr (PG/SG/SF/PF/C/G/F)
+    pos_group TEXT,                     -- G | F | C
+    minutes REAL DEFAULT 0,
+    points REAL DEFAULT 0,
+    off_reb REAL DEFAULT 0,
+    def_reb REAL DEFAULT 0,
+    rebounds REAL DEFAULT 0,
+    assists REAL DEFAULT 0,
+    threes REAL DEFAULT 0,              -- three_point_field_goals_made
+    threes_att REAL DEFAULT 0,
+    steals REAL DEFAULT 0,
+    blocks REAL DEFAULT 0,
+    turnovers REAL DEFAULT 0,
+    fgm REAL DEFAULT 0, fga REAL DEFAULT 0,
+    ftm REAL DEFAULT 0, fta REAL DEFAULT 0,
+    plus_minus REAL,
+    starter INTEGER DEFAULT 0,          -- 1 if started
+    played INTEGER DEFAULT 1,           -- 0 if DNP / inactive
+    source TEXT DEFAULT 'hoopr',
+    PRIMARY KEY (game_id, athlete_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_npb_athlete ON nba_player_box(athlete_id, game_date);
+  CREATE INDEX IF NOT EXISTS idx_npb_opp ON nba_player_box(opponent, pos_group, game_date);
+  CREATE INDEX IF NOT EXISTS idx_npb_season ON nba_player_box(season, season_type);
 `);
 
 module.exports = db;

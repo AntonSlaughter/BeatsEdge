@@ -8,6 +8,8 @@
     "seed": "node scripts/seed-from-csv.js",
     "settle": "node cron/settleSnapshots.js",
     "audit:books": "node scripts/audit-book-coverage.js",
+    "fetch:nba": "node scripts/fetch-hoopr-nba.js",
+    "ingest:nba": "node scripts/fetch-hoopr-nba.js && node scripts/ingest-hoopr-nba.js",
     "test:dvp": "node scripts/test-dvp-engine.js"
   },
   "dependencies": {

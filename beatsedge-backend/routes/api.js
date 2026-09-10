@@ -11,6 +11,7 @@ const nhlDb = require('../lib/nhlDb');
 const db = require('../lib/db');
 const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapshotDb');
 const { runSettleSnapshots } = require('../cron/settleSnapshots');
+const nbaHist = require('../lib/nbaHistDb');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -165,6 +166,56 @@ router.get('/nfl/defense/by-position/:team', (req, res) => {
     return res.status(404).json({ error: `No computed NFL data for ${team}` });
   }
   res.json({ source: 'BeatsEdge computed (real nflverse box scores)', team: team.toUpperCase(), window: windowType, byPosition });
+});
+
+// ============================================================
+// NBA history — free hoopR / sportsdataverse box scores loaded into
+// nba_player_box (scripts/ingest-hoopr-nba.js). Feeds the walk-forward
+// backtest in the offseason (no live slate to iterate) and a fresh
+// defense-vs-position grid. All read-only.
+// ============================================================
+
+// GET /api/nba/history-status — is the table populated, and how far back
+router.get('/nba/history-status', (req, res) => {
+  try {
+    if (!nbaHist.hasData()) return res.json({ ready: false });
+    const s = db.prepare(`SELECT COUNT(*) rows, COUNT(DISTINCT athlete_id) players, MIN(game_date) a, MAX(game_date) b, MAX(season) season FROM nba_player_box`).get();
+    res.json({ ready: true, rows: s.rows, players: s.players, from: s.a, to: s.b, latestSeason: s.season });
+  } catch (e) { res.json({ ready: false, error: e.message }); }
+});
+
+// GET /api/nba/backtest-pool?season=2026&minGames=25&limit=200
+// A roster to walk-forward when there's no live slate.
+router.get('/nba/backtest-pool', (req, res) => {
+  try {
+    const season = req.query.season ? parseInt(req.query.season, 10) : null;
+    const minGames = Math.max(5, Math.min(82, parseInt(req.query.minGames, 10) || 25));
+    const limit = Math.max(10, Math.min(500, parseInt(req.query.limit, 10) || 220));
+    res.json({ season, pool: nbaHist.backtestPool({ season, minGames, limit }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/nba/gamelogs?athletes=1,2,3&since=2023-10-01
+// Per-game rows (compact keys) for a set of ESPN athlete ids, oldest first.
+router.get('/nba/gamelogs', (req, res) => {
+  try {
+    const ids = String(req.query.athletes || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 400);
+    if (!ids.length) return res.status(400).json({ error: 'pass ?athletes=id,id,...' });
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
+    res.json({ since, logs: nbaHist.gamelogs(ids, { since }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/nba/dvp?since=2025-10-01
+// Defense-vs-position grid computed from nba_player_box: per team, per
+// G/F/C, allowed-per-game for pts/reb/ast/3pm/stl/blk/to + a 1-30 rank.
+router.get('/nba/dvp', (req, res) => {
+  try {
+    if (!nbaHist.hasData()) return res.status(404).json({ error: 'nba_player_box not populated — run scripts/ingest-hoopr-nba.js' });
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
+    const asOf = db.prepare(`SELECT MAX(game_date) d FROM nba_player_box${since ? ' WHERE game_date >= ?' : ''}`).get(...(since ? [since] : []));
+    res.json({ since, asOf: asOf && asOf.d, source: 'BeatsEdge computed (hoopR box scores)', grid: nbaHist.dvpGrid({ since }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ============================================================
