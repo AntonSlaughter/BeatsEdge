@@ -3199,7 +3199,24 @@
             // its pitcher/lineup context isn't folded into this numeric nudge in this pass.)
             const vsOppAvg = s.vsOpp ? s.vsOpp.avg : seasonAvg;
             const last10Avg = s.last10 ? s.last10.avg : seasonAvg;
-            let projection = (recentAvg * 0.35) + (seasonAvg * 0.25) + (last10Avg * 0.25) + (vsOppAvg * 0.15);
+            // Empirical-Bayes shrinkage: a short window's average is pulled toward
+            // the season baseline in proportion to how little evidence it carries.
+            // n real games vs a pseudo-count k of "prior" — a 5-game L5 lands ~⅓ of
+            // the way from season→observed, a 20-game L10 keeps most of its own
+            // signal, a 3-game vs-opponent history barely moves the number. This is
+            // what stops a lucky 5-for-5 stretch from dragging the projection.
+            const shrinkToSeason = (obs, n, k) => {
+                if (obs == null || !isFinite(obs)) return seasonAvg;
+                const nn = Math.max(0, n || 0);
+                return (nn * obs + k * seasonAvg) / (nn + k);
+            };
+            const _l5n = (s.last5 && s.last5.games) || 0;
+            const _l10n = (s.last10 && s.last10.games) || 0;
+            const _voN = (s.vsOpp && s.vsOpp.games) || 0;
+            const recentAvgS = shrinkToSeason(recentAvg, _l5n || 5, 8);
+            const last10AvgS = shrinkToSeason(last10Avg, _l10n || 10, 8);
+            const vsOppAvgS = shrinkToSeason(vsOppAvg, _voN, 10);
+            let projection = (recentAvgS * 0.35) + (seasonAvg * 0.25) + (last10AvgS * 0.25) + (vsOppAvgS * 0.15);
 
             if (posDefense && posDefense.rank !== undefined) {
                 const defAdjustment = (posDefense.rank - 15.5) * 0.12; // weak D (high rank) nudges projection up
@@ -3386,10 +3403,14 @@
                 ? _glRows.map(g => (g && typeof g.points === 'number') ? g.points : null).filter(v => v != null)
                 : [];
             const _hasGl = _glVals.length >= 5;
-            const rateAt = (vals) => {
+            // Hit rate with an empirical-Bayes pseudo-count toward a coin flip, so
+            // a 5-for-5 reads ~73% not 100% and a 72/100 reads ~71% — the sample
+            // size, not just the ratio, decides how far from 50% we let it sit.
+            const rateAt = (vals, k = 6) => {
                 if (!vals.length) return null;
-                const over = vals.filter(v => v > line).length / vals.length;
-                return direction === 'over' ? over : 1 - over;
+                const over = vals.filter(v => v > line).length;
+                const p = (over + k * 0.5) / (vals.length + k);
+                return direction === 'over' ? p : 1 - p;
             };
             const priors = [];
             if (_hasGl) {
@@ -3405,7 +3426,11 @@
                     priors.push({ p: dirRate(s.season.hitRate), w: Math.min(0.30, (s.season.games / 100) * 0.30), games: s.season.games, name: 'season hit rate (est.)' });
                 }
                 if (s.last10 && typeof s.last10.hitRate === 'number' && (s.last10.games || 0) >= 5) {
-                    priors.push({ p: dirRate(s.last10.hitRate), w: 0.15, games: s.last10.games, name: 'last-10 hit rate (est.)' });
+                    // shrink the 5-10 game rate toward the season rate (or 50%) by its own sample size
+                    const _l10n = s.last10.games || 5;
+                    const _seasonP = (s.season && typeof s.season.hitRate === 'number') ? dirRate(s.season.hitRate) : 0.5;
+                    const _l10p = (_l10n * dirRate(s.last10.hitRate) + 6 * _seasonP) / (_l10n + 6);
+                    priors.push({ p: _l10p, w: 0.15, games: s.last10.games, name: 'last-10 hit rate (est.)' });
                 }
             }
             const wHist = priors.reduce((a, x) => a + x.w, 0);
@@ -3413,7 +3438,7 @@
             priors.forEach(pr => probSteps.push({
                 label: `Blend in ${pr.name}`,
                 p: pr.p, weight: pr.w,
-                detail: `hit this side in ${Math.round(pr.p * 100)}% of ${pr.games} games — weighted ${Math.round(pr.w * 100)}%`
+                detail: `~${Math.round(pr.p * 100)}% on this side over ${pr.games} games (pulled toward 50% for the small sample) — weighted ${Math.round(pr.w * 100)}%`
             }));
             if (priors.length) probSteps.push({ label: 'After history blend', p: pBlend, subtotal: true });
 
