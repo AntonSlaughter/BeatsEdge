@@ -3611,6 +3611,12 @@
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
                 rawModelProbPct: Math.round(rawModelProb * 100),
+                // Pre-floor/-ceiling raw estimate (pAdj), BEFORE the RAW_FLOOR/CEIL
+                // clamp and the sport curve. Diagnostic only — nothing in the app
+                // reads this; the MLB sub-1.0 floor investigation uses it to see
+                // how hard a prediction is being compressed against the 22% floor.
+                preFloorProbPct: Math.round(Math.max(0, Math.min(1, pAdj)) * 100),
+                preFloorRaw: pAdj,
                 // stat-family calibration diagnostics (Prime-scoped layer sitting
                 // between the sport curve and the final displayed probability)
                 sportCalibProbPct: Math.round(modelProbSport * 100),
@@ -3796,6 +3802,15 @@
         }
         function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {}, primeProb: {}, primeFamProb: {}, primeTotal: { n: 0, hit: 0 } }; }
 
+        // MLB sub-1.0-line floor diagnostic (Step 1 of the floor investigation).
+        // Candidate OUTPUT floors to sweep for compressed target-stat overs, the
+        // probability buckets from the spec, and the target low-count stats.
+        const LL_CANDS = [22, 15, 12, 10, 8, 5, 3];
+        const LL_PBUCKETS = ['<10', '10-14', '15-19', '20-21', '22-24', '25-29', '30-39', '40-49', '50+'];
+        const llPBucket = (p) => p < 10 ? '<10' : p < 15 ? '10-14' : p < 20 ? '15-19' : p < 22 ? '20-21' : p < 25 ? '22-24' : p < 30 ? '25-29' : p < 40 ? '30-39' : p < 50 ? '40-49' : '50+';
+        const LL_TARGET = new Set(['homeRuns', 'doubles', 'triples', 'stolenBases']);
+        const llBin = () => ({ n: 0, hit: 0, sumRaw: 0, sumFinal: 0, sumPre: 0, minFinal: 101, maxFinal: -1, atRawFloorN: 0, atEffFloorN: 0, brier: 0, ll: 0, cand: {}, pb: {} });
+
         // Walk-forward for ONE MLB player-stat series, with a {minTs,maxTs} date
         // gate (temporal holdout) and stat-family tallying. Mirrors
         // nbaBacktestSeries. `tss` is the per-game date in ms. Diagnostic use —
@@ -3803,9 +3818,15 @@
         // this measures each MLB family's OWN calibration on unseen data.
         // `fam` is the resolved MLB stat-family string (or null) — resolved by
         // the caller because MLB_STAT_FAMILY is defined in component scope.
-        function mlbBacktestSeries(vals, opps, tss, position, fam, acc, gate) {
+        // `statKey` is the real MLB stat key (for the sub-1.0 floor diagnostic).
+        function mlbBacktestSeries(vals, opps, tss, position, fam, statKey, acc, gate) {
             const MIN = (gate && gate.minGames) || 12;
             const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
+            // Effective low-end floor the CURRENT frozen model applies to MLB:
+            // the bottom anchor of PROB_CALIB.mlb if a curve is active (the curve
+            // holds flat below its lowest anchor), else the 22% RAW_FLOOR.
+            const _mlbCurve = (typeof PROB_CALIB !== 'undefined' && PROB_CALIB) ? PROB_CALIB.mlb : null;
+            const effFloorPct = (Array.isArray(_mlbCurve) && _mlbCurve.length) ? Math.round(_mlbCurve[0][1]) : 22;
             for (let i = MIN; i < vals.length; i++) {
                 const gTs = tss[i] || 0;
                 if (maxTs && gTs && gTs >= maxTs) continue;
@@ -3849,6 +3870,47 @@
                         if (fam) {
                             tally(acc.mlbFam[fam] || (acc.mlbFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
                             if (e.prime) tally(acc.mlbFamPrime[fam] || (acc.mlbFamPrime[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        }
+                    }
+                    // ── MLB sub-1.0-line floor diagnostic ──────────────────────
+                    // NO model change here — this only OBSERVES how the current
+                    // pipeline scores these predictions, and re-scores them
+                    // offline against candidate output floors (flat override for
+                    // the compressed low-tail of target-stat OVER picks).
+                    if (acc.lowLine) {
+                        const y = hit ? 1 : 0;
+                        const finalPct = e.modelProbPct, rawPct = e.rawModelProbPct, prePct = e.preFloorProbPct;
+                        const preRaw = (typeof e.preFloorRaw === 'number') ? e.preFloorRaw : prePct / 100;
+                        const p = Math.max(0.001, Math.min(0.999, finalPct / 100));
+                        const sub1 = line < 1.0;
+                        const isTarget = LL_TARGET.has(statKey);
+                        const compressed = dir === 'over' && sub1 && preRaw < 0.22; // pushed against the raw floor
+                        const push = (bin) => {
+                            bin.n++; bin.hit += y;
+                            bin.sumRaw += rawPct; bin.sumFinal += finalPct; bin.sumPre += prePct;
+                            if (finalPct < bin.minFinal) bin.minFinal = finalPct;
+                            if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
+                            if (preRaw < 0.22) bin.atRawFloorN++;
+                            if (Math.abs(finalPct - effFloorPct) <= 0.5) bin.atEffFloorN++;
+                            bin.brier += (p - y) * (p - y);
+                            bin.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+                            const pk = llPBucket(finalPct);
+                            const t = bin.pb[pk] || (bin.pb[pk] = { n: 0, hit: 0, sumP: 0 });
+                            t.n++; t.hit += y; t.sumP += finalPct;
+                            LL_CANDS.forEach(F => {
+                                const pT = (compressed && isTarget) ? Math.max(0.001, Math.min(0.999, F / 100)) : p;
+                                const c = bin.cand[F] || (bin.cand[F] = { n: 0, hit: 0, sumP: 0, brier: 0, ll: 0 });
+                                c.n++; c.hit += y; c.sumP += pT * 100;
+                                c.brier += (pT - y) * (pT - y);
+                                c.ll += -(y * Math.log(pT) + (1 - y) * Math.log(1 - pT));
+                            });
+                        };
+                        push(acc.lowLine.all || (acc.lowLine.all = llBin()));
+                        push((sub1 ? (acc.lowLine.lt1 || (acc.lowLine.lt1 = llBin())) : (acc.lowLine.ge1 || (acc.lowLine.ge1 = llBin()))));
+                        if (sub1 && dir === 'over') {
+                            acc.lowLine.byStat = acc.lowLine.byStat || {};
+                            push(acc.lowLine.byStat[statKey] || (acc.lowLine.byStat[statKey] = llBin()));
+                            if (isTarget) push(acc.lowLine.tgtOver || (acc.lowLine.tgtOver = llBin()));
                         }
                     }
                 }
@@ -5797,6 +5859,115 @@
                                             <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
                                                 Gap = actual hit rate − mean stated probability (points). Positive = the model is under-confident for that family on unseen MLB data (a candidate for a future MLB family layer); near-zero = already calibrated. Families are candidates discovered from MLB markets, not imported from NBA. Full-sample (train+holdout) overall hit for reference: {r.overallFull.rate}% on {r.overallFull.n.toLocaleString()}. {r.note} Ran {new Date(r.ranAt).toLocaleString()}.
                                             </div>
+
+                                            {r.lowLineFloor && r.lowLineFloor.holdout && r.lowLineFloor.holdout.tgtOver && (() => {
+                                                const ll = r.lowLineFloor, H = ll.holdout, T = ll.train, to = H.tgtOver, tt = T.tgtOver;
+                                                const SL = ll.statLabel || {};
+                                                const statKeys = Object.keys(H.byStat || {}).sort((a, b) => (H.byStat[b] ? H.byStat[b].n : 0) - (H.byStat[a] ? H.byStat[a].n : 0));
+                                                return (
+                                                    <React.Fragment>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.85rem', marginTop: '1.1rem', borderTop: '1px dashed var(--border-hairline, #2a2f3a)', paddingTop: '0.8rem' }}>
+                                                            MLB · Sub-1.0 Line Floor Diagnostic <span style={{ color: 'var(--warning-yellow, #f5a623)', fontSize: '0.72rem', fontWeight: 700 }}>· DIAGNOSTIC ONLY</span>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                                            Effective low-end floor under the frozen model: <strong>{ll.effFloorPct}%</strong> (the <code>PROB_CALIB.mlb</code> bottom anchor — the curve holds flat below it; the raw clamp underneath is {ll.rawFloorPct}%). Target stats = HR / 2B / 3B / SB. "Compressed" = pre-floor estimate &lt; {ll.rawFloorPct}%. Candidate rows re-score compressed target OVER picks to a flat output floor; nothing else moves.
+                                                        </div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <tbody>
+                                                                    <tr><td>Target sub-1.0 OVER sample (holdout)</td><td><strong>{to.n.toLocaleString()}</strong></td></tr>
+                                                                    <tr><td>At / below the raw floor</td><td>{to.atRawFloorN.toLocaleString()} ({to.atRawFloorPct}%)</td></tr>
+                                                                    <tr><td>Observed final-prob range</td><td>{to.minFinal}% – {to.maxFinal}%</td></tr>
+                                                                    <tr><td>Actual hit rate</td><td><strong>{to.hitRate}%</strong></td></tr>
+                                                                    <tr><td>Mean model probability</td><td>{to.meanFinal}%</td></tr>
+                                                                    <tr><td>Mean pre-floor estimate</td><td>{to.meanPre}%</td></tr>
+                                                                    <tr><td>Calibration gap (actual − stated)</td><td className={gapCls(to.gap)}><strong>{g(to.gap)}</strong></td></tr>
+                                                                    <tr><td>2022–2025 TRAIN over-rate → recommended floor</td><td><strong>{ll.trainRecommendedFloorRaw}% → {ll.trainRecommendedFloor}%</strong></td></tr>
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Candidate output floor — target sub-1.0 OVER, 2026 holdout <span style={{ color: 'var(--warning-yellow, #f5a623)' }}>(diagnostic only — do not pick production from this)</span></div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Floor</th><th>n</th><th>Hit rate</th><th>Mean prob</th><th>Gap</th><th>Brier</th><th>Log loss</th></tr></thead>
+                                                                <tbody>
+                                                                    {(to.cand || []).map(c => c.n ? (
+                                                                        <tr key={c.floor} style={c.floor === ll.trainRecommendedFloor ? { background: 'rgba(80,200,120,0.10)' } : null}>
+                                                                            <td><strong>{c.floor}%</strong>{c.floor === ll.effFloorPct ? ' (now)' : ''}</td>
+                                                                            <td>{c.n.toLocaleString()}</td>
+                                                                            <td>{c.hitRate}%</td>
+                                                                            <td>{c.meanProb}%</td>
+                                                                            <td className={gapCls(c.gap)}>{g(c.gap)}</td>
+                                                                            <td>{c.brier}</td>
+                                                                            <td>{c.logloss}</td>
+                                                                        </tr>
+                                                                    ) : null)}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Overall-MLB effect of the same candidate floor (proves the rest of the model is untouched)</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Scope</th><th>n</th>{(H.all.cand || []).map(c => <th key={c.floor}>{c.floor}%</th>)}</tr></thead>
+                                                                <tbody>
+                                                                    {[['All MLB', H.all], ['Line ≥ 1.0', H.ge1], ['Line < 1.0', H.lt1]].map(([lab, x]) => x ? (
+                                                                        <tr key={lab}>
+                                                                            <td style={{ whiteSpace: 'nowrap' }}>{lab}</td>
+                                                                            <td>{x.n.toLocaleString()}</td>
+                                                                            {(x.cand || []).map(c => <td key={c.floor} title={`gap ${g(c.gap)}`}>{c.brier}</td>)}
+                                                                        </tr>
+                                                                    ) : null)}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.2rem', color: 'var(--text-muted)' }}>Cells are Brier score at each candidate floor. "Line ≥ 1.0" is identical across every column — the floor override never touches it.</div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>By stat — sub-1.0 OVER (holdout), % at floor, vs TRAIN over-rate</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Stat</th><th>n</th><th>Actual</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th><th>% at floor</th><th>TRAIN actual</th></tr></thead>
+                                                                <tbody>
+                                                                    {statKeys.map(k => {
+                                                                        const x = H.byStat[k], xt = T.byStat && T.byStat[k];
+                                                                        if (!x) return null;
+                                                                        const tgt = ['homeRuns', 'doubles', 'triples', 'stolenBases'].includes(k);
+                                                                        return (
+                                                                            <tr key={k}>
+                                                                                <td style={{ whiteSpace: 'nowrap', fontWeight: tgt ? 700 : 400 }}>{SL[k] || k}{tgt ? '' : ' (non-target)'}</td>
+                                                                                <td>{x.n.toLocaleString()}</td>
+                                                                                <td>{x.hitRate}%</td>
+                                                                                <td>{x.meanFinal}%</td>
+                                                                                <td className={gapCls(x.gap)}>{g(x.gap)}</td>
+                                                                                <td>{x.mae == null ? '—' : x.mae}</td>
+                                                                                <td>{x.brier}</td>
+                                                                                <td>{x.atEffFloorPct}%</td>
+                                                                                <td>{xt ? xt.hitRate + '%' : '—'}</td>
+                                                                            </tr>
+                                                                        );
+                                                                    })}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Sub-1.0 target-OVER predictions by final-probability bucket (holdout)</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Prob bucket</th><th>n</th><th>Actual</th><th>Mean prob</th><th>Gap</th></tr></thead>
+                                                                <tbody>
+                                                                    {(to.pb || []).map(b => (
+                                                                        <tr key={b.bucket}>
+                                                                            <td>{b.bucket}</td>
+                                                                            <td>{b.n ? b.n.toLocaleString() : <span style={{ color: 'var(--text-muted)' }}>none</span>}</td>
+                                                                            <td>{b.rate == null ? '—' : b.rate + '%'}</td>
+                                                                            <td>{b.meanProb == null ? '—' : b.meanProb + '%'}</td>
+                                                                            <td className={b.gap == null ? '' : gapCls(b.gap)}>{b.gap == null ? '—' : g(b.gap)}</td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.4rem', color: 'var(--text-muted)' }}>{ll.note}</div>
+                                                    </React.Fragment>
+                                                );
+                                            })()}
                                         </React.Fragment>
                                     )}
                                 </div>
@@ -10567,14 +10738,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const tss = rec.splits.map(s => s.ts);
                         return keys.map(k => {
                             const vals = rec.splits.map(s => MLB_PROP_DEFS[k].get(s.stat) || 0);
-                            return vals.every(v => v === 0) ? null : { k, fam: MLB_STAT_FAMILY[k] || null, vals, opps, tss, position: rec.position };
+                            return vals.every(v => v === 0) ? null : { k, fam: MLB_STAT_FAMILY[k] || null, vals, opps, tss, position: rec.position, isPitcher: rec.isPitcher };
                         }).filter(Boolean);
                     };
                     const allSeries = players.flatMap(seriesFor);
 
                     // ---- pass 1: derive cutoffs + curve from TRAIN (pre-holdout) ----
                     const accTrain = emptyBacktestAcc();
-                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accTrain, { maxTs: holdoutTs }));
+                    accTrain.lowLine = {}; // TRAIN over-rates → leak-free floor recommendation
+                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutTs }));
                     const cutoffs = deriveGradeCutoffs(accTrain.score);
                     const probCal = deriveProbCalib(accTrain.probRaw);
 
@@ -10585,10 +10757,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (cutoffs) GRADE_CUTOFFS = { ...GRADE_CUTOFFS, mlb: cutoffs };
                         if (probCal) PROB_CALIB = { ...PROB_CALIB, mlb: probCal };
                         bumpEdgeCache();
-                        accHold = emptyBacktestAcc(); accHold.mlbFam = {}; accHold.mlbFamPrime = {};
-                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accHold, { minTs: holdoutTs }));
+                        accHold = emptyBacktestAcc(); accHold.mlbFam = {}; accHold.mlbFamPrime = {}; accHold.lowLine = {};
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutTs }));
                         accFull = emptyBacktestAcc(); accFull.mlbFam = {}; accFull.mlbFamPrime = {};
-                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accFull, {}));
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
                     } finally {
                         GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; bumpEdgeCache();
                     }
@@ -10616,6 +10788,67 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const fam = {}, famPrime = {};
                     MLB_FAMILY_ORDER.forEach(f => { fam[f] = block(accHold.mlbFam[f]); famPrime[f] = block(accHold.mlbFamPrime[f]); });
 
+                    // ── sub-1.0-line floor diagnostic shaping ──────────────────
+                    const llShape = (bin, opts) => {
+                        if (!bin || !bin.n) return null;
+                        const n = bin.n;
+                        const hitRate = Math.round(bin.hit / n * 1000) / 10;
+                        const meanFinal = Math.round(bin.sumFinal / n * 10) / 10;
+                        const meanRaw = Math.round(bin.sumRaw / n * 10) / 10;
+                        const meanPre = Math.round(bin.sumPre / n * 10) / 10;
+                        const gap = Math.round((hitRate - meanFinal) * 10) / 10;
+                        const brier = Math.round(bin.brier / n * 10000) / 10000;
+                        const logloss = Math.round(bin.ll / n * 10000) / 10000;
+                        let mn = 0, ms = 0;
+                        LL_PBUCKETS.forEach(bk => { const t = bin.pb[bk]; if (t && t.n >= 10) { const gg = Math.abs(t.hit / t.n * 100 - t.sumP / t.n); mn += t.n; ms += gg * t.n; } });
+                        const mae = mn ? Math.round(ms / mn * 100) / 100 : null;
+                        const out = {
+                            n, hitRate, meanFinal, meanRaw, meanPre, gap, brier, logloss, mae,
+                            minFinal: bin.minFinal <= 100 ? bin.minFinal : null,
+                            maxFinal: bin.maxFinal >= 0 ? bin.maxFinal : null,
+                            atRawFloorN: bin.atRawFloorN, atRawFloorPct: Math.round(bin.atRawFloorN / n * 1000) / 10,
+                            atEffFloorN: bin.atEffFloorN, atEffFloorPct: Math.round(bin.atEffFloorN / n * 1000) / 10
+                        };
+                        if (opts && opts.pb) out.pb = LL_PBUCKETS.map(bk => {
+                            const t = bin.pb[bk];
+                            if (!t || !t.n) return { bucket: bk, n: 0, rate: null, meanProb: null, gap: null };
+                            const rate = Math.round(t.hit / t.n * 1000) / 10, mp = Math.round(t.sumP / t.n * 10) / 10;
+                            return { bucket: bk, n: t.n, rate, meanProb: mp, gap: Math.round((rate - mp) * 10) / 10 };
+                        });
+                        if (opts && opts.cand) out.cand = LL_CANDS.map(F => {
+                            const c = bin.cand[F];
+                            if (!c || !c.n) return { floor: F, n: 0 };
+                            const r = Math.round(c.hit / c.n * 1000) / 10, mp = Math.round(c.sumP / c.n * 10) / 10;
+                            return { floor: F, n: c.n, hitRate: r, meanProb: mp, gap: Math.round((r - mp) * 10) / 10, brier: Math.round(c.brier / c.n * 10000) / 10000, logloss: Math.round(c.ll / c.n * 10000) / 10000 };
+                        });
+                        return out;
+                    };
+                    const llH = accHold.lowLine || {}, llT = accTrain.lowLine || {};
+                    const holdoutEffFloor = (probCal && probCal.length) ? Math.round(probCal[0][1]) : 22;
+                    const trainTgt = llShape(llT.tgtOver, { pb: true });
+                    let recFloorRaw = null, recFloor = null;
+                    if (trainTgt) {
+                        recFloorRaw = trainTgt.hitRate;
+                        recFloor = LL_CANDS.reduce((a, F) => Math.abs(F - recFloorRaw) < Math.abs(a - recFloorRaw) ? F : a, LL_CANDS[0]);
+                    }
+                    const byStatHold = {}, byStatTrain = {};
+                    Object.keys(llH.byStat || {}).forEach(k => { byStatHold[k] = llShape(llH.byStat[k], { pb: true, cand: true }); });
+                    Object.keys(llT.byStat || {}).forEach(k => { byStatTrain[k] = llShape(llT.byStat[k], { pb: true }); });
+                    const lowLineFloor = {
+                        effFloorPct: holdoutEffFloor, rawFloorPct: 22,
+                        trainRecommendedFloorRaw: recFloorRaw, trainRecommendedFloor: recFloor,
+                        statLabel: { homeRuns: 'HR', doubles: '2B', triples: '3B', stolenBases: 'SB' },
+                        holdout: {
+                            all: llShape(llH.all, { cand: true }),
+                            ge1: llShape(llH.ge1, { cand: true }),
+                            lt1: llShape(llH.lt1, { pb: true, cand: true }),
+                            tgtOver: llShape(llH.tgtOver, { pb: true, cand: true }),
+                            byStat: byStatHold
+                        },
+                        train: { lt1: llShape(llT.lt1, {}), tgtOver: trainTgt, byStat: byStatTrain },
+                        note: 'DIAGNOSTIC ONLY. Candidate-floor rows re-score the compressed low-tail (pre-floor estimate < 22%) of target-stat HR/2B/3B/SB sub-1.0 OVER picks to a flat output; every other prediction is byte-identical across candidates, so >=1.0 / non-target / under rows do not move. The recommended floor is the 2022-2025 TRAIN over-rate (leak-free); the 2026 holdout sweep only confirms it and must NOT be used to pick the production value.'
+                    };
+
                     const result = {
                         ranAt: Date.now(),
                         train: { seasons: `${CUR - 4}–${CUR - 1} seasons`, to: `${CUR}-03-14`, n: accTrain._total.n },
@@ -10627,7 +10860,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         overallFull: { rate: pctOf(accFull._total), n: accFull._total.n },
                         grades, gradesFull,
                         prime: { ...(block(accHold.mlbAllPrime) || { n: accHold.primeTotal.n }), rate: pctOf(accHold.primeTotal) },
-                        family: fam, familyPrime: famPrime
+                        family: fam, familyPrime: famPrime,
+                        lowLineFloor
                     };
                     setMlbTemporal(result);
                     try { localStorage.setItem('beatsedge_mlb_temporal_v1', JSON.stringify(result)); } catch (e) { }
@@ -10637,6 +10871,19 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const x = result.family[f]; if (x) o[MLB_FAMILY_LABEL[f]] = { n: x.n, hit: x.hitRate, meanProb: x.meanProb, gap: x.gap, brier: x.brier, logloss: x.logloss, primeN: result.familyPrime[f] && result.familyPrime[f].n, primeGap: result.familyPrime[f] && result.familyPrime[f].gap };
                         return o;
                     }, {}));
+                    // sub-1.0-line floor diagnostic dump
+                    const _ll = result.lowLineFloor;
+                    if (_ll && _ll.holdout && _ll.holdout.tgtOver) {
+                        const to = _ll.holdout.tgtOver;
+                        console.log(`%cMLB · Sub-1.0 Line Floor Diagnostic  (DIAGNOSTIC ONLY)`, 'font-weight:bold');
+                        console.log(`effective floor now ~${_ll.effFloorPct}% (raw floor ${_ll.rawFloorPct}%) · target sub-1.0 overs n ${to.n.toLocaleString()} · at raw floor ${to.atRawFloorPct}% · observed final prob range ${to.minFinal}–${to.maxFinal}%`);
+                        console.log(`target sub-1.0 OVER — actual hit ${to.hitRate}% vs mean stated ${to.meanFinal}% (gap ${to.gap}) · mean pre-floor estimate ${to.meanPre}% · TRAIN recommends floor ≈ ${_ll.trainRecommendedFloorRaw}% → snap ${_ll.trainRecommendedFloor}%`);
+                        (console.table || console.log).call(console, (to.cand || []).reduce((o, c) => { if (c.n) o[c.floor + '%'] = { n: c.n, hit: c.hitRate, meanProb: c.meanProb, gap: c.gap, brier: c.brier, logloss: c.logloss }; return o; }, {}));
+                        (console.table || console.log).call(console, Object.keys(_ll.holdout.byStat).reduce((o, k) => {
+                            const x = _ll.holdout.byStat[k]; if (x) o[_ll.statLabel[k] || k] = { n: x.n, actual: x.hitRate, meanProb: x.meanFinal, gap: x.gap, mae: x.mae, brier: x.brier, logloss: x.logloss, atFloorPct: x.atEffFloorPct };
+                            return o;
+                        }, {}));
+                    }
                 } catch (e) {
                     console.error('MLB temporal validation failed:', e);
                     setMlbTemporal({ error: String(e && e.message || e), ranAt: Date.now() });
