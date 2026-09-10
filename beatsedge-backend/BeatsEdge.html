@@ -3740,7 +3740,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {} }; }
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -4828,6 +4828,43 @@
                                                               : ` A C inside that corner lands ${cCorner.rate}% (${cCorner.n.toLocaleString()}).`)
                                                           : '')
                                                     : 'Not enough sample in the corner cells yet — re-run once the slate has more history.'}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {Array.isArray(bt.primeByStat) && bt.primeByStat.length > 0 && (() => {
+                                    const inS = bt.inSample && bt.inSample.primeByStat;
+                                    const inFor = (key) => { const r = inS && inS.find(x => x.key === key); return r ? r.rate : null; };
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 58 ? 'calib-ok' : rate >= 52 ? 'calib-under' : 'calib-over';
+                                    const rates = bt.primeByStat.map(r => r.rate).filter(r => r != null);
+                                    const spread = rates.length >= 2 ? Math.max(...rates) - Math.min(...rates) : null;
+                                    const tot = bt.primeByStat.reduce((a, r) => ({ n: a.n + r.n, h: a.h + r.n * (r.rate / 100) }), { n: 0, h: 0 });
+                                    const blended = tot.n ? Math.round((tot.h / tot.n) * 100) : null;
+                                    const top = bt.primeByStat[0], bot = bt.primeByStat[bt.primeByStat.length - 1];
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Prime by stat{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Stat</th><th>Prime hit rate</th>{inS ? <th>In-sample</th> : null}<th>Sample</th></tr></thead>
+                                                <tbody>
+                                                    {bt.primeByStat.map(r => (
+                                                        <tr key={r.key}>
+                                                            <td>{r.stat}</td>
+                                                            <td className={clsFor(r.rate)}>{r.rate == null ? '—' : r.rate + '%'}</td>
+                                                            {inS ? <td style={{ color: 'var(--text-muted)' }}>{inFor(r.key) == null ? '—' : inFor(r.key) + '%'}</td> : null}
+                                                            <td>{r.n.toLocaleString()}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {spread == null
+                                                    ? 'Only one stat has enough Prime picks to judge.'
+                                                    : (bot.rate >= 52
+                                                        ? (spread <= 8
+                                                            ? `Prime holds uniformly — every market ${bot.stat} ${bot.rate}% to ${top.stat} ${top.rate}% (a ${spread}-pt spread around a ${blended}% blend). No single stat is carrying the corner.`
+                                                            : `Prime clears break-even (~52%) in every market — no stat is dragging it down — but strength varies a lot: ${top.stat} ${top.rate}% down to ${bot.stat} ${bot.rate}% (${spread}-pt spread). The corner is strongest on the scoring / combo props and weakest on the defensive-counting ones.`)
+                                                        : `One or two markets are carrying it — ${bot.stat} (${bot.rate}%) is below the ~52% break-even. Prime is really a ${top.stat}-and-similar signal, not a universal one.`)}
                                             </div>
                                         </div>
                                     );
@@ -9045,6 +9082,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                         btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        // Prime cohort (high confluence + large edge) broken out by
+                        // stat — is the corner's hit rate uniform, or is one market
+                        // carrying it?
+                        if (e.prime) {
+                            const ps = acc.primeByStat[statKey] || (acc.primeByStat[statKey] = { n: 0, hit: 0 });
+                            ps.n++; if (hit) ps.hit++;
+                        }
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                         sb.n++; if (hit) sb.hit++;
@@ -9273,6 +9317,18 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     };
                     const profiles = btProfiles(acc);
 
+                    // Prime cohort broken out by stat — is 70% uniform, or is one
+                    // market carrying it? (n>=60: the corner is a small slice of a
+                    // single stat.)
+                    const btPrimeByStat = (a) => {
+                        const NAME = { points: 'Points', rebounds: 'Rebounds', assists: 'Assists', threes: '3PM', steals: 'Steals', blocks: 'Blocks', turnovers: 'Turnovers', pra: 'PRA', pr: 'Pts+Reb', pa: 'Pts+Ast', ra: 'Reb+Ast', blocksSteals: 'Blk+Stl' };
+                        return Object.keys(a.primeByStat || {})
+                            .map(k => { const b = a.primeByStat[k]; return { stat: NAME[k] || k, key: k, n: b.n, rate: b.n ? Math.round((b.hit / b.n) * 100) : null }; })
+                            .filter(r => r.n >= 60)
+                            .sort((x, y) => y.rate - x.rate);
+                    };
+                    const primeByStat = btPrimeByStat(acc);
+
                     // Held-out out-of-sample split (NBA): the tables above are the
                     // post-holdoutTs games the cutoff/calibration fit never saw.
                     // Keep the full in-sample run alongside as context.
@@ -9286,12 +9342,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         inSample = {
                             total: { n: inSampleAcc._total.n, rate: inSampleAcc._total.n ? Math.round((inSampleAcc._total.hit / inSampleAcc._total.n) * 100) : null },
                             grades: ig,
-                            profiles: btProfiles(inSampleAcc)
+                            profiles: btProfiles(inSampleAcc),
+                            primeByStat: btPrimeByStat(inSampleAcc)
                         };
                     }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
-                        oosFrom: holdoutTs || null, inSample, profiles,
+                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
