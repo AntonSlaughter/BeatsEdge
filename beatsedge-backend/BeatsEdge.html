@@ -2614,6 +2614,13 @@
         .prime-card-id { flex: 1; min-width: 0; }
         .prime-card-player { font-weight: 700; color: var(--text-primary); }
         .prime-card-prop { font-size: 0.85rem; color: var(--text-secondary); }
+        .prime-book {
+            display: inline-block; margin-left: 0.5rem; padding: 0.05em 0.5em;
+            border-radius: 4px; background: rgba(255,255,255,0.07);
+            border: 1px solid var(--border-hairline, rgba(255,255,255,0.16));
+            color: var(--text-primary); font-size: 0.68rem; font-weight: 700;
+            letter-spacing: 0.02em; vertical-align: middle; white-space: nowrap;
+        }
         .prime-card-stats { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
         .prime-stat { display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
         .prime-stat-v { font-weight: 800; color: var(--text-primary); font-size: 0.95rem; }
@@ -4750,6 +4757,18 @@
             fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm'
         };
         const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper']);
+        // Display name for a `prop.book` key (as set by nflBuildProps / the MLB
+        // + NBA line builders). Used by the Prime Plays card.
+        const BOOK_LABEL = {
+            prizepicks: 'PrizePicks', underdog: 'Underdog', sleeper: 'Sleeper',
+            fanduel: 'FanDuel', draftkings: 'DraftKings', betmgm: 'BetMGM',
+            espnbet: 'ESPN BET', caesars: 'Caesars', fanatics: 'Fanatics', hardrock: 'Hard Rock'
+        };
+        const bookLabel = (b) => {
+            if (!b) return null;
+            const k = String(b).toLowerCase();
+            return BOOK_LABEL[k] || String(b).replace(/\b\w/g, c => c.toUpperCase());
+        };
 
         // ── ParlayAPI (parlay-api.com) — optional SECOND DFS line source ─────
         // Fills the DFS books PropLine is thin on (Sleeper especially). Merged
@@ -5189,7 +5208,14 @@
                             <div className="prime-card-rank">⭐ {n}</div>
                             <div className="prime-card-id">
                                 <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
-                                <div className="prime-card-prop">{p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}</div>
+                                <div className="prime-card-prop">
+                                    {p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}
+                                    {bookLabel(p.prop.book) && (
+                                        <span className="prime-book" title={p.prop.lineSource || bookLabel(p.prop.book)}>
+                                            {p.prop.crossBook ? `${bookLabel(p.prop.book)} · cross-book` : bookLabel(p.prop.book)}
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                             <div className="prime-card-stats">
                                 <div className="prime-stat"><span className="prime-stat-v">{e.modelProbPct}%</span><span className="prime-stat-k">Model prob</span></div>
