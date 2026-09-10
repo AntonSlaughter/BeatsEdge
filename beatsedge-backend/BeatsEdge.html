@@ -4795,6 +4795,43 @@
                                         </div>
                                     );
                                 })()}
+                                {Array.isArray(bt.profiles) && bt.profiles.some(p => p.n) && (() => {
+                                    const inS = bt.inSample && bt.inSample.profiles;
+                                    const inRate = (label) => { const r = inS && inS.find(x => x.label === label); return r ? r.rate : null; };
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 55 ? 'calib-ok' : rate >= 50 ? 'calib-under' : 'calib-over';
+                                    const be = 52.4; // −110 break-even, for reference
+                                    const corner = bt.profiles.find(p => p.label === 'High conf + large edge');
+                                    const aRow = bt.profiles.find(p => p.label === 'A');
+                                    const cCorner = bt.profiles.find(p => p.label === 'C + high conf + large edge');
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Signal profiles{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Profile</th><th>Hit rate</th>{inS ? <th>In-sample</th> : null}<th>Sample</th></tr></thead>
+                                                <tbody>
+                                                    {bt.profiles.map(p => (
+                                                        <tr key={p.label}>
+                                                            <td>{p.label}</td>
+                                                            <td className={clsFor(p.rate)}>{p.rate == null ? '—' : p.rate + '%'}</td>
+                                                            {inS ? <td style={{ color: 'var(--text-muted)' }}>{inRate(p.label) == null ? '—' : inRate(p.label) + '%'}</td> : null}
+                                                            <td>{p.n ? p.n.toLocaleString() : '—'}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {corner && corner.rate != null && aRow && aRow.rate != null
+                                                    ? `The "high confluence + large edge" corner ${bt.oosFrom ? 'holds out-of-sample ' : ''}at ${corner.rate}% (${corner.n.toLocaleString()}), well above a plain A at ${aRow.rate}%.` +
+                                                      (cCorner && cCorner.rate != null
+                                                          ? (cCorner.rate >= aRow.rate
+                                                              ? ` A C inside that corner lands ${cCorner.rate}% (${cCorner.n.toLocaleString()}) — at or above every plain A. The letter grade is discarding signal here: a C in this corner is a top pick, not a middling one.`
+                                                              : ` A C inside that corner lands ${cCorner.rate}% (${cCorner.n.toLocaleString()}).`)
+                                                          : '')
+                                                    : 'Not enough sample in the corner cells yet — re-run once the slate has more history.'}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                                 {bt.gradeConf && Object.keys(bt.gradeConf).length >= 4 && (() => {
                                     const cell = (g, t) => bt.gradeConf[g + '|' + t] || null;
                                     const clsFor = (rate) => rate == null ? '' : rate >= 55 ? 'calib-ok' : rate >= 50 ? 'calib-under' : 'calib-over';
@@ -9217,6 +9254,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.gce[k];
                         if (b && b.n >= 15) gce[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Named signal profiles — is "high confluence + large edge"
+                    // (and the C / A corners inside it) really stronger than a
+                    // plain A? Computed straight off THIS run's accumulator, so
+                    // on a holdout run these are out-of-sample.
+                    const btProfiles = (a) => {
+                        const sum = (obj, keys) => keys.reduce((o, k) => { const b = obj[k]; return b ? { n: o.n + b.n, hit: o.hit + b.hit } : o; }, { n: 0, hit: 0 });
+                        const row = (label, b) => ({ label, n: (b && b.n) || 0, rate: (b && b.n) ? Math.round((b.hit / b.n) * 100) : null });
+                        return [
+                            row('All predictions', a._total),
+                            row('A', a.A),
+                            row('High confluence', sum(a.confEdge, ['high|small', 'high|med', 'high|large'])),
+                            row('Large edge', sum(a.confEdge, ['low|large', 'med|large', 'high|large'])),
+                            row('High conf + large edge', a.confEdge['high|large']),
+                            row('C + high conf + large edge', a.gce['C|high|large']),
+                            row('A + high conf + large edge', a.gce['A|high|large']),
+                        ];
+                    };
+                    const profiles = btProfiles(acc);
+
                     // Held-out out-of-sample split (NBA): the tables above are the
                     // post-holdoutTs games the cutoff/calibration fit never saw.
                     // Keep the full in-sample run alongside as context.
@@ -9229,12 +9285,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         });
                         inSample = {
                             total: { n: inSampleAcc._total.n, rate: inSampleAcc._total.n ? Math.round((inSampleAcc._total.hit / inSampleAcc._total.n) * 100) : null },
-                            grades: ig
+                            grades: ig,
+                            profiles: btProfiles(inSampleAcc)
                         };
                     }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
-                        oosFrom: holdoutTs || null, inSample,
+                        oosFrom: holdoutTs || null, inSample, profiles,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
