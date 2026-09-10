@@ -6017,13 +6017,36 @@
                     return;
                 }
 
-                // NBA now carries its own real opponent defense — team ranks
-                // from ESPN's `statistics/byteam` (fetchNbaSlate → player.oppDef)
-                // and a live per-position box-score tally on modal open
-                // (fetchNbaPlayerDetail → player.opponentDefense). The legacy
-                // path below only reached for stats.nba.com, which is
-                // CORS-blocked in a browser — skip it (was pure console noise).
-                if (selectedSport === 'nba') return;
+                // NBA carries its own real opponent defense — the season
+                // Defense-vs-Position grid (NBA_DVP_CSV, per-48, ranked 1-150)
+                // via nbaDvpFor. Here we add a CURRENT-SEASON freshness check
+                // from the backend's hoopR box scores: per team, per G/F/C,
+                // allowed-per-game + a 1-30 rank, as of the latest game loaded.
+                // Stored separately (player.oppDvpRecent) so it never overwrites
+                // the graded CSV grid — it's a "is that still true lately?" read.
+                if (selectedSport === 'nba') {
+                    if (!backendUrl) return;
+                    try {
+                        // Rolling ~13-month window: always covers the most recent
+                        // complete season (and the current one once it's underway),
+                        // without landing on a future date during the offseason.
+                        const d = new Date(); d.setMonth(d.getMonth() - 13);
+                        const since = d.toISOString().slice(0, 10);
+                        const r = await fetch(`${backendUrl}/api/nba/dvp?since=${since}`);
+                        if (!r.ok) return;
+                        const j = await r.json();
+                        const grid = j.grid || {};
+                        if (!Object.keys(grid).length) return;
+                        setPlayersData(prev => prev.map(p => {
+                            if (p.sport !== 'nba' || !p.opponent) return p;
+                            const g = grid[String(p.opponent).toUpperCase()];
+                            if (!g) return p;
+                            return { ...p, oppDvpRecent: { asOf: j.asOf, byGroup: g } };
+                        }));
+                        setBackendDataSource('live');
+                    } catch (e) { /* stays on the season CSV only */ }
+                    return;
+                }
 
                 const espnPath = ESPN_SPORT_PATHS[selectedSport];
                 const isBasketball = selectedSport === 'nba' || selectedSport === 'wnba';
@@ -8855,9 +8878,39 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
             // Multi-season NBA game logs for the backtest (one season is ~70
             // games — pull two so the walk-forward has a real sample).
+            //
+            // Prefers the backend's nba_player_box (free hoopR box scores) in
+            // ONE request — works in the offseason and is ~100x fewer round
+            // trips than ESPN's per-athlete-per-season gamelog fetches. Falls
+            // back to the live ESPN endpoints when there's no backend.
+            const NBA_3PM_KEY = 'threePointFieldGoalsMade-threePointFieldGoalsAttempted';
             const nbaGamelogsMulti = async (ids, years) => {
+                const list = [...new Set((ids || []).map(String))].filter(Boolean);
+                if (backendUrl && list.length) {
+                    try {
+                        const since = (Math.min(...years) - 1) + '-08-01'; // season Y ~= (Y-1) Oct → Y Jun
+                        const map = {};
+                        for (const grp of chunk(list, 120)) {
+                            const r = await fetch(`${backendUrl}/api/nba/gamelogs?athletes=${grp.join(',')}&since=${since}`);
+                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                            const j = await r.json();
+                            Object.entries(j.logs || {}).forEach(([id, rows]) => {
+                                map[id] = rows.map(g => ({
+                                    ts: Date.parse(g.d) || 0,
+                                    opponent: g.o,
+                                    vsLabel: (g.h ? 'vs ' : '@ ') + g.o,
+                                    row: {
+                                        minutes: g.m, points: g.pts, totalRebounds: g.reb, assists: g.ast,
+                                        steals: g.stl, blocks: g.blk, turnovers: g.tov, [NBA_3PM_KEY]: g.tpm
+                                    }
+                                }));
+                            });
+                        }
+                        if (Object.keys(map).length) return map;
+                    } catch (e) { /* fall through to ESPN */ }
+                }
                 const map = {};
-                for (const grp of chunk([...new Set(ids)], 16)) {
+                for (const grp of chunk(list, 16)) {
                     await Promise.all(grp.map(async id => {
                         const rows = [];
                         for (const yr of years) {
@@ -9015,10 +9068,24 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             });
                         };
                     } else if (selectedSport === 'nba') {
-                        const ids = [...new Set(roster.map(p => p.id))];
+                        // Prefer the backend's historical pool (hoopR box scores):
+                        // it works in the offseason (no live slate to iterate) and
+                        // is a bigger, cleaner sample than tonight's ~6 marquee
+                        // names. Falls back to the live slate roster.
+                        let pool = roster.map(p => ({ id: p.id, position: p.position }));
+                        if (backendUrl) {
+                            try {
+                                const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=30&limit=180`);
+                                if (pr.ok) {
+                                    const pj = await pr.json();
+                                    if (Array.isArray(pj.pool) && pj.pool.length >= 20) pool = pj.pool;
+                                }
+                            } catch (e) { /* keep the slate roster */ }
+                        }
+                        const ids = [...new Set(pool.map(p => p.id))];
                         const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1]);
                         runPass = (acc) => {
-                            roster.forEach(p => {
+                            pool.forEach(p => {
                                 const rows = glMap[p.id] || [];
                                 if (rows.length < 20) return;
                                 const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
@@ -10596,11 +10663,26 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             ['Opp shots blocked', od.blkAllowed != null ? `${od.blkAllowed} (#${od.blkRank})` : null],
                                                             ['Opp turnovers forced', od.toForced != null ? `${od.toForced} (#${od.toRank})` : null]
                                                         ] : [];
-                                                        const grp = player.opponentDefense && player.opponentDefense.playerGroup;
+                                                        const grp = (player.opponentDefense && player.opponentDefense.playerGroup)
+                                                            || (/^(PG|SG|G)$/i.test(player.position || '') ? 'G' : /^(SF|PF|F)$/i.test(player.position || '') ? 'F' : 'C');
                                                         const gRow = player.opponentDefense && player.opponentDefense.byPosition && player.opponentDefense.byPosition[grp];
                                                         const dvpRows = gRow ? [
                                                             ['PTS rank', `#${gRow.rank} of 150`], ['3PM rank', `#${gRow.tpmRank}`], ['REB rank', `#${gRow.rebRank}`],
                                                             ['AST rank', `#${gRow.astRank}`], ['STL rank', `#${gRow.stlRank}`], ['BLK rank', `#${gRow.blkRank}`], ['TO rank', `#${gRow.toRank}`]
+                                                        ] : [];
+                                                        // Current-season freshness check from the backend's hoopR box
+                                                        // scores (per-game, 1-30 rank), next to the season CSV grid above.
+                                                        const recG = player.oppDvpRecent && player.oppDvpRecent.byGroup && player.oppDvpRecent.byGroup[grp];
+                                                        const grpWord = grp === 'G' ? 'guards' : grp === 'F' ? 'forwards' : 'centers';
+                                                        const recentDvpRows = recG ? [
+                                                            [`Pts allowed to ${grpWord} / g`, `${recG.pointsAllowed} (#${recG.rank} of 30)`],
+                                                            ['Reb allowed', `${recG.reboundsAllowed} (#${recG.rebRank})`],
+                                                            ['Ast allowed', `${recG.assistsAllowed} (#${recG.astRank})`],
+                                                            ['3PM allowed', `${recG.threesAllowed} (#${recG.tpmRank})`],
+                                                            ['Stl allowed', `${recG.stealsAllowed} (#${recG.stlRank})`],
+                                                            ['Blk allowed', `${recG.blocksAllowed} (#${recG.blkRank})`],
+                                                            ['TO forced', `${recG.turnoversAllowed} (#${recG.toRank})`],
+                                                            ['As of', player.oppDvpRecent.asOf || null]
                                                         ] : [];
                                                         body = <React.Fragment>
                                                             <Group title="Player">
@@ -10618,6 +10700,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </Group>
                                                             <Group title="Matchup">
                                                                 <Topic name="Defense vs position" rows={dvpRows} todo={dvpRows.length ? 'full PG/SG/SF/PF/C grid is in Section 3 above' : 'the Defense-vs-Position table'} />
+                                                                <Topic name={`Recent DvP · this season (vs ${grpWord})`} rows={recentDvpRows} todo={recentDvpRows.length ? 'your backend, from hoopR box scores — a freshness check on the season grid above' : 'current-season DvP — needs the backend NBA history table (npm run ingest:nba)'} />
                                                                 <Topic name="Team defense" rows={teamDefRows} todo="opp defensive rating, rim protection, perimeter D, transition D — needs an advanced feed" />
                                                                 <Topic name="Pace" todo="team & opponent possessions / 48, seconds per possession, transition rate — needs a pace feed" />
                                                                 <Topic name="Scheme" todo="drop vs switch coverage, blitz / help rate, isolation defense — needs a scheme-tag feed" />
