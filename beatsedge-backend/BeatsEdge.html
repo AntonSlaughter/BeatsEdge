@@ -5334,22 +5334,19 @@
                             } else {
                                 const slate = await fetchNbaSlate(selectedDate);
                                 if (!slate.slots.length) {
-                                    // Offseason / no near-term games — show a clean
-                                    // empty state (like CFB), never mock "picks"
-                                    // that look analyzed.
                                     if (!stale()) setNbaSlateSource('sample');
-                                    players = [];
+                                    players = generateMockPlayerData('nba');
                                 } else {
                                     players = await fetchNbaPropLines(slate, stale);
                                     if (stale()) return;
                                     setNbaSlateSource(players.length ? 'live' : 'sample');
-                                    if (!players.length) players = [];
+                                    if (!players.length) players = generateMockPlayerData('nba');
                                 }
                             }
                         } catch (err) {
                             console.warn('NBA slate failed, falling back to sample:', err.message);
                             if (!stale()) setNbaSlateSource('sample');
-                            players = [];
+                            players = generateMockPlayerData('nba');
                         }
                     } else {
                         players = await fetchPlayerProps();
@@ -8344,13 +8341,7 @@
                 let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
                 if (!window.length) {
                     const t0 = Date.parse(evs[0].commence_time);
-                    // Offseason guard: PropLine posts placeholder prop rows for
-                    // season openers weeks ahead (often mis-attributed, e.g. a
-                    // star on the wrong team). Only accept a look-ahead cluster
-                    // if it actually starts within ~4 days of the selected date.
-                    if (t0 <= dayLo + 4 * 24 * 3600 * 1000) {
-                        window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
-                    }
+                    window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
                 }
                 const byPair = {};
                 window.forEach(ev => {
