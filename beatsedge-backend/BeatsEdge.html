@@ -859,6 +859,11 @@
         }
         .prime-banner em { color: #ff8a3d; font-style: normal; font-weight: 700; }
 
+        .edge-descriptor-row { display: flex; flex-wrap: wrap; gap: 1.4rem; }
+        .edge-descriptor { display: flex; flex-direction: column; gap: 0.1rem; }
+        .edge-descriptor-val { font-family: var(--font-display); font-size: 1.15rem; font-weight: 800; color: var(--text-primary); line-height: 1.1; }
+        .edge-descriptor-lbl { font-size: 0.62rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); font-weight: 700; }
+
         .expand-icon {
             color: var(--text-muted);
             font-size: 1.25rem;
@@ -4567,7 +4572,7 @@
                         </div>
                         <div className="top-pick-confidence-row">
                             <div className="top-pick-confidence-number">{p.edge.modelProbPct}%</div>
-                            <div className="top-pick-confidence-label">model probability · {p.edge.confidence}% factor alignment</div>
+                            <div className="top-pick-confidence-label">model probability</div>
                         </div>
                         <div className={`top-pick-verdict ${verdictClass(p.edge.matchupLabel)}`}>
                             {p.edge.matchupLabel} • {p.edge.greenCount}/{p.edge.totalFactors} aligned
@@ -10161,32 +10166,44 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 </div>
 
                                                 <div className={`matchup-verdict-banner ${verdictClass}`}>
-                                                    {verdictEmoji} {edge.matchupLabel} • {edge.greenCount}/{edge.totalFactors} FACTORS ALIGNED • {edge.confidence}% CONFIDENCE
+                                                    {verdictEmoji} {edge.matchupLabel} • {edge.greenCount}/{edge.totalFactors} FACTORS SUPPORT THIS PROJECTION
                                                 </div>
                                                 {edge.prime && (
                                                     <div className="prime-banner">
-                                                        🔥 PRIME CORNER — a strong majority of factors align <em>and</em> the model edge is large.
-                                                        In the walk-forward this combination landed ~63–66% whatever the letter, so it's graded A here.
+                                                        🔥 <em>PRIME CORNER</em> — high confluence <em>and</em> a large model edge. In walk-forward
+                                                        testing this combination has been one of BeatsEdge's strongest research profiles.
                                                     </div>
                                                 )}
 
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', margin: '0 0 1.25rem' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap', margin: '0 0 0.6rem' }}>
                                                     <div className={`grade-badge ${GRADE_META[edge.grade].cls}`}>
                                                         <div className="grade-badge-letter">{edge.grade}</div>
                                                         <div className="grade-badge-caption">Grade</div>
                                                     </div>
-                                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                        {GRADE_META[edge.grade].label}. Model probability <strong>{edge.modelProbPct}%</strong>,
-                                                        blending factor confluence ({edge.confidence}%) with model edge
-                                                        ({edge.edge >= 0 ? '+' : ''}{edge.edge} vs a {activeProp.line} line).
-                                                        {(() => {
-                                                            const cal = calibrationFor(backtest, player.sport);
-                                                            const c = cal && cal[edge.grade];
-                                                            return c && c.rate != null
-                                                                ? <span style={{ color: c.rate >= 52 ? 'var(--success-green)' : 'var(--text-muted)' }}> Backtest: this grade's side landed <strong>{c.rate}%</strong> of the time ({c.n.toLocaleString()} graded picks from real game logs).</span>
-                                                                : <span style={{ color: 'var(--text-muted)' }}> Not yet backtested — run it from the Top Picks page.</span>;
-                                                        })()}
+                                                    <div className="edge-descriptor-row">
+                                                        <div className="edge-descriptor">
+                                                            <div className="edge-descriptor-val" style={{ color: 'var(--accent-red)' }}>{edge.modelProbPct}%</div>
+                                                            <div className="edge-descriptor-lbl">Model probability</div>
+                                                        </div>
+                                                        <div className="edge-descriptor">
+                                                            <div className="edge-descriptor-val">{edge.greenCount}/{edge.totalFactors}</div>
+                                                            <div className="edge-descriptor-lbl">Factor confluence</div>
+                                                        </div>
+                                                        <div className="edge-descriptor">
+                                                            <div className="edge-descriptor-val" style={{ color: edge.edge >= 0 ? 'var(--success-green)' : 'var(--danger-red)' }}>{edge.edge >= 0 ? '+' : ''}{edge.edge}</div>
+                                                            <div className="edge-descriptor-lbl">Edge vs {activeProp.line} line</div>
+                                                        </div>
                                                     </div>
+                                                </div>
+                                                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0 0 1.25rem' }}>
+                                                    {GRADE_META[edge.grade].label} — the letter is a descriptive summary of the numbers above, not a separate signal.
+                                                    {(() => {
+                                                        const cal = calibrationFor(backtest, player.sport);
+                                                        const c = cal && cal[edge.grade];
+                                                        return c && c.rate != null
+                                                            ? <span style={{ color: c.rate >= 52 ? 'var(--success-green)' : 'var(--text-muted)' }}> Backtest: this grade's side landed <strong>{c.rate}%</strong> of the time ({c.n.toLocaleString()} graded picks from real game logs).</span>
+                                                            : <span style={{ color: 'var(--text-muted)' }}> Not yet backtested — run it from the Top Picks page.</span>;
+                                                    })()}
                                                 </div>
 
                                                 <div className="projection-box">
@@ -10314,9 +10331,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                                 </tbody>
                                                                             </table>
                                                                             <div className={`research-assess ${oppOkPa === true ? 'g' : oppOkPa === false ? 'r' : 'n'}`}>
-                                                                                Assessment: {paG == null ? 'No plate-appearance rate yet' : paG >= 4.2 ? `Strong — ~${paG} trips to the plate a game (top-of-order volume)` : paG < 3.6 ? `Light — only ~${paG} plate appearances a game` : `Regular — ~${paG} plate appearances a game`}
+                                                                                Assessment: {paG == null
+                                                                                    ? 'No plate-appearance rate yet'
+                                                                                    : paG >= 4.2
+                                                                                        ? `Strong — historical volume is ~${paG} PA/game${player.battingOrder ? ` (bats ${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'} today)` : '. Batting-order position pending lineup confirmation'}`
+                                                                                        : paG < 3.6
+                                                                                            ? `Light — historical volume is only ~${paG} PA/game${player.battingOrder ? ` (bats ${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'} today)` : '. Batting-order position pending lineup confirmation'}`
+                                                                                            : `Regular — historical volume is ~${paG} PA/game${player.battingOrder ? ` (bats ${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'} today)` : '. Batting-order position pending lineup confirmation'}`}
                                                                             </div>
-                                                                            <div className="research-note">More at-bats = more chances to clear a counting-stat line (hits, TB, HR, K). Batting order fills in when the confirmed lineup posts.</div>
+                                                                            <div className="research-note">More plate appearances = more chances to clear a counting-stat line (hits, TB, HR, K). The rate above is this player's season history; the confirmed order posts ~2–3 hrs before first pitch.</div>
                                                                         </div>
                                                                     </div>
                                                                 );
@@ -10506,7 +10529,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </details>
 
                                                             <div className="prob-disclaimer">
-                                                                <strong>Model probability is an estimate</strong>, not a guaranteed outcome — built from historical game logs and matchup factors, and the real result is still one game. Even an 80% estimate misses about 1 in 5. <strong>Confidence</strong> ({edge.confidence}%) is a different number: how many independent factors agree on this side, not a probability. Higher probability and higher confidence both add to the edge, but neither is a lock.
+                                                                <strong>Model probability is an estimate</strong>, not a guaranteed outcome — built from historical game logs and matchup factors, and the real result is still one game. Even an 80% estimate misses about 1 in 5. <strong>Factor confluence</strong> ({edge.greenCount}/{edge.totalFactors}) is a different number: how many independent factors agree on this side, not a probability — our own backtest shows more factors aligning does <em>not</em> mean a higher hit rate. Both add to the edge, but neither is a lock.
                                                             </div>
                                                         </div>
                                                         );
@@ -11141,7 +11164,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
             const UpgradeModal = () => {
                 if (!showUpgrade) return null;
-                const FREE = ['Today\'s BeatsEdge Research — 2 best overs + 2 best unders per sport', 'Grade + confidence / factor alignment', 'Model projection, line & edge', 'Model probability + basic "Why"', 'Full research breakdown on those 4 picks', 'Injury alert if it touches one of your picks'];
+                const FREE = ['Today\'s BeatsEdge Research — 2 best overs + 2 best unders per sport', 'Grade + factor confluence', 'Model projection, line & edge', 'Model probability + basic "Why"', 'Full research breakdown on those 4 picks', 'Injury alert if it touches one of your picks'];
                 const PRO = ['Every available prop, full Browse', 'Full player research on everyone', 'L5 / L10 / L20 splits + game-by-game history', 'Matchup analysis, defense data, usage, minutes', 'Advanced filters — search, sort, stat categories', 'Full News & Lineups + cross-slate Injury Report', 'Historical model performance (backtest)', 'Line-movement + alerts'];
                 return (
                     <div className="modal-overlay" onClick={() => setShowUpgrade(false)}>
