@@ -4642,9 +4642,17 @@
                                 <div className="backtest-panel-title">🧪 Model accuracy — {SPORT_LABELS[selectedSport]}</div>
                                 <div className="backtest-panel-sub">
                                     {bt
-                                        ? `Walk-forward over ${bt.total.n.toLocaleString()} graded prop-sides from real game logs · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`
+                                        ? (bt.oosFrom
+                                            ? `Out-of-sample: cutoffs + calibration derived from games through ${new Date(bt.oosFrom).toLocaleDateString()}, then frozen and tested on the ${bt.total.n.toLocaleString()} graded prop-sides after it · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`
+                                            : `Walk-forward over ${bt.total.n.toLocaleString()} graded prop-sides from real game logs · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`)
                                         : 'Never run. This checks the grade engine against what actually happened, game by game, so the letters mean something.'}
                                 </div>
+                                {bt && bt.oosFrom && bt.inSample && (
+                                    <div className="backtest-panel-sub" style={{ marginTop: '0.3rem', color: 'var(--text-muted)' }}>
+                                        For context, the same frozen cutoffs over the full {bt.inSample.total.n.toLocaleString()}-side series (in-sample):{' '}
+                                        {['A', 'B', 'C', 'D'].map(g => bt.inSample.grades[g] && bt.inSample.grades[g].rate != null ? `${g} ${bt.inSample.grades[g].rate}%` : null).filter(Boolean).join(' · ')}.
+                                    </div>
+                                )}
                                 {(() => {
                                     const snaps = allPropSnapshots();
                                     if (!snaps.length && !(snapSrv && snapSrv.total)) return null;
@@ -8938,10 +8946,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // model (there they're best-available info, not leakage); they're
             // just out of the backtest until we have dated DvP snapshots
             // (archiveDvpSnapshot, seeded now, usable in a few weeks).
-            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc) => {
+            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, gate) => {
                 const MIN = 14;
+                // gate = { minTs, maxTs } — only SCORE predictions whose game date
+                // falls in the window. The trailing windows still use every prior
+                // game (that's honest, it's information available before game i);
+                // this just picks which prediction-points land in `acc`, so the
+                // backtest can hold out a date range for genuine out-of-sample
+                // evaluation after the cutoffs/calibration are frozen.
+                const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
                 const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
                 for (let i = MIN; i < vals.length; i++) {
+                    const gTs = tss[i] || 0;
+                    if (maxTs && gTs && gTs >= maxTs) continue;
+                    if (minTs && (!gTs || gTs < minTs)) continue;
                     const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
                     const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
                     if (seasonAvg <= 0) continue;
@@ -9011,6 +9029,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 try {
                     const roster = (Array.isArray(playersData) ? playersData : []).filter(p => p.sport === selectedSport);
                     let evaluated = 0;
+                    // Set by a sport branch that supports a temporal train/test
+                    // split (NBA). 0 = no split, the classic two-pass in-sample run.
+                    let holdoutTs = 0;
 
                     // Gather the raw series data ONCE (the async part), then expose
                     // a synchronous `runPass(acc)` that tallies it. That lets us
@@ -9075,7 +9096,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         let pool = roster.map(p => ({ id: p.id, position: p.position }));
                         if (backendUrl) {
                             try {
-                                const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=30&limit=180`);
+                                const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=30&limit=150`);
                                 if (pr.ok) {
                                     const pj = await pr.json();
                                     if (Array.isArray(pj.pool) && pj.pool.length >= 20) pool = pj.pool;
@@ -9083,8 +9104,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             } catch (e) { /* keep the slate roster */ }
                         }
                         const ids = [...new Set(pool.map(p => p.id))];
-                        const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1]);
-                        runPass = (acc) => {
+                        // 3 seasons — enough history to split into a real train
+                        // period + a held-out ~18-month test period (below).
+                        const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2]);
+                        // Hold out roughly the last 18 months for a genuine
+                        // out-of-sample check: cutoffs + calibration are derived
+                        // from games BEFORE holdoutTs, frozen, then evaluated on
+                        // the games after it (which the fit never saw).
+                        let _maxTs = 0;
+                        Object.values(glMap).forEach(rows => rows.forEach(r => { if (r.ts > _maxTs) _maxTs = r.ts; }));
+                        holdoutTs = _maxTs ? _maxTs - 540 * 864e5 : 0;
+                        runPass = (acc, gate) => {
                             pool.forEach(p => {
                                 const rows = glMap[p.id] || [];
                                 if (rows.length < 20) return;
@@ -9096,7 +9126,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaAllKeys.forEach(k => {
                                     const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
                                     if (vals.every(v => v === 0)) return;
-                                    nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc);
+                                    nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc, gate);
                                     evaluated++;
                                 });
                             });
@@ -9106,20 +9136,24 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         return;
                     }
 
-                    // Pass 1 — tally with whatever cutoffs / calibration are live,
-                    // then derive this sport's own from pass-1 outcomes: grade
-                    // cutoffs from the (cutoff-independent) gradeScore histogram,
-                    // and the probability curve from the RAW-estimate buckets
-                    // (acc1.probRaw, so it's always a raw→actual map).
+                    // Pass 1 — tally, then derive this sport's own grade cutoffs
+                    // (from the cutoff-independent gradeScore histogram) and the
+                    // probability curve (from the RAW-estimate buckets). With a
+                    // holdout set (NBA), derive ONLY from games before holdoutTs,
+                    // so once those params are frozen the reported table is a
+                    // genuine out-of-sample test on games the fit never saw.
                     const acc1 = emptyBacktestAcc();
-                    runPass(acc1);
+                    runPass(acc1, holdoutTs ? { maxTs: holdoutTs } : undefined);
                     const cutoffs = deriveGradeCutoffs(acc1.score);
                     const probCal = deriveProbCalib(acc1.probRaw);
 
-                    // Pass 2 — apply the new cutoffs + calibration and re-tally, so
-                    // the reported grade hit-rates AND the probability-calibration
-                    // table reflect THIS run's corrections (not the previous run's).
+                    // Pass 2 — apply the frozen cutoffs + calibration and re-tally.
+                    // On a holdout run this pass scores ONLY the held-out games
+                    // (after holdoutTs) — the out-of-sample result. A 3rd pass
+                    // then scores the full series with the same frozen params for
+                    // context (the big in-sample number — kept, not headlined).
                     let acc = acc1;
+                    let inSampleAcc = null;
                     if (cutoffs || probCal) {
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
@@ -9131,7 +9165,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
-                        runPass(acc);
+                        runPass(acc, holdoutTs ? { minTs: holdoutTs } : undefined);
+                        if (holdoutTs) {
+                            inSampleAcc = emptyBacktestAcc();
+                            runPass(inSampleAcc);
+                        }
                         bumpEdgeCache();
                         setGradeVersion(v => v + 1); // invalidate memoized grades
                     }
@@ -9179,8 +9217,24 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.gce[k];
                         if (b && b.n >= 15) gce[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Held-out out-of-sample split (NBA): the tables above are the
+                    // post-holdoutTs games the cutoff/calibration fit never saw.
+                    // Keep the full in-sample run alongside as context.
+                    let inSample = null;
+                    if (holdoutTs && inSampleAcc) {
+                        const ig = {};
+                        ['A', 'B', 'C', 'D'].forEach(g => {
+                            const b = inSampleAcc[g] || { n: 0, hit: 0 };
+                            ig[g] = { n: b.n, rate: b.n ? Math.round((b.hit / b.n) * 100) : null };
+                        });
+                        inSample = {
+                            total: { n: inSampleAcc._total.n, rate: inSampleAcc._total.n ? Math.round((inSampleAcc._total.hit / inSampleAcc._total.n) * 100) : null },
+                            grades: ig
+                        };
+                    }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
+                        oosFrom: holdoutTs || null, inSample,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
