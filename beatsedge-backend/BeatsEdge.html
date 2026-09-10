@@ -2669,7 +2669,17 @@
         .fb-sortbtn.active { background: rgba(255,138,61,0.14); border-color: #ff8a3d; color: #ff8a3d; font-weight: 700; }
         .fb-tbl { font-size: 0.82rem; }
         .fb-tbl .fb-name { color: var(--accent-red); cursor: pointer; font-weight: 700; white-space: nowrap; }
-        .fb-tbl .fb-name:hover { text-decoration: underline; }
+        .fb-tbl .fb-name:hover .fb-nametext { text-decoration: underline; }
+        .fb-namecell { display: inline-flex; align-items: center; gap: 0.42rem; }
+        .fb-av { position: relative; width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; overflow: hidden;
+            background: linear-gradient(135deg, var(--accent-red-light), var(--accent-red)); display: inline-flex;
+            align-items: center; justify-content: center; }
+        .fb-av .fb-av-i { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            font-size: 0.58rem; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+        .fb-av img { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%;
+            object-fit: cover; object-position: top center; background: var(--bg-raised); }
+        .modal-title-photo { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; object-position: top center;
+            background: var(--bg-raised); vertical-align: middle; margin-right: 0.55rem; border: 1px solid var(--border-color); }
         .fb-prime-row { background: rgba(255,138,61,0.06); }
         .fb-prime-chip { color: #ff8a3d; font-weight: 800; font-size: 0.72rem; white-space: nowrap; }
         .fb-tbl .fb-pos { color: var(--success-green, #4caf50); font-weight: 700; }
@@ -7113,6 +7123,20 @@
             const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
             const r1 = (v) => v == null ? '—' : (Math.round(v * 10) / 10);
             const insuff = <span className="fb-insuff">Insufficient sample</span>;
+            // Small headshot + initials fallback. Photo comes straight from the
+            // existing `player.headshot` (real slates + the mock fallback set it);
+            // a 404 hides the <img> and the gradient initials show through.
+            const FbAv = ({ p }) => (
+                <span className="fb-av">
+                    <span className="fb-av-i">{String(p.name || '').split(' ').map(n => n[0]).filter(Boolean).join('').slice(0, 2).toUpperCase()}</span>
+                    {p.headshot && <img src={p.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}
+                </span>
+            );
+            const nameCell = (r) => (
+                <td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>
+                    <span className="fb-namecell"><FbAv p={r.p} /><span className="fb-nametext">{r.p.name}</span></span>
+                </td>
+            );
             const sorted = analysis ? [...analysis.rows].sort((a, b) => {
                 const pick = (r) => sortKey === 'value' ? (r.value ?? -1) : sortKey === 'proj' ? r.projFp : sortKey === 'ceiling' ? (r.ceiling ?? -1) : sortKey === 'floor' ? (r.floor ?? -1) : (r.value ?? -1);
                 return pick(b) - pick(a);
@@ -7161,7 +7185,7 @@
                                 <tbody>
                                     {sorted.map(r => (
                                         <tr key={r.p.id} className={r.prime ? 'fb-prime-row' : ''}>
-                                            <td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                            {nameCell(r)}
                                             <td>{r.p.position || '—'}</td>
                                             <td>{r.p.opponent || '—'}</td>
                                             <td><strong>{r1(r.projFp)}</strong></td>
@@ -7202,7 +7226,7 @@
                             ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
                                 <thead><tr><th>Player</th><th>Opp</th><th>Proj FP</th><th>Ceiling</th><th>Salary</th><th>Value</th><th>Confluence</th></tr></thead>
                                 <tbody>{analysis.rows.filter(r => r.prime).sort((a, b) => (b.value ?? b.projFp) - (a.value ?? a.projFp)).map(r => (
-                                    <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td><td>{r.p.opponent}</td>
+                                    <tr key={r.p.id}>{nameCell(r)}<td>{r.p.opponent}</td>
                                         <td><strong>{r1(r.projFp)}</strong></td><td>{r.ceiling == null ? insuff : r1(r.ceiling)}</td>
                                         <td>{r.sal == null ? '—' : '$' + r.sal.toLocaleString()}</td><td>{r.value == null ? '—' : r.value.toFixed(2)}</td>
                                         <td>{r.greenCount != null ? `${r.greenCount}/${r.totalFactors}` : '—'}</td></tr>
@@ -7220,7 +7244,7 @@
                                     const minD = sport === 'nba' ? (outCt ? '+4 to +8' : '+2 to +5') : (outCt ? 'more snaps/touches' : 'slight bump');
                                     const usgD = outCt ? '+3–6%' : '+1–3%';
                                     const fpD = r.projFp ? '+' + Math.round(r.projFp * (outCt ? 0.12 : 0.06)) + ' to +' + Math.round(r.projFp * (outCt ? 0.22 : 0.10)) : '—';
-                                    return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                    return <tr key={r.p.id}>{nameCell(r)}
                                         <td>{r.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')}</td>
                                         <td>{r.opportunity.trigger || '—'}</td><td>{minD}</td><td>{usgD}</td><td>{fpD}</td></tr>;
                                 })}</tbody>
@@ -7233,7 +7257,7 @@
                             ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
                                 <thead><tr><th>Player</th><th>Status</th><th>Trend</th><th>Detail</th><th>Proj FP (as-is)</th></tr></thead>
                                 <tbody>{analysis.rows.filter(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down').map(r => (
-                                    <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                    <tr key={r.p.id}>{nameCell(r)}
                                         <td>{r.status}</td><td>{r.statusTrend === 'down' ? `▼ was ${r.prevStatus || '?'}` : '—'}</td>
                                         <td>{r.injuryDetail || r.injury || '—'}</td><td>{r1(r.projFp)}</td></tr>
                                 ))}</tbody>
@@ -7255,7 +7279,7 @@
                             <thead><tr><th>Player</th><th>Pos</th><th>Opp</th><th>FP allowed to pos</th><th>DvP rank</th><th>Pace</th><th>Avg FP vs this opp</th><th>Sample</th><th>Comparable pos vs opp</th></tr></thead>
                             <tbody>{analysis.rows.slice().sort((a, b) => b.projFp - a.projFp).map(r => {
                                 const c = analysis.cmp.find(x => x.name === r.p.name);
-                                return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                return <tr key={r.p.id}>{nameCell(r)}
                                     <td>{r.p.position || '—'}</td><td>{r.p.opponent || '—'}</td>
                                     <td>{r.fpa ? `${r.fpa.fpAllowed} (${r.fpa.source})` : insuff}</td>
                                     <td>{r.fpa && r.fpa.rank != null ? '#' + r.fpa.rank : insuff}</td>
@@ -7291,7 +7315,7 @@
                                 <thead><tr><th>Player</th><th>Proj FP</th><th>Value</th><th>Model-implied own%</th><th>Your projected own%</th><th>Leverage</th></tr></thead>
                                 <tbody>{analysis.rows.filter(r => r.own != null).sort((a, b) => (a.own - (a.impliedOwn ?? 0)) - (b.own - (b.impliedOwn ?? 0))).map(r => {
                                     const lev = r.impliedOwn != null ? Math.round((r.impliedOwn - r.own) * 10) / 10 : null;
-                                    return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                    return <tr key={r.p.id}>{nameCell(r)}
                                         <td>{r1(r.projFp)}</td><td>{r.value == null ? '—' : r.value.toFixed(2)}</td>
                                         <td>{r.impliedOwn == null ? insuff : r.impliedOwn + '%'}</td><td>{r.own}%</td>
                                         <td className={lev == null ? '' : lev > 3 ? 'fb-pos' : lev < -3 ? 'fb-neg' : ''}>{lev == null ? '—' : g(lev) + '%'}</td></tr>;
@@ -12723,6 +12747,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     {
                         id: 1,
                         name: 'Donovan Mitchell',
+                        headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3908809.png',
                         sport: 'nba',
                         team: 'CLE',
                         opponent: 'SAC',
@@ -12815,6 +12840,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     {
                         id: 2,
                         name: 'Anthony Davis',
+                        headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/6583.png',
                         sport: 'nba',
                         team: 'LAL',
                         opponent: 'PHX',
@@ -12904,6 +12930,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     {
                         id: 3,
                         name: 'LeBron James',
+                        headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/1966.png',
                         sport: 'nba',
                         team: 'LAL',
                         opponent: 'PHX',
@@ -12996,6 +13023,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         id: 101,
                         sport: 'nfl',
                         name: 'Patrick Mahomes',
+                        headshot: 'https://a.espncdn.com/i/headshots/nfl/players/full/3139477.png',
                         team: 'KC',
                         opponent: 'BUF',
                         position: 'QB',
@@ -13042,6 +13070,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         id: 102,
                         sport: 'nfl',
                         name: 'Christian McCaffrey',
+                        headshot: 'https://a.espncdn.com/i/headshots/nfl/players/full/3117251.png',
                         team: 'SF',
                         opponent: 'SEA',
                         position: 'RB',
@@ -13088,6 +13117,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         id: 103,
                         sport: 'nfl',
                         name: 'CeeDee Lamb',
+                        headshot: 'https://a.espncdn.com/i/headshots/nfl/players/full/4241389.png',
                         team: 'DAL',
                         opponent: 'PHI',
                         position: 'WR',
@@ -13235,6 +13265,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         sport: 'mlb',
                         role: 'batter',
                         name: 'Aaron Judge',
+                        headshot: 'https://img.mlbstatic.com/mlb-photos/image/upload/w_120,q_auto:best/v1/people/592450/headshot/67/current',
                         team: 'NYY',
                         opponent: 'BOS',
                         position: 'RF',
@@ -13274,6 +13305,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         sport: 'mlb',
                         role: 'pitcher',
                         name: 'Zack Wheeler',
+                        headshot: 'https://img.mlbstatic.com/mlb-photos/image/upload/w_120,q_auto:best/v1/people/554430/headshot/67/current',
                         team: 'PHI',
                         opponent: 'ATL',
                         position: 'P',
@@ -13315,6 +13347,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         sport: 'nhl',
                         role: 'skater',
                         name: 'Connor McDavid',
+                        headshot: 'https://assets.nhle.com/mugs/nhl/latest/8478402.png',
                         team: 'EDM',
                         opponent: 'CGY',
                         position: 'F',
@@ -13358,6 +13391,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         sport: 'nhl',
                         role: 'goalie',
                         name: 'Igor Shesterkin',
+                        headshot: 'https://assets.nhle.com/mugs/nhl/latest/8478048.png',
                         team: 'NYR',
                         opponent: 'NJD',
                         position: 'G',
@@ -13690,7 +13724,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                           <div className="modal-overlay" onClick={() => setDetailModal(null)}>
                             <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
                               <div className="modal-header">
-                                <div className="modal-title">{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
+                                <div className="modal-title">{player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
                                 <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
                               </div>
                               <div className="modal-body player-details">
