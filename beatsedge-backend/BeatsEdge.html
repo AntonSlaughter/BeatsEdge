@@ -2850,7 +2850,8 @@
         //     Poisson estimate is right,
         //   • the MLB sport curve (applyProbCalib) is bypassed — it was fit on
         //     the whole population and its low end is wrong here,
-        //   • the raw floor drops 0.22 → 0.03.
+        //   • the raw band opens to 0.03–0.97 (from 0.22–0.78) so the OVER can
+        //     read ~3% and its complementary UNDER can read ~97%.
         // Holdout effect on the target OVER cohort: calibration gap −22 → ~−1,
         // Brier .130 → .078, MAE 22 → ~1, with ZERO change to any other market
         // (>=1.0, non-target sub-1.0, every other sport), grade, Prime, edge, or
@@ -3436,7 +3437,7 @@
             // MLB curve + raw floor 0.03. (Steps 2 & 3, holdout-validated.)
             const _llx = _MLB_LOWLINE_EXPT
                 ? ((sport === 'mlb' && line < 1.0 && _MLB_LOWLINE_EXPT.stats && _MLB_LOWLINE_EXPT.stats[_rk] != null) ? _MLB_LOWLINE_EXPT : null)
-                : (_llScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, distModel: 'poisson' } : null);
+                : (_llScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97, distModel: 'poisson' } : null);
 
             const projSd = projStdDev(projection, prop.statKey, s);
             const zOver = projSd > 0 ? (projection - line) / projSd : 0;
@@ -3573,10 +3574,12 @@
 
             // Raw estimate — kept inside the band the estimator was tuned for.
             // The four MLB rare-event sub-1.0 markets (`_llx.rawFloor` = 0.03)
-            // are allowed below the usual 0.22 floor — a genuine ~2-15% event
-            // shouldn't be clamped up to 22%. Every other market → 0.22.
+            // are allowed the full 0.03–0.97 band — a genuine ~2-15% event
+            // shouldn't be clamped up to 22%, and its complementary UNDER side
+            // (a ~85-98% lock) shouldn't be clamped down to 78%. Every other
+            // market keeps the tuned 0.22–0.78 band.
             const RAW_FLOOR = (_llx && typeof _llx.rawFloor === 'number') ? _llx.rawFloor : 0.22;
-            const RAW_CEIL = 0.78;
+            const RAW_CEIL = (_llx && typeof _llx.rawCeil === 'number') ? _llx.rawCeil : 0.78;
             const rawModelProb = Math.max(RAW_FLOOR, Math.min(RAW_CEIL, pAdj));
             // Map the raw estimate onto how often calls at that confidence have
             // ACTUALLY landed for this sport (see PROB_CALIB / the backtest).
