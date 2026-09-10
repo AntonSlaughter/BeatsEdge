@@ -3740,7 +3740,16 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {} }; }
+
+        // Stat -> family, for the Prime diagnostic. "combo" = has scoring in it
+        // (more moving parts, edge compounds); "core" = the reliable single
+        // counting stats; "volatile" = the low-count / high-variance ones.
+        const PRIME_FAMILY = {
+            points: 'combo', pra: 'combo', pr: 'combo', pa: 'combo', ra: 'combo',
+            rebounds: 'core', assists: 'core', blocks: 'core',
+            threes: 'volatile', steals: 'volatile', turnovers: 'volatile', blocksSteals: 'volatile'
+        };
 
         // Factor-confluence buckets. File every graded side by how many of its
         // factors point at the chosen side ("8/9 aligned" in the UI). Tells you
@@ -4866,6 +4875,84 @@
                                                             : `Prime clears break-even (~52%) in every market — no stat is dragging it down — but strength varies a lot: ${top.stat} ${top.rate}% down to ${bot.stat} ${bot.rate}% (${spread}-pt spread). The corner is strongest on the scoring / combo props and weakest on the defensive-counting ones.`)
                                                         : `One or two markets are carrying it — ${bot.stat} (${bot.rate}%) is below the ~52% break-even. Prime is really a ${top.stat}-and-similar signal, not a universal one.`)}
                                             </div>
+                                        </div>
+                                    );
+                                })()}
+                                {Array.isArray(bt.primeFamily) && bt.primeFamily.some(f => f.n) && (() => {
+                                    const inS = bt.inSample && bt.inSample.primeFamily;
+                                    const inFor = (fam) => { const r = inS && inS.find(x => x.fam === fam); return r ? r.rate : null; };
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 58 ? 'calib-ok' : rate >= 52 ? 'calib-under' : 'calib-over';
+                                    const fam = Object.fromEntries(bt.primeFamily.map(f => [f.fam, f]));
+                                    const combo = fam.combo, vol = fam.volatile;
+                                    const rawGap = (combo && vol && combo.rate != null && vol.rate != null) ? combo.rate - vol.rate : null;
+                                    // Controlled: average (combo − volatile) across (edge×conf) cells where both have n>=40
+                                    const cells = bt.primeFamCells || {};
+                                    const EB = ['e11', 'e16', 'e22', 'e30'], CB = ['c67', 'c75', 'c86'];
+                                    const diffs = [];
+                                    EB.forEach(eb => CB.forEach(cb => {
+                                        const c = cells['combo|' + eb + '|' + cb], v = cells['volatile|' + eb + '|' + cb];
+                                        if (c && v) diffs.push(c.rate - v.rate);
+                                    }));
+                                    const ctrlGap = diffs.length ? Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length) : null;
+                                    const EBL = { e11: '11–16%', e16: '16–22%', e22: '22–30%', e30: '30%+' };
+                                    const CBL = { c67: '.67–.75', c75: '.75–.86', c86: '.86–1' };
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Prime by stat family{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Family</th><th>Hit rate</th>{inS ? <th>In-sample</th> : null}<th>Sample</th><th>Mean edge</th><th>Mean conf</th></tr></thead>
+                                                <tbody>
+                                                    {bt.primeFamily.map(f => (
+                                                        <tr key={f.fam}>
+                                                            <td>{f.label}</td>
+                                                            <td className={clsFor(f.rate)}>{f.rate == null ? '—' : f.rate + '%'}</td>
+                                                            {inS ? <td style={{ color: 'var(--text-muted)' }}>{inFor(f.fam) == null ? '—' : inFor(f.fam) + '%'}</td> : null}
+                                                            <td>{f.n ? f.n.toLocaleString() : '—'}</td>
+                                                            <td>{f.meanEdge == null ? '—' : '+' + f.meanEdge + '%'}</td>
+                                                            <td>{f.meanConf == null ? '—' : (f.meanConf / 100).toFixed(2)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                {rawGap == null ? 'Not enough family sample yet.' : (() => {
+                                                    const edgeHigher = combo && vol && combo.meanEdge != null && vol.meanEdge != null && combo.meanEdge > vol.meanEdge + 0.5;
+                                                    const edgeLower = combo && vol && combo.meanEdge != null && vol.meanEdge != null && combo.meanEdge < vol.meanEdge - 0.5;
+                                                    const confHigher = combo && vol && combo.meanConf != null && vol.meanConf != null && combo.meanConf > vol.meanConf + 1;
+                                                    const confoundPossible = edgeHigher || confHigher;
+                                                    return (
+                                                        <>
+                                                            Raw gap combo − volatile is <strong>{rawGap >= 0 ? '+' : ''}{rawGap} pts</strong>
+                                                            {combo && vol ? ` (${combo.rate}% vs ${vol.rate}%)` : ''}.
+                                                            {' '}{confoundPossible
+                                                                ? `Combo Prime picks also carry ${edgeHigher ? `a bigger mean edge (+${combo.meanEdge}% vs +${vol.meanEdge}%)` : ''}${edgeHigher && confHigher ? ' and ' : ''}${confHigher ? `higher mean confluence (${(combo.meanConf / 100).toFixed(2)} vs ${(vol.meanConf / 100).toFixed(2)})` : ''}, so some of the gap could be that.`
+                                                                : `Combo Prime picks do NOT throw bigger edges (mean ${combo && combo.meanEdge != null ? '+' + combo.meanEdge + '%' : '—'} vs ${vol && vol.meanEdge != null ? '+' + vol.meanEdge + '%' : '—'})${edgeLower ? ' — if anything, smaller' : ''}, and confluence is level (${combo && combo.meanConf != null ? (combo.meanConf / 100).toFixed(2) : '—'} vs ${vol && vol.meanConf != null ? (vol.meanConf / 100).toFixed(2) : '—'}). So the family gap is not an edge/confluence confound.`}
+                                                            {ctrlGap == null
+                                                                ? ' Not enough overlapping edge×confluence cells to control for it directly yet.'
+                                                                : ctrlGap >= 5
+                                                                    ? ` Holding edge size and confluence share fixed, combo still beats volatile by ~${ctrlGap} pts on average${confoundPossible ? '' : ' — same as the raw gap'} — stat family carries information of its own.`
+                                                                    : ctrlGap >= 2
+                                                                        ? ` Holding edge size and confluence share fixed, the gap is ~${ctrlGap} pts — most of the family effect was the edge/confluence it produces, with a little residual.`
+                                                                        : ` Holding edge size and confluence share fixed, the gap disappears (~${ctrlGap} pts) — the family difference was really just the edge/confluence combos produce, not stat family itself.`}
+                                                        </>
+                                                    );
+                                                })()}
+                                            </div>
+                                            {Object.keys(cells).length > 0 && (
+                                                <div style={{ marginTop: '0.6rem', overflowX: 'auto' }}>
+                                                    <table className="backtest-calib-tbl backtest-xtab">
+                                                        <thead><tr><th>Edge · conf</th><th>Combo</th><th>Core</th><th>Volatile</th></tr></thead>
+                                                        <tbody>
+                                                            {EB.flatMap(eb => CB.map(cb => {
+                                                                const c = cells['combo|' + eb + '|' + cb], co = cells['core|' + eb + '|' + cb], v = cells['volatile|' + eb + '|' + cb];
+                                                                if (!c && !co && !v) return null;
+                                                                const fmt = x => x ? `${x.rate}% (${x.n.toLocaleString()})` : '—';
+                                                                return <tr key={eb + cb}><td style={{ whiteSpace: 'nowrap' }}>{EBL[eb]} · {CBL[cb]}</td><td>{fmt(c)}</td><td>{fmt(co)}</td><td>{fmt(v)}</td></tr>;
+                                                            }).filter(Boolean))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
                                         </div>
                                     );
                                 })()}
@@ -9088,6 +9175,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (e.prime) {
                             const ps = acc.primeByStat[statKey] || (acc.primeByStat[statKey] = { n: 0, hit: 0 });
                             ps.n++; if (hit) ps.hit++;
+                            const fam = PRIME_FAMILY[statKey];
+                            if (fam) {
+                                const conf = e.totalFactors ? e.greenCount / e.totalFactors : 0;
+                                const eSig = e.edgeSignalPct || 0;
+                                const pf = acc.primeFam[fam] || (acc.primeFam[fam] = { n: 0, hit: 0, sumEdge: 0, sumConf: 0 });
+                                pf.n++; if (hit) pf.hit++; pf.sumEdge += eSig; pf.sumConf += conf;
+                                // Control cells: does family still separate once
+                                // edge size and confluence share are held fixed?
+                                const eb = eSig < 16 ? 'e11' : eSig < 22 ? 'e16' : eSig < 30 ? 'e22' : 'e30';
+                                const cb = conf < 0.75 ? 'c67' : conf < 0.86 ? 'c75' : 'c86';
+                                const k = fam + '|' + eb + '|' + cb;
+                                const pc = acc.primeFamCell[k] || (acc.primeFamCell[k] = { n: 0, hit: 0 });
+                                pc.n++; if (hit) pc.hit++;
+                            }
                         }
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -9329,6 +9430,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     };
                     const primeByStat = btPrimeByStat(acc);
 
+                    // Prime by STAT FAMILY, and the same split controlled for edge
+                    // size + confluence share — to tell whether family itself adds
+                    // information or whether combos just naturally throw bigger
+                    // edges / higher confluence.
+                    const FAM_ORDER = ['combo', 'core', 'volatile'];
+                    const FAM_LABEL = { combo: 'Scoring / combo', core: 'Core individual', volatile: 'Volatile counting' };
+                    const btPrimeFamily = (a) => FAM_ORDER.map(f => {
+                        const b = a.primeFam[f];
+                        return (b && b.n)
+                            ? { fam: f, label: FAM_LABEL[f], n: b.n, rate: Math.round((b.hit / b.n) * 100), meanEdge: Math.round((b.sumEdge / b.n) * 10) / 10, meanConf: Math.round((b.sumConf / b.n) * 100) }
+                            : { fam: f, label: FAM_LABEL[f], n: 0, rate: null, meanEdge: null, meanConf: null };
+                    });
+                    const primeFamily = btPrimeFamily(acc);
+                    const primeFamCells = {};
+                    Object.keys(acc.primeFamCell).forEach(k => {
+                        const b = acc.primeFamCell[k];
+                        if (b.n >= 40) primeFamCells[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
+                    });
+
                     // Held-out out-of-sample split (NBA): the tables above are the
                     // post-holdoutTs games the cutoff/calibration fit never saw.
                     // Keep the full in-sample run alongside as context.
@@ -9343,12 +9463,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             total: { n: inSampleAcc._total.n, rate: inSampleAcc._total.n ? Math.round((inSampleAcc._total.hit / inSampleAcc._total.n) * 100) : null },
                             grades: ig,
                             profiles: btProfiles(inSampleAcc),
-                            primeByStat: btPrimeByStat(inSampleAcc)
+                            primeByStat: btPrimeByStat(inSampleAcc),
+                            primeFamily: btPrimeFamily(inSampleAcc)
                         };
                     }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
-                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat,
+                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat, primeFamily, primeFamCells,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
