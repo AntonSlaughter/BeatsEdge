@@ -3488,14 +3488,23 @@
             // sport curve (see familyCalibAdj / the OOS diagnostic). Adjusts the
             // DISPLAYED / returned probability only; grade, Prime, gradeScore,
             // cutoffs, confluence, edge and ranking are untouched.
+            //
+            // SCOPE: Prime predictions ONLY. The multi-window stability
+            // diagnostic (commit 896f12a) showed the family under-confidence the
+            // layer corrects lives in the Prime / high-confidence subset — the
+            // broad combo population is already ~calibrated (−0.4 every window),
+            // so applying the +2.2pt combo bump family-wide over-corrected the
+            // rest. Non-Prime family adjustment is now exactly 0: their final
+            // probability = the sport-calibrated value, untouched.
             const _famName = statFamilyOf(sport, prop.statKey);
-            const familyAdj = familyCalibAdj(modelProbSport, sport, prop.statKey);
+            const familyCalibActive = !!primeCorner;
+            const familyAdj = familyCalibActive ? familyCalibAdj(modelProbSport, sport, prop.statKey) : 0;
             const modelProb = Math.max(0.03, Math.min(0.97, modelProbSport + familyAdj));
             if (Math.abs(familyAdj) >= 0.0001) {
                 probSteps.push({
-                    label: 'Stat-family calibration',
+                    label: 'Stat-family calibration (Prime)',
                     delta: familyAdj,
-                    detail: `${_famName ? _famName.replace(/_/g, ' ') : 'family'} runs ${familyAdj >= 0 ? 'under' : 'over'}-called at this level in the frozen NBA hold-out — ${Math.round(modelProbSport * 100)}% → ${Math.round(modelProb * 100)}% (½-shrunk gap)`
+                    detail: `Prime pick — ${_famName ? _famName.replace(/_/g, ' ') : 'family'} runs ${familyAdj >= 0 ? 'under' : 'over'}-called at this level in the frozen NBA hold-out — ${Math.round(modelProbSport * 100)}% → ${Math.round(modelProb * 100)}% (½-shrunk gap; Prime-scoped)`
                 });
             }
             probSteps.push({
@@ -3584,11 +3593,12 @@
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
                 rawModelProbPct: Math.round(rawModelProb * 100),
-                // stat-family calibration diagnostics (layer sits between the
-                // sport curve and the final displayed probability)
+                // stat-family calibration diagnostics (Prime-scoped layer sitting
+                // between the sport curve and the final displayed probability)
                 sportCalibProbPct: Math.round(modelProbSport * 100),
                 familyAdjPts: Math.round(familyAdj * 1000) / 10,
                 statFamily: _famName,
+                familyCalibActive,   // Prime was active → the family layer applied
                 impliedProb,
                 impliedProbPct: Math.round(impliedProb * 100),
                 hasRealPrice,
@@ -3774,7 +3784,11 @@
         // summed Brier, summed log-loss, and prob-bucket sub-tallies.
         function emptyCalibVal() {
             const mk = () => ({ n: 0, hit: 0, sB: 0, sA: 0, sAdj: 0, brB: 0, brA: 0, llB: 0, llA: 0, bucketsB: {}, bucketsA: {} });
-            return { all: mk(), byFam: { scoring_combo: mk(), core_individual: mk(), volatile_counting: mk() } };
+            return {
+                all: mk(), byFam: { scoring_combo: mk(), core_individual: mk(), volatile_counting: mk() },
+                prime: mk(), nonPrime: mk(),
+                byFamPrime: { scoring_combo: mk(), core_individual: mk(), volatile_counting: mk() }
+            };
         }
 
         // Stat -> family, for the Prime diagnostic. "combo" = has scoring in it
@@ -5394,6 +5408,49 @@
                                             <div className="backtest-panel-note" style={{ color: 'var(--text-muted)' }}>{fv.note} Ran {new Date(fv.ranAt).toLocaleString()}.</div>
                                         </React.Fragment>
                                     )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nba' && isPro && nbaFreshVal && !nbaFreshVal.error && nbaFreshVal.primeSplit && (() => {
+                            const ps = nbaFreshVal.primeSplit;
+                            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+                            const gapCls = (v) => v == null ? '' : Math.abs(v) <= 2 ? 'calib-ok' : v < 0 ? 'calib-over' : 'calib-under';
+                            const npUnchanged = ps.nonPrime && Math.abs((ps.nonPrime.meanProbAfter || 0) - (ps.nonPrime.meanProbBefore || 0)) < 0.05 && Math.abs(ps.nonPrime.meanFamAdj || 0) < 0.01;
+                            const row = (label, b) => b ? (
+                                <tr key={label}>
+                                    <td>{label}</td>
+                                    <td>{b.n.toLocaleString()}</td>
+                                    <td>{b.meanProbBefore}% → <strong>{b.meanProbAfter}%</strong></td>
+                                    <td>{g(b.meanFamAdj)}</td>
+                                    <td className={gapCls(b.gapBefore)}>{g(b.gapBefore)}</td>
+                                    <td className={gapCls(b.gapAfter)}><strong>{g(b.gapAfter)}</strong></td>
+                                    <td>{b.hitRate}%</td>
+                                </tr>
+                            ) : null;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Prime-Only Family Calibration</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        The stat-family adjustment now applies to <strong>Prime predictions only</strong> (non-Prime family adj = 0). Same frozen window as the fresh validation above (2023-07-01 → 2024-12-19). BEFORE = sport curve; AFTER = + FAMILY_CALIB (Prime-scoped). FAMILY_CALIB values, family definitions, Prime definition/thresholds, grade, gradeScore, confluence, edge, ranking all unchanged.
+                                    </div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.4rem', color: npUnchanged ? 'var(--success-green)' : 'var(--danger-red)' }}>
+                                        {npUnchanged
+                                            ? `✓ Non-Prime probabilities unchanged: mean ${ps.nonPrime.meanProbBefore}% → ${ps.nonPrime.meanProbAfter}%, mean adjustment ${g(ps.nonPrime.meanFamAdj)} pts over ${ps.nonPrime.n.toLocaleString()} predictions.`
+                                            : `⚠ Non-Prime probabilities moved — expected 0. before ${ps.nonPrime && ps.nonPrime.meanProbBefore}% → after ${ps.nonPrime && ps.nonPrime.meanProbAfter}%.`}
+                                    </div>
+                                    <table className="backtest-calib-tbl" style={{ marginTop: '0.5rem' }}>
+                                        <thead><tr><th>Cohort</th><th>n</th><th>Mean prob (before → after)</th><th>Mean adj</th><th>Gap before</th><th>Gap after</th><th>Hit</th></tr></thead>
+                                        <tbody>
+                                            {row('Prime (all families)', ps.prime)}
+                                            {row('Non-Prime (all families)', ps.nonPrime)}
+                                            {row('Combo · Prime', ps.byFam.scoring_combo)}
+                                            {row('Core · Prime', ps.byFam.core_individual)}
+                                            {row('Volatile · Prime', ps.byFam.volatile_counting)}
+                                        </tbody>
+                                    </table>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                                        Gap = actual hit rate − mean stated probability (points). Prime cohort n here counts over+under sides. Family adjustment values were not retuned — scope only.
+                                    </div>
                                 </div>
                             );
                         })()}
@@ -9600,6 +9657,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             cvT(acc.calibVal.all);
                             const _fam = e.statFamily;
                             if (_fam && acc.calibVal.byFam[_fam]) cvT(acc.calibVal.byFam[_fam]);
+                            // Prime / non-Prime split — to confirm the family layer
+                            // now touches Prime predictions only (non-Prime: pB===pA).
+                            cvT(e.prime ? acc.calibVal.prime : acc.calibVal.nonPrime);
+                            if (e.prime && _fam && acc.calibVal.byFamPrime[_fam]) cvT(acc.calibVal.byFamPrime[_fam]);
                         }
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                         const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
@@ -10093,6 +10154,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             scoring_combo: famBlock(cv.byFam.scoring_combo),
                             core_individual: famBlock(cv.byFam.core_individual),
                             volatile_counting: famBlock(cv.byFam.volatile_counting)
+                        },
+                        // Prime-only scope check: after this commit the family
+                        // adjustment fires for Prime predictions only.
+                        primeSplit: {
+                            prime: famBlock(cv.prime),
+                            nonPrime: famBlock(cv.nonPrime),
+                            byFam: {
+                                scoring_combo: famBlock(cv.byFamPrime.scoring_combo),
+                                core_individual: famBlock(cv.byFamPrime.core_individual),
+                                volatile_counting: famBlock(cv.byFamPrime.volatile_counting)
+                            }
                         }
                     };
                     setNbaFreshVal(result);
