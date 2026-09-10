@@ -2859,6 +2859,23 @@
         // re-tuned on the holdout.
         const MLB_LOWLINE_RARE = { homeRuns: 0.129, doubles: 0.162, triples: 0.016, stolenBases: 0.077 };
 
+        // ── NFL rare-event sub-1.0-line calibration (SHIPPED — Item 11 Step 8) ─
+        // Rushing TDs / Receiving TDs sit on a 0.5 line whose true OVER rate is
+        // ~15-19% but the Gaussian tail + RAW_FLOOR + the NFL curve pinned the
+        // stated probability at ~40%. Same fix as the MLB rare markets, same
+        // discipline (train 2022-2024 → frozen → unseen 2025 holdout; commits
+        // 70f3951 diagnostic, this one the ship). For these two markets on a
+        // sub-1.0 line ONLY: Poisson base rate (λ = model projection) + regress
+        // toward the frozen league rate + bypass the NFL curve + raw band
+        // 0.03-0.97. Holdout: Rush TD gap -26.1 → +0.6, Rec TD -23.5 → +1.3,
+        // rare-OVER cohort -23.3 → -0.3, Brier .195 → .133, with ZERO change to
+        // >=1.0 markets, non-scoped sub-1.0 (incl. Interceptions O0.5), grades,
+        // Prime, or any other sport. Values = the 2022-2024 TRAIN P(>=1 in a
+        // game); NOT re-tuned on the holdout. INT / FG O0.5 deliberately NOT
+        // scoped — INT is only mildly off (-9) and less skewed; the broad-scope
+        // experiment added nothing.
+        const NFL_LOWLINE_RARE = { rushTds: 0.175, recTds: 0.187 };
+
         // Optional what-if override for re-validation experiments. Production
         // value is `null` → the SHIPPED recipe above is what runs.
         // `runMlbTemporalValidation` sets this to { stats, bypassCurve?, rawFloor?,
@@ -2866,6 +2883,13 @@
         // single holdout pass, then restores it (transient-GRADE_CUTOFFS
         // discipline). Nothing persists it.
         let _MLB_LOWLINE_EXPT = null;
+        // NFL rare-event (Item 11 Step 7) what-if hook. Production value `null` —
+        // there is NO shipped NFL rare-event recipe yet, so NFL keeps the plain
+        // Gaussian path live. `runNflTemporalValidation` sets this to
+        // { stats:{rushTds,recTds,… → frozen 2022-2024 OVER rate}, distModel?,
+        // bypassCurve?, rawFloor?, rawCeil?, noAnchor? } around a single holdout
+        // pass, then restores it.
+        let _NFL_LOWLINE_EXPT = null;
         function calculateEdgeScore(player, prop) {
             let pm = _edgeCache.get(player);
             if (!pm) { pm = new Map(); _edgeCache.set(player, pm); }
@@ -3426,28 +3450,35 @@
             //      inside the projection nudge it a little, capped so they
             //      modulate rather than dominate.
             const probSteps = [];
-            // `_mlbRealStat` — the MLB backtest passes the generic key 'X' to the
-            // engine (so projStdDev etc. stay on their tuned generic path); this
-            // side field carries the true stat key for the sub-1.0 scope gate.
-            const _rk = prop._mlbRealStat || prop.statKey;
-            const _llScoped = sport === 'mlb' && line < 1.0 && MLB_LOWLINE_RARE[_rk] != null;
-            // The what-if override wins when set; otherwise the SHIPPED recipe
-            // runs for the four scoped markets: Poisson base rate (λ = the model
-            // projection) + regress toward the frozen league rate + bypass the
-            // MLB curve + raw floor 0.03. (Steps 2 & 3, holdout-validated.)
+            // `_mlbRealStat` / `_nflRealStat` — the MLB/NFL backtests pass the
+            // generic key 'X' to the engine (so projStdDev etc. stay on their
+            // tuned generic path); this side field carries the true stat key for
+            // the sub-1.0 rare-event scope gate.
+            const _rk = prop._mlbRealStat || prop._nflRealStat || prop.statKey;
+            const _mlbScoped = sport === 'mlb' && line < 1.0 && MLB_LOWLINE_RARE[_rk] != null;
+            const _nflScoped = sport === 'nfl' && line < 1.0 && NFL_LOWLINE_RARE[_rk] != null;
+            // What-if overrides win when set (null in production). Otherwise the
+            // SHIPPED rare-event recipe for the scoped MLB / NFL markets: Poisson
+            // base rate (λ = model projection) + regress toward the frozen league
+            // rate + bypass the sport curve + raw band 0.03–0.97. Holdout-
+            // validated (MLB Steps 2/3, NFL Item 11 Step 8).
             const _llx = _MLB_LOWLINE_EXPT
                 ? ((sport === 'mlb' && line < 1.0 && _MLB_LOWLINE_EXPT.stats && _MLB_LOWLINE_EXPT.stats[_rk] != null) ? _MLB_LOWLINE_EXPT : null)
-                : (_llScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97, distModel: 'poisson' } : null);
+                : (_NFL_LOWLINE_EXPT && sport === 'nfl' && line < 1.0 && _NFL_LOWLINE_EXPT.stats && _NFL_LOWLINE_EXPT.stats[_rk] != null)
+                    ? _NFL_LOWLINE_EXPT
+                    : _mlbScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97, distModel: 'poisson' }
+                    : _nflScoped ? { stats: NFL_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97, distModel: 'poisson' }
+                    : null;
 
             const projSd = projStdDev(projection, prop.statKey, s);
             const zOver = projSd > 0 ? (projection - line) / projSd : 0;
             const zPick = direction === 'over' ? zOver : -zOver;
             // Base rate that the projection sits `line` past. Default = normal
-            // CDF of the z-score. The four scoped MLB rare-event markets use
-            // `distModel: 'poisson'` (SHIPPED — a symmetric Gaussian tail
-            // overstates a skewed near-zero count; Step 3 holdout closed the
-            // residual −12 gap to ~−1). `_MLB_LOWLINE_EXPT` can set the other
-            // distModels for re-validation:
+            // CDF of the z-score. The scoped MLB (HR/2B/3B/SB) and NFL
+            // (rushTds/recTds) rare-event markets use `distModel: 'poisson'`
+            // (SHIPPED — a symmetric Gaussian tail overstates a skewed near-zero
+            // count; both holdout-validated to ~0 gap). `_MLB_LOWLINE_EXPT` /
+            // `_NFL_LOWLINE_EXPT` can set the other distModels for re-validation:
             //   poisson         P(X>line | λ = model projection)   ← shipped
             //   poisson_league  P(X>line | λ = -ln(1-frozen league OVER rate))
             //   poisson_shrink  as poisson, λ shrunk toward the league λ by
@@ -4055,7 +4086,7 @@
                 const w = btWindowsAsOf(hv, ho, tonightOpp, line);
                 const fake = { sport: 'nfl', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
                 for (const dir of ['over', 'under']) {
-                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', _nflRealStat: statKey, line, direction: dir, lineSource: 'backtest' });
                     const hit = dir === 'over' ? actual > line : actual < line;
                     const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                     g.n++; if (hit) g.hit++;
@@ -6481,6 +6512,64 @@
                                             <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
                                                 Gap = actual hit − mean stated probability (points). Full-sample (train+holdout) reference hit: {r.full.rate}% on {r.full.n.toLocaleString()}. {r.note} Ran {new Date(r.ranAt).toLocaleString()}.
                                             </div>
+
+                                            {r.nflStep7 && (() => {
+                                                const s7 = r.nflStep7, b0 = s7.baseline;
+                                                const rows = [{ key: 'S0', label: 'current model — SHIPPED (= recipe PBF)', rare: b0.rareOver, rush: b0.rushTds, rec: b0.recTds, se: null }]
+                                                    .concat(s7.recipes.map(rc => ({ key: rc.key, label: rc.label, scope: rc.scope, rare: rc.rareOver, rush: rc.rushTds, rec: rc.recTds, se: rc.sideEffects })));
+                                                const best = s7.recipes.filter(rc => rc.scope === 'primary').reduce((a, rc) => (rc.rareOver && (!a || Math.abs(rc.rareOver.gap) < Math.abs(a.rareOver.gap)) ? rc : a), null);
+                                                return (
+                                                    <React.Fragment>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.85rem', marginTop: '1.1rem', borderTop: '1px dashed var(--border-hairline, #2a2f3a)', paddingTop: '0.8rem' }}>
+                                                            NFL · Sub-1.0 Correction — Step 7/8 <span style={{ color: 'var(--success-green, #4caf50)', fontSize: '0.72rem', fontWeight: 700 }}>· recipe PBF SHIPPED ({'{'}rushTds, recTds{'}'})</span>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                                            Same ladder that worked for MLB: current Gaussian → Poisson(λ = model projection) → + base-rate anchor & bypass the NFL curve → + raw band 0.03–0.97 (<strong>PBF = the exact MLB shipped recipe</strong>). Primary scope <strong>{'{'}rushTds, recTds{'}'} × line &lt; 1.0</strong>. "PBF-broad" tries it on every NFL 0.5-line market (TD/INT/FG). Frozen: 2022-2024 TRAIN 0.5-line OVER rates (Rush TD {s7.primaryPriors.rushTds}% · Rec TD {s7.primaryPriors.recTds}%). Evaluated on the unseen {r.holdout.season} holdout.
+                                                        </div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Recipe</th><th>scope</th><th>Rush TD gap</th><th>Rec TD gap</th><th>Rare OVER n</th><th>hit</th><th>mean</th><th>gap</th><th>Brier</th><th>range</th></tr></thead>
+                                                                <tbody>
+                                                                    {rows.map(rw => rw.rare ? (
+                                                                        <tr key={rw.key} style={(best && rw.key === best.key) ? { background: 'rgba(80,200,120,0.10)' } : null}>
+                                                                            <td style={{ whiteSpace: 'nowrap' }}><strong>{rw.key}</strong> · {rw.label}</td>
+                                                                            <td>{rw.scope || '—'}</td>
+                                                                            <td className={rw.rush ? gapCls(rw.rush.gap) : ''}>{rw.rush ? g(rw.rush.gap) : '—'}</td>
+                                                                            <td className={rw.rec ? gapCls(rw.rec.gap) : ''}>{rw.rec ? g(rw.rec.gap) : '—'}</td>
+                                                                            <td>{rw.rare.n.toLocaleString()}</td>
+                                                                            <td>{rw.rare.hitRate}%</td>
+                                                                            <td>{rw.rare.meanFinal}%</td>
+                                                                            <td className={gapCls(rw.rare.gap)}><strong>{g(rw.rare.gap)}</strong></td>
+                                                                            <td>{rw.rare.brier}</td>
+                                                                            <td>{rw.rare.minFinal}–{rw.rare.maxFinal}%</td>
+                                                                        </tr>
+                                                                    ) : null)}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Side-effects vs S0 — regression check</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Recipe</th><th>≥1.0 identical</th><th>Non-scoped sub-1.0 identical</th><th>Rare grade Δ A/B/C/D</th><th>Overall grade Δ A/B/C/D</th><th>Prime Δ</th><th>Overall Brier Δ</th></tr></thead>
+                                                                <tbody>
+                                                                    {s7.recipes.map(rc => { const se = rc.sideEffects; return (
+                                                                        <tr key={rc.key}>
+                                                                            <td><strong>{rc.key}</strong></td>
+                                                                            <td style={{ color: se.ge1Identical ? 'var(--success-green, #4caf50)' : 'var(--danger-red)' }}>{se.ge1Identical ? 'yes' : 'NO'}</td>
+                                                                            <td style={{ color: se.nonScopedSub1Identical ? 'var(--success-green, #4caf50)' : 'var(--danger-red)' }}>{se.nonScopedSub1Identical ? 'yes' : 'NO'}</td>
+                                                                            <td>{se.rareGradeDelta.A}/{se.rareGradeDelta.B}/{se.rareGradeDelta.C}/{se.rareGradeDelta.D}</td>
+                                                                            <td>{se.overallGradeDelta.A}/{se.overallGradeDelta.B}/{se.overallGradeDelta.C}/{se.overallGradeDelta.D}</td>
+                                                                            <td>{se.primeDelta}</td>
+                                                                            <td>{se.overallBrierDelta == null ? '—' : (se.overallBrierDelta > 0 ? '+' : '') + se.overallBrierDelta}</td>
+                                                                        </tr>
+                                                                    ); })}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.4rem', color: 'var(--text-muted)' }}>{s7.note}</div>
+                                                    </React.Fragment>
+                                                );
+                                            })()}
                                         </React.Fragment>
                                     )}
                                 </div>
@@ -11639,12 +11728,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     if (!allSeries.length) { setNflTemporal({ error: 'No multi-season NFL game logs returned from ESPN.', ranAt: Date.now() }); return; }
 
                     const accTrain = emptyBacktestAcc();
+                    accTrain.lowLine = {}; // TRAIN 0.5-line OVER rates → leak-free frozen priors for Step 7
                     allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutStart }));
                     const cutoffs = deriveGradeCutoffs(accTrain.score);
                     const probCal = deriveProbCalib(accTrain.probRaw);
 
                     const savedCut = GRADE_CUTOFFS, savedCal = PROB_CALIB;
-                    let accHold, accFull;
+                    let accHold, accFull, step7 = [];
                     try {
                         if (cutoffs) GRADE_CUTOFFS = { ...GRADE_CUTOFFS, nfl: cutoffs };
                         if (probCal) PROB_CALIB = { ...PROB_CALIB, nfl: probCal };
@@ -11653,8 +11743,44 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutStart, maxTs: holdoutEnd }));
                         accFull = emptyBacktestAcc(); accFull.nflFam = {};
                         allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
+
+                        // ── STEP 7 EXPERIMENT ─────────────────────────────────
+                        // Same frozen train cutoffs/curve. Frozen per-stat OVER
+                        // rates = the 2022-2024 TRAIN 0.5-line OVER hit rates
+                        // (NOT the 2025 number). Ladder mirrors MLB Steps 2/3.
+                        const _tb = (accTrain.lowLine && accTrain.lowLine.byStat) || {};
+                        const _rate = (k) => (_tb[k] && _tb[k].n >= 30) ? Math.round(_tb[k].hit / _tb[k].n * 1000) / 1000 : null;
+                        const PRIMARY = ['rushTds', 'recTds'];
+                        const BROAD = ['rushTds', 'recTds', 'interceptions', 'fgMade', 'passTds'];
+                        const priorsFor = (list) => list.reduce((o, k) => { const r = _rate(k); if (r != null) o[k] = Math.max(0.01, Math.min(0.6, r)); return o; }, {});
+                        const primaryPriors = priorsFor(PRIMARY), broadPriors = priorsFor(BROAD);
+                        const RECIPES = [];
+                        if (Object.keys(primaryPriors).length === 2) {
+                            RECIPES.push(
+                                { key: 'P', label: 'Poisson, λ = model projection (curve+floor kept)', scope: 'primary', cfg: { stats: primaryPriors, distModel: 'poisson', noAnchor: true } },
+                                { key: 'PL', label: 'Poisson, λ = frozen league rate', scope: 'primary', cfg: { stats: primaryPriors, distModel: 'poisson_league', noAnchor: true } },
+                                { key: 'PB', label: 'Poisson λ=proj + anchor→league + bypass curve', scope: 'primary', cfg: { stats: primaryPriors, distModel: 'poisson', bypassCurve: true } },
+                                { key: 'PBF', label: 'PB + raw band 0.03–0.97 (= MLB recipe P)', scope: 'primary', cfg: { stats: primaryPriors, distModel: 'poisson', bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97 } }
+                            );
+                        }
+                        if (Object.keys(broadPriors).length >= 4) {
+                            RECIPES.push({ key: 'PBF-broad', label: 'MLB recipe P across ALL NFL 0.5-line markets (TD/INT/FG)', scope: 'broad', cfg: { stats: broadPriors, distModel: 'poisson', bypassCurve: true, rawFloor: 0.03, rawCeil: 0.97 } });
+                        }
+                        for (const R of RECIPES) {
+                            let accR;
+                            try {
+                                _NFL_LOWLINE_EXPT = R.cfg; bumpEdgeCache();
+                                accR = emptyBacktestAcc(); accR.nflFam = {}; accR.lowLine = {};
+                                allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutStart, maxTs: holdoutEnd }));
+                            } finally {
+                                _NFL_LOWLINE_EXPT = null; bumpEdgeCache();
+                            }
+                            step7.push({ key: R.key, label: R.label, scope: R.scope, acc: accR });
+                        }
+                        step7.__primaryPriors = primaryPriors;
+                        step7.__broadPriors = broadPriors;
                     } finally {
-                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; bumpEdgeCache();
+                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; _NFL_LOWLINE_EXPT = null; bumpEdgeCache();
                     }
 
                     const pctOf = b => b && b.n ? Math.round(b.hit / b.n * 100) : null;
@@ -11693,15 +11819,55 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         byStat: Object.keys(llH.byStat || {}).reduce((o, k) => { o[k] = llShapeN(llH.byStat[k]); return o; }, {})
                     };
 
+                    // ── Step 7 experiment shaping ───────────────────────────
+                    const gEq = (a, b) => { a = a || {}; b = b || {}; const ks = new Set([...Object.keys(a), ...Object.keys(b)]); for (const k of ks) if ((a[k] || 0) !== (b[k] || 0)) return false; return true; };
+                    const S0rare = llH.rareOver || null, S0ge1 = llH.ge1 || null, S0all = llH.all || null;
+                    const S0int = (llH.byStat || {}).interceptions || null;   // NFL non-primary sub-1.0 control
+                    const S0rec = (llH.byStat || {}).receptions || null;
+                    const S0gtot = { A: (accHold.A || {}).n || 0, B: (accHold.B || {}).n || 0, C: (accHold.C || {}).n || 0, D: (accHold.D || {}).n || 0 };
+                    const S0prime = accHold.primeTotal ? accHold.primeTotal.n : 0;
+                    const pctPr = v => Math.round(v * 1000) / 10;
+                    const nflStep7 = (step7 && step7.length) ? {
+                        primaryPriors: Object.keys(step7.__primaryPriors || {}).reduce((o, k) => { o[k] = pctPr(step7.__primaryPriors[k]); return o; }, {}),
+                        broadPriors: Object.keys(step7.__broadPriors || {}).reduce((o, k) => { o[k] = pctPr(step7.__broadPriors[k]); return o; }, {}),
+                        baseline: {
+                            rushTds: llShapeN((llH.byStat || {}).rushTds), recTds: llShapeN((llH.byStat || {}).recTds),
+                            rareOver: llShapeN(S0rare), rareMae: lowLine.rareOver ? lowLine.rareOver.gap : null
+                        },
+                        recipes: step7.map(({ key, label, scope, acc }) => {
+                            const b = acc.lowLine || {};
+                            const rare = b.rareOver || null, ge = b.ge1 || null, al = b.all || null;
+                            const intB = (b.byStat || {}).interceptions || null, recB = (b.byStat || {}).receptions || null;
+                            const dg = {}; ['A', 'B', 'C', 'D'].forEach(gk => { dg[gk] = ((rare && rare.gradeN[gk]) || 0) - ((S0rare && S0rare.gradeN[gk]) || 0); });
+                            const gtot = {}; ['A', 'B', 'C', 'D'].forEach(gk => { gtot[gk] = ((acc[gk] || {}).n || 0) - S0gtot[gk]; });
+                            return {
+                                key, label, scope,
+                                rushTds: llShapeN((b.byStat || {}).rushTds), recTds: llShapeN((b.byStat || {}).recTds),
+                                rareOver: llShapeN(rare),
+                                sideEffects: {
+                                    rareGradeDelta: dg, overallGradeDelta: gtot,
+                                    primeDelta: (acc.primeTotal ? acc.primeTotal.n : 0) - S0prime,
+                                    ge1Identical: !!(ge && S0ge1 && Math.abs(ge.brier - S0ge1.brier) < 1e-9 && gEq(ge.gradeN, S0ge1.gradeN)),
+                                    // for the PRIMARY-scope recipes, interceptions O0.5 is out of scope → must be identical
+                                    nonScopedSub1Identical: (scope === 'primary')
+                                        ? !!(intB && S0int && Math.abs(intB.brier - S0int.brier) < 1e-9 && gEq(intB.gradeN, S0int.gradeN))
+                                        : !!(recB && S0rec && Math.abs(recB.brier - S0rec.brier) < 1e-9 && gEq(recB.gradeN, S0rec.gradeN)),
+                                    overallBrierDelta: (al && S0all) ? Math.round((al.brier / al.n - S0all.brier / S0all.n) * 100000) / 100000 : null
+                                }
+                            };
+                        }),
+                        note: 'Recipe PBF (= the exact MLB shipped recipe: Poisson λ=projection + anchor→league + bypass curve + raw band 0.03–0.97) is now SHIPPED as NFL_LOWLINE_RARE, scoped to sport==="nfl" && statKey in {rushTds, recTds} && line<1.0 — so "S0 · current model" already reflects it. P/PL/PB are the ladder rungs (each does little until the full recipe); PBF-broad tried INT/FG too and added nothing, so scope stays tight. Frozen inputs = the 2022-2024 TRAIN 0.5-line OVER rates. Grade/Prime/≥1.0/non-scoped all unchanged; overall NFL Brier improved ~−0.005.'
+                    } : null;
+
                     const result = {
                         ranAt: Date.now(),
                         train: { seasons: `${CUR - 4}–${CUR - 2}`, n: accTrain._total.n, cutoffs: cutoffs || null, hadCurve: !!probCal },
                         holdout: { season: `${CUR - 1}`, n: accHold._total.n },
                         full: { n: accFull._total.n, rate: pctOf(accFull._total), grades: gradesFull },
                         overall: { rate: pctOf(accHold._total), ...(block(accHold.nflAll) || {}) },
-                        grades, family: fam, byStat, conf, align, gradeConf, lowLine,
+                        grades, family: fam, byStat, conf, align, gradeConf, lowLine, nflStep7,
                         statLabel: NFL_STAT_LABEL, famLabel: NFL_FAMILY_LABEL, famOrder: NFL_FAMILY_ORDER, rareStats: NFL_RARE_STATS,
-                        note: `NFL model FROZEN. Grade cutoffs + probability curve derived from ${CUR - 4}–${CUR - 2} game logs only, then validated on the unseen ${CUR - 1} season. Walk-forward. Synthetic half-point lines (no historical NFL line feed yet) → this validates the MODEL, not the market. No NFL model change.`
+                        note: `NFL model frozen for the validation: grade cutoffs + probability curve derived from ${CUR - 4}–${CUR - 2} game logs only, then validated on the unseen ${CUR - 1} season. Walk-forward. Synthetic half-point lines (no historical NFL line feed yet) → this validates the MODEL, not the market. The rushTds/recTds 0.5-line Poisson fix (Step 8) IS now live, so "current model" rows reflect it — see the Step 7/8 table below.`
                     };
                     setNflTemporal(result);
                     try { localStorage.setItem('beatsedge_nfl_temporal_v1', JSON.stringify(result)); } catch (e) { }
@@ -11712,6 +11878,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     (console.table || console.log).call(console, { A: result.grades.A, B: result.grades.B, C: result.grades.C, D: result.grades.D });
                     (console.table || console.log).call(console, result.conf);
                     if (result.lowLine.rareOver) console.log(`rare 0.5-line OVER (TD/INT/FG): n ${result.lowLine.rareOver.n} · hit ${result.lowLine.rareOver.hitRate}% · mean ${result.lowLine.rareOver.meanFinal}% · gap ${result.lowLine.rareOver.gap} · range ${result.lowLine.rareOver.minFinal}-${result.lowLine.rareOver.maxFinal}%`);
+                    const _s7 = result.nflStep7;
+                    if (_s7) {
+                        const b = _s7.baseline;
+                        console.log(`%cNFL · Sub-1.0 Correction — Step 7 experiment (INVESTIGATION ONLY)`, 'font-weight:bold');
+                        console.log(`frozen 2022-2024 base rates → Rush TD ${_s7.primaryPriors.rushTds}% · Rec TD ${_s7.primaryPriors.recTds}%`);
+                        const row = (k, x) => ({ n: x && x.n, hit: x && x.hitRate, meanProb: x && x.meanFinal, gap: x && x.gap, brier: x && x.brier, range: x ? x.minFinal + '-' + x.maxFinal : '' });
+                        (console.table || console.log).call(console, [{ r: 'S0 · current (Gaussian)', ...row('rare', b.rareOver), rushTdGap: b.rushTds && b.rushTds.gap, recTdGap: b.recTds && b.recTds.gap }].concat(
+                            _s7.recipes.map(rc => ({ r: rc.key + ' · ' + rc.label, ...row('rare', rc.rareOver), rushTdGap: rc.rushTds && rc.rushTds.gap, recTdGap: rc.recTds && rc.recTds.gap }))
+                        ).reduce((o, x) => { o[x.r] = x; delete x.r; return o; }, {}));
+                        _s7.recipes.forEach(rc => console.log(`  ${rc.key} [${rc.scope}]: ≥1.0 identical ${rc.sideEffects.ge1Identical} · non-scoped sub-1.0 identical ${rc.sideEffects.nonScopedSub1Identical} · rare grade Δ A${rc.sideEffects.rareGradeDelta.A}/B${rc.sideEffects.rareGradeDelta.B}/C${rc.sideEffects.rareGradeDelta.C}/D${rc.sideEffects.rareGradeDelta.D} · overall grade Δ A${rc.sideEffects.overallGradeDelta.A}/B${rc.sideEffects.overallGradeDelta.B}/C${rc.sideEffects.overallGradeDelta.C}/D${rc.sideEffects.overallGradeDelta.D} · prime Δ ${rc.sideEffects.primeDelta} · overall Brier Δ ${rc.sideEffects.overallBrierDelta}`));
+                    }
                 } catch (e) {
                     console.error('NFL temporal validation failed:', e);
                     setNflTemporal({ error: String(e && e.message || e), ranAt: Date.now() });
