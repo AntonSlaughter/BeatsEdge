@@ -3740,7 +3740,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {}, primeProb: {}, primeFamProb: {} }; }
 
         // Stat -> family, for the Prime diagnostic. "combo" = has scoring in it
         // (more moving parts, edge compounds); "core" = the reliable single
@@ -5014,6 +5014,57 @@
                                                           ? 'The family advantage survives a grade control — combo Prime picks are stronger at the SAME letter grade, edge size and confluence. Stat family is carrying information the grade does not.'
                                                           : 'The family advantage mostly collapses once grade is held fixed — the letter was already capturing it.'}`}
                                                 {' '}Gap = actual − mean stated probability, within each family/grade Prime cell.
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {bt.primeFamProb && (() => {
+                                    const P = bt.primeFamProb;
+                                    const inS = bt.inSample && bt.inSample.primeFamProb;
+                                    const FAMS = [['combo', 'Scoring / combo'], ['core', 'Core individual'], ['volatile', 'Volatile counting']];
+                                    const gapCls = (g) => g == null ? '' : Math.abs(g) <= 3 ? 'calib-ok' : g < 0 ? 'calib-over' : 'calib-under';
+                                    const rateCls = (r) => r == null ? '' : r >= 58 ? 'calib-ok' : r >= 52 ? 'calib-under' : 'calib-over';
+                                    // Sample-weighted mean gap per family (buckets with n>=25)
+                                    const wGap = (rows) => { let n = 0, s = 0; rows.forEach(r => { if (r.n >= 25 && r.gap != null) { n += r.n; s += r.gap * r.n; } }); return n ? Math.round((s / n) * 10) / 10 : null; };
+                                    const section = (label, rows, inRows) => {
+                                        const shown = rows.filter(r => r.n >= 15);
+                                        if (!shown.length) return null;
+                                        return (
+                                            <React.Fragment key={label}>
+                                                <tr><td colSpan={inRows ? 6 : 5} style={{ paddingTop: '0.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{label}</td></tr>
+                                                {shown.map(r => {
+                                                    const ir = inRows && inRows.find(x => x.bucket === r.bucket);
+                                                    return (
+                                                        <tr key={label + r.bucket}>
+                                                            <td style={{ paddingLeft: '0.8rem' }}>{r.bucket === '<50' ? 'under 50%' : r.bucket + '%'}</td>
+                                                            <td className={rateCls(r.rate)}>{r.rate == null ? '—' : r.rate + '%'}</td>
+                                                            {inRows ? <td style={{ color: 'var(--text-muted)' }}>{ir && ir.rate != null ? ir.rate + '%' : '—'}</td> : null}
+                                                            <td>{r.n.toLocaleString()}</td>
+                                                            <td>{r.meanProb == null ? '—' : r.meanProb + '%'}</td>
+                                                            <td className={gapCls(r.gap)}>{r.gap == null ? '—' : (r.gap >= 0 ? '+' : '') + r.gap}</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </React.Fragment>
+                                        );
+                                    };
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Prime · Family × Probability Calibration{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Bucket</th><th>OOS hit</th>{inS ? <th>In-sample</th> : null}<th>n</th><th>Mean prob</th><th>Gap</th></tr></thead>
+                                                <tbody>
+                                                    {section('ALL PRIME (control)', P.all, inS && inS.all)}
+                                                    {FAMS.map(([f, lbl]) => section(lbl, P.byFam[f] || [], inS && inS.byFam && inS.byFam[f]))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-note">
+                                                Gap = actual OOS hit rate − mean stated model probability, per family × bucket. Positive = the model is under-confident (says less than it delivers).
+                                                {' '}Sample-weighted mean gap: all Prime {wGap(P.all) == null ? '—' : (wGap(P.all) >= 0 ? '+' : '') + wGap(P.all)},
+                                                {' '}combo {wGap(P.byFam.combo || []) == null ? '—' : (wGap(P.byFam.combo || []) >= 0 ? '+' : '') + wGap(P.byFam.combo || [])},
+                                                {' '}core {wGap(P.byFam.core || []) == null ? '—' : (wGap(P.byFam.core || []) >= 0 ? '+' : '') + wGap(P.byFam.core || [])},
+                                                {' '}volatile {wGap(P.byFam.volatile || []) == null ? '—' : (wGap(P.byFam.volatile || []) >= 0 ? '+' : '') + wGap(P.byFam.volatile || [])}.
+                                                {' '}Diagnostic only — nothing here changes the model, calibration, Prime, grade or ranking.
                                             </div>
                                         </div>
                                     );
@@ -9237,8 +9288,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (e.prime) {
                             const ps = acc.primeByStat[statKey] || (acc.primeByStat[statKey] = { n: 0, hit: 0 });
                             ps.n++; if (hit) ps.hit++;
+                            const _pbk = btProbBucket(e.modelProbPct);
+                            if (_pbk) {
+                                const pp = acc.primeProb[_pbk] || (acc.primeProb[_pbk] = { n: 0, hit: 0, sumProb: 0 });
+                                pp.n++; if (hit) pp.hit++; pp.sumProb += (e.modelProbPct || 0);
+                            }
                             const fam = PRIME_FAMILY[statKey];
                             if (fam) {
+                                if (_pbk) {
+                                    const fpp = acc.primeFamProb[fam + '|' + _pbk] || (acc.primeFamProb[fam + '|' + _pbk] = { n: 0, hit: 0, sumProb: 0 });
+                                    fpp.n++; if (hit) fpp.hit++; fpp.sumProb += (e.modelProbPct || 0);
+                                }
                                 const conf = e.totalFactors ? e.greenCount / e.totalFactors : 0;
                                 const eSig = e.edgeSignalPct || 0;
                                 const pf = acc.primeFam[fam] || (acc.primeFam[fam] = { n: 0, hit: 0, sumEdge: 0, sumConf: 0 });
@@ -9554,6 +9614,21 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         byGradeEdge: _cvByGradeEdge.length ? Math.round(_cvByGradeEdge.reduce((a, b) => a + b, 0) / _cvByGradeEdge.length) : null,
                         gradeEdgeCells: _cvByGradeEdge.length
                     };
+                    // Prime · family × model-probability bucket, with mean stated
+                    // probability + calibration gap (actual − stated) per cell. Also
+                    // "all Prime" as the control row set. Diagnostic — nothing here
+                    // feeds the model.
+                    const btProbRow = (b) => {
+                        if (!b || !b.n) return { n: 0, rate: null, meanProb: null, gap: null };
+                        const rate = Math.round((b.hit / b.n) * 100);
+                        const meanProb = Math.round((b.sumProb / b.n) * 10) / 10;
+                        return { n: b.n, rate, meanProb, gap: Math.round((rate - meanProb) * 10) / 10 };
+                    };
+                    const btPrimeProbTable = (probAcc, famProbAcc) => ({
+                        all: BT_PROB_BUCKETS.map(bk => ({ bucket: bk, ...btProbRow(probAcc[bk]) })),
+                        byFam: Object.fromEntries(FAM_ORDER.map(f => [f, BT_PROB_BUCKETS.map(bk => ({ bucket: bk, ...btProbRow(famProbAcc[f + '|' + bk]) }))]))
+                    });
+                    const primeFamProb = btPrimeProbTable(acc.primeProb, acc.primeFamProb);
 
                     // Held-out out-of-sample split (NBA): the tables above are the
                     // post-holdoutTs games the cutoff/calibration fit never saw.
@@ -9571,12 +9646,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             profiles: btProfiles(inSampleAcc),
                             primeByStat: btPrimeByStat(inSampleAcc),
                             primeFamily: btPrimeFamily(inSampleAcc),
-                            primeFamGrade: btPrimeFamGrade(inSampleAcc)
+                            primeFamGrade: btPrimeFamGrade(inSampleAcc),
+                            primeFamProb: btPrimeProbTable(inSampleAcc.primeProb, inSampleAcc.primeFamProb)
                         };
                     }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
-                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat, primeFamily, primeFamCells, primeFamGrade, primeFamEdge, primeFamGradeControl,
+                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat, primeFamily, primeFamCells, primeFamGrade, primeFamEdge, primeFamGradeControl, primeFamProb,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
@@ -9587,6 +9663,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         try { localStorage.setItem('beatsedge_backtest_v1', JSON.stringify(next)); } catch (e) { }
                         return next;
                     });
+                    // Console dump of the Prime · Family × Probability Calibration
+                    // diagnostic (requested). Rows: bucket, n, OOS hit%, mean model
+                    // prob%, calibration gap (actual − stated).
+                    if (selectedSport === 'nba' && primeFamProb) {
+                        const flat = [];
+                        const push = (label, rows) => rows.forEach(r => flat.push({ group: label, bucket: r.bucket, n: r.n, hitPct: r.rate, meanProbPct: r.meanProb, calibGap: r.gap }));
+                        push('ALL PRIME', primeFamProb.all);
+                        FAM_ORDER.forEach(f => push(FAM_LABEL[f], primeFamProb.byFam[f]));
+                        console.log(`%cPrime · Family × Probability Calibration${holdoutTs ? '  (OUT-OF-SAMPLE, train through ' + new Date(holdoutTs).toISOString().slice(0, 10) + ')' : ''}`, 'font-weight:bold');
+                        (console.table ? console.table : console.log).call(console, flat);
+                    }
                 } catch (e) {
                     console.error('Backtest failed:', e);
                 } finally {
