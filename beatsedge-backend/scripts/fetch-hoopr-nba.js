@@ -40,6 +40,7 @@ const FROM = parseInt(arg('from', '2016'), 10);
 const TO = parseInt(arg('to', String(CUR_SEASON_END)), 10);
 const FORMAT = arg('format', 'csv'); // csv | parquet | rds
 const SETS = arg('sets', 'player_box,team_box').split(',').map(s => s.trim()).filter(Boolean);
+const FORCE = process.argv.includes('--force'); // re-download even if the file is already present (the current season grows daily)
 const DEST = path.join(__dirname, '..', 'data', 'hoopr');
 
 function download(url, out) {
@@ -75,7 +76,7 @@ function download(url, out) {
     for (let yr = FROM; yr <= TO; yr++) {
       const fname = `${set}_${yr}.${FORMAT}`;
       const out = path.join(dir, fname);
-      if (fs.existsSync(out) && fs.statSync(out).size > 1024) { skip++; continue; }
+      if (!FORCE && fs.existsSync(out) && fs.statSync(out).size > 1024) { skip++; continue; }
       const url = `${BASE}/${tag}/${fname}`;
       try {
         const size = await download(url, out);
