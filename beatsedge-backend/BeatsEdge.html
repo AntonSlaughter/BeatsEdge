@@ -2327,6 +2327,24 @@
             color: var(--text-primary);
         }
 
+        /* Position label shown next to a player's name (all sports). */
+        .pos-chip {
+            display: inline-block;
+            margin-left: 0.45rem;
+            padding: 0.08em 0.42em;
+            border-radius: 4px;
+            background: var(--surface-raised, rgba(255,255,255,0.08));
+            border: 1px solid var(--border-hairline, rgba(255,255,255,0.14));
+            color: var(--text-secondary);
+            font-family: var(--font-body, inherit);
+            font-size: 0.68em;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+
         .top-pick-prop {
             color: var(--text-secondary);
             font-size: 0.95rem;
@@ -4778,7 +4796,7 @@
                                     <img className="edge-prop-photo" style={{ width: '40px', height: '40px' }} src={p.player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
                                 )}
                                 <div>
-                                    <div className="top-pick-player">{p.player.name}</div>
+                                    <div className="top-pick-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                     <div className="top-pick-prop">
                                         {p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
                                         {p.prop.lineSource ? <span className="top-pick-real" title={p.prop.lineSource}> ●</span> : (p.prop.isProjection ? <span className="top-pick-proj"> proj</span> : '')}
@@ -11480,7 +11498,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </div>
                             <div className="player-info">
                                 <div className="player-name-row">
-                                    <div className="player-name">{player.name}</div>
+                                    <div className="player-name">{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}</div>
                                     {player.status === 'PROBABLE' && (
                                         <span className="probable-tag" title={player.injuryDetail || 'Probable'}>P</span>
                                     )}
@@ -11639,7 +11657,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                           <div className="modal-overlay" onClick={() => setDetailModal(null)}>
                             <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
                               <div className="modal-header">
-                                <div className="modal-title">{player.name} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
+                                <div className="modal-title">{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
                                 <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
                               </div>
                               <div className="modal-body player-details">
