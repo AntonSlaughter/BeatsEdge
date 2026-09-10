@@ -3777,6 +3777,65 @@
             }
         }
         function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {}, primeProb: {}, primeFamProb: {}, primeTotal: { n: 0, hit: 0 } }; }
+
+        // Walk-forward for ONE MLB player-stat series, with a {minTs,maxTs} date
+        // gate (temporal holdout) and stat-family tallying. Mirrors
+        // nbaBacktestSeries. `tss` is the per-game date in ms. Diagnostic use —
+        // there is NO MLB family calibration, so "before"/"after" are equal;
+        // this measures each MLB family's OWN calibration on unseen data.
+        // `fam` is the resolved MLB stat-family string (or null) — resolved by
+        // the caller because MLB_STAT_FAMILY is defined in component scope.
+        function mlbBacktestSeries(vals, opps, tss, position, fam, acc, gate) {
+            const MIN = (gate && gate.minGames) || 12;
+            const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
+            for (let i = MIN; i < vals.length; i++) {
+                const gTs = tss[i] || 0;
+                if (maxTs && gTs && gTs >= maxTs) continue;
+                if (minTs && (!gTs || gTs < minTs)) continue;
+                const hv = vals.slice(0, i), ho = opps.slice(0, i);
+                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                if (seasonAvg <= 0) continue;
+                let line = null, bestGap = 99;
+                for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                    const over = hv.filter(v => v > cand).length / hv.length;
+                    const gp = Math.abs(over - 0.48);
+                    if (gp < bestGap) { bestGap = gp; line = cand; }
+                }
+                if (line == null || line <= 0) continue;
+                const actual = vals[i], tonightOpp = opps[i];
+                if (actual === line) continue;
+                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                const fake = { sport: 'mlb', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
+                for (const dir of ['over', 'under']) {
+                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                    const hit = dir === 'over' ? actual > line : actual < line;
+                    const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
+                    g.n++; if (hit) g.hit++;
+                    acc._total.n++; if (hit) acc._total.hit++;
+                    btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
+                    const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
+                    const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
+                    sb.n++; if (hit) sb.hit++;
+                    if (e.prime) { acc.primeTotal.n++; if (hit) acc.primeTotal.hit++; }
+                    if (acc.mlbFam) {
+                        const y = hit ? 1 : 0, p = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 50) / 100));
+                        const tally = (o) => {
+                            o.n++; o.hit += y; o.sumProb += p * 100;
+                            o.brier += (p - y) * (p - y);
+                            o.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+                            const bk = btProbBucket(p * 100);
+                            if (bk) { const t = o.buckets[bk] || (o.buckets[bk] = { n: 0, hit: 0, sum: 0 }); t.n++; t.hit += y; t.sum += p * 100; }
+                        };
+                        tally(acc.mlbAll || (acc.mlbAll = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        if (e.prime) tally(acc.mlbAllPrime || (acc.mlbAllPrime = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        if (fam) {
+                            tally(acc.mlbFam[fam] || (acc.mlbFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                            if (e.prime) tally(acc.mlbFamPrime[fam] || (acc.mlbFamPrime[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        }
+                    }
+                }
+            }
+        }
         // Dual-probability calibration accumulator — filled ONLY on the fresh
         // family-calibration validation pass (nbaBacktestSeries tallies it when
         // `acc.calibVal` is present). Tracks, for "before" (sport curve only) and
@@ -4164,6 +4223,29 @@
                 volatile_counting:{ '50-54': -1.85, '55-59': -2.2, '60-64': -1.0, '65-69': -0.9, '70-74': -1.75, '75+': -2.65 }
             }
         };
+        // Candidate MLB stat families — DIAGNOSTIC ONLY (the temporal-holdout
+        // validation). Grouped by how the number is produced so the validation
+        // can MEASURE whether MLB's families behave differently from each other.
+        // NOT assumed to mirror NBA, and NOTHING here feeds the live model —
+        // there is no FAMILY_CALIB.mlb entry, so familyCalibAdj() no-ops for MLB.
+        // Module-scoped so mlbBacktestSeries, TopPicksView, and the App all see it.
+        const MLB_STAT_FAMILY = {
+            hits: 'hitting_volume', singles: 'hitting_volume',
+            homeRuns: 'power', doubles: 'power', triples: 'power',
+            totalBases: 'total_bases',
+            rbis: 'run_production', runs: 'run_production',
+            hitsRunsRbis: 'hitter_combo', fantasy: 'hitter_combo',
+            batterWalks: 'batter_discipline', batterStrikeouts: 'batter_discipline',
+            stolenBases: 'speed',
+            strikeouts: 'pitching_strikeout',
+            pitcherOuts: 'pitching_outs',
+            pitcherWalks: 'pitching_walks',
+            earnedRuns: 'pitching_runs',
+            hitsAllowed: 'pitching_hits',
+            pitcherFantasy: 'pitcher_combo'
+        };
+        const MLB_FAMILY_ORDER = ['hitting_volume', 'power', 'total_bases', 'run_production', 'hitter_combo', 'batter_discipline', 'speed', 'pitching_strikeout', 'pitching_outs', 'pitching_walks', 'pitching_runs', 'pitching_hits', 'pitcher_combo'];
+        const MLB_FAMILY_LABEL = { hitting_volume: 'Hitting volume', power: 'Power', total_bases: 'Total bases', run_production: 'Run production', hitter_combo: 'Hitter combo', batter_discipline: 'Batter discipline', speed: 'Speed', pitching_strikeout: 'Pitching strikeout', pitching_outs: 'Pitching outs', pitching_walks: 'Pitching walks', pitching_runs: 'Pitching earned runs', pitching_hits: 'Pitching hits allowed', pitcher_combo: 'Pitcher combo' };
         function statFamilyOf(sport, statKey) {
             return (STAT_FAMILY_BY_SPORT[sport] || {})[statKey] || null;
         }
@@ -4653,7 +4735,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -5611,6 +5693,97 @@
                                 </div>
                             );
                         })()}
+                        {selectedSport === 'mlb' && isPro && (() => {
+                            const r = mlbTemporal;
+                            const ok = r && !r.error && r.n;
+                            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+                            const gapCls = (v) => v == null ? '' : Math.abs(v) <= 2 ? 'calib-ok' : v < 0 ? 'calib-over' : 'calib-under';
+                            const FL = MLB_FAMILY_LABEL, FO = MLB_FAMILY_ORDER;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>MLB · Temporal Holdout Validation</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Grade cutoffs + the probability curve are derived from <strong>pre-{r && r.holdout ? r.holdout.label.split(' ')[0] : 'season'}</strong> game logs only, frozen, then validated on the <strong>unseen current MLB season</strong>. Walk-forward (each prediction uses only that player's prior games). <strong>No MLB family calibration is applied</strong> — this measures each candidate MLB stat family's OWN calibration on unseen data. NBA's family rules are not copied and nothing here is persisted or touches the live model.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={mlbTemporalRunning || backtestRunning} onClick={onRunMlbTemporal} style={{ marginTop: '0.6rem' }}>
+                                        {mlbTemporalRunning ? 'Validating…' : (ok ? 'Re-run temporal holdout' : 'Run temporal holdout')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Train: {r.train.seasons} (through {r.train.to}, {r.train.n.toLocaleString()} graded sides) · Holdout: {r.holdout.from} → {r.holdout.to} · Derived cutoffs {r.derived.cutoffs ? 'A ' + r.derived.cutoffs.A + ' / B ' + r.derived.cutoffs.B + ' / C ' + r.derived.cutoffs.C : '(train pool < 4k — using existing)'}{r.derived.hadCurve ? ' · curve re-fit' : ' · curve unchanged'}.
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Holdout OOS</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th><th>Log loss</th></tr></thead>
+                                                    <tbody>
+                                                        <tr>
+                                                            <td>Overall</td>
+                                                            <td>{r.n.toLocaleString()}</td>
+                                                            <td>{r.overall.rate}%</td>
+                                                            <td>{r.overall.meanProb == null ? '—' : r.overall.meanProb + '%'}</td>
+                                                            <td className={gapCls(r.overall.gap)}>{g(r.overall.gap)}</td>
+                                                            <td>{r.overall.mae == null ? '—' : r.overall.mae}</td>
+                                                            <td>{r.overall.brier == null ? '—' : r.overall.brier}</td>
+                                                            <td>{r.overall.logloss == null ? '—' : r.overall.logloss}</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <td>Prime</td>
+                                                            <td>{(r.prime.n || 0).toLocaleString()}</td>
+                                                            <td>{r.prime.rate == null ? '—' : r.prime.rate + '%'}</td>
+                                                            <td>{r.prime.meanProb == null ? '—' : r.prime.meanProb + '%'}</td>
+                                                            <td className={gapCls(r.prime.gap)}>{g(r.prime.gap)}</td>
+                                                            <td>{r.prime.mae == null ? '—' : r.prime.mae}</td>
+                                                            <td>{r.prime.brier == null ? '—' : r.prime.brier}</td>
+                                                            <td>{r.prime.logloss == null ? '—' : r.prime.logloss}</td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.4rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Grade (OOS holdout)</th><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>
+                                                    <tbody>
+                                                        <tr><td>Hit rate</td>{['A', 'B', 'C', 'D'].map(k => <td key={k}>{r.grades[k].rate == null ? '—' : r.grades[k].rate + '%'}</td>)}</tr>
+                                                        <tr><td>n</td>{['A', 'B', 'C', 'D'].map(k => <td key={k}>{r.grades[k].n.toLocaleString()}</td>)}</tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.8rem', marginTop: '0.8rem' }}>MLB · Stat Family Diagnostic (holdout, no adjustment)</div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Family</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>Brier</th><th>Log loss</th><th>Prime n</th><th>Prime hit</th><th>Prime gap</th></tr></thead>
+                                                    <tbody>
+                                                        {FO.map(fk => {
+                                                            const x = r.family[fk], pf = r.familyPrime[fk];
+                                                            if (!x) return null;
+                                                            return (
+                                                                <tr key={fk}>
+                                                                    <td style={{ whiteSpace: 'nowrap' }}>{FL[fk] || fk}</td>
+                                                                    <td>{x.n.toLocaleString()}</td>
+                                                                    <td>{x.hitRate}%</td>
+                                                                    <td>{x.meanProb}%</td>
+                                                                    <td className={gapCls(x.gap)}>{g(x.gap)}</td>
+                                                                    <td>{x.brier}</td>
+                                                                    <td>{x.logloss}</td>
+                                                                    <td>{pf ? pf.n.toLocaleString() : '—'}</td>
+                                                                    <td>{pf ? pf.hitRate + '%' : '—'}</td>
+                                                                    <td className={pf ? gapCls(pf.gap) : ''}>{pf ? g(pf.gap) : '—'}</td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                                                Gap = actual hit rate − mean stated probability (points). Positive = the model is under-confident for that family on unseen MLB data (a candidate for a future MLB family layer); near-zero = already calibrated. Families are candidates discovered from MLB markets, not imported from NBA. Full-sample (train+holdout) overall hit for reference: {r.overallFull.rate}% on {r.overallFull.n.toLocaleString()}. {r.note} Ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     {loading ? (
@@ -5737,6 +5910,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaFinalValRunning, setNbaFinalValRunning] = useState(false);
+            const [mlbTemporal, setMlbTemporal] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_mlb_temporal_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [mlbTemporalRunning, setMlbTemporalRunning] = useState(false);
             const [sortBy, setSortBy] = useState('grade'); // 'grade' | 'edge' | 'time' | 'name' — Browse grid ordering
             const [playerSearch, setPlayerSearch] = useState(''); // Browse: filter by player / team / position
             const [playerSearchDebounced, setPlayerSearchDebounced] = useState('');
@@ -7045,6 +7222,9 @@
                 pitcherFantasy:   { type: 'Pitcher Fantasy Score', market: null,                     get: s => mlbFantasyPitch(s), pitcher: true }
             };
             const MLB_MARKET_TO_KEY = Object.fromEntries(Object.entries(MLB_PROP_DEFS).filter(([, v]) => v.market).map(([k, v]) => [v.market, k]));
+            // MLB_STAT_FAMILY / MLB_FAMILY_ORDER / MLB_FAMILY_LABEL are defined at
+            // module scope (near FAMILY_CALIB) so mlbBacktestSeries and
+            // TopPicksView can see them — diagnostic only, nothing feeds the model.
             // Computed projections (no book line) shown alongside the live
             // lines. `market: null` in MLB_PROP_DEFS marks these.
             const MLB_PROJECTION_KEYS = { batter: ['fantasy'], pitcher: ['pitcherFantasy', 'pitcherWalks'] };
@@ -10314,6 +10494,137 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 } finally { setNbaFinalValRunning(false); }
             };
 
+            // ── MLB · Temporal Holdout Validation + Stat-Family Diagnostic ───
+            // The MLB analogue of the NBA work, run BEFORE any MLB model change.
+            // Multi-season statsapi game logs → derive grade cutoffs + the
+            // probability curve from the TRAIN period only (games before the
+            // current season) → FREEZE → validate on the unseen HOLDOUT (the
+            // current MLB season to date). Then measure each candidate MLB stat
+            // family's OWN calibration on the holdout — no adjustment applied,
+            // NBA's family rules are NOT copied. Walk-forward throughout.
+            const runMlbTemporalValidation = async () => {
+                if (mlbTemporalRunning || backtestRunning) return;
+                setMlbTemporalRunning(true);
+                try {
+                    const CUR = MLB_SEASON;
+                    const SEASONS = [CUR, CUR - 1, CUR - 2, CUR - 3, CUR - 4];
+                    const holdoutTs = Date.parse(CUR + '-03-15T00:00:00Z'); // current-season start (unseen holdout begins here)
+                    const roster = (Array.isArray(playersData) ? playersData : []).filter(p => p.sport === 'mlb');
+                    const seen = new Set();
+                    const uniq = roster.filter(p => p && p.id && !seen.has(p.id) && seen.add(p.id)).slice(0, 150);
+                    if (uniq.length < 20) { setMlbTemporal({ error: 'Need a populated MLB slate (open the MLB tab first).', ranAt: Date.now() }); return; }
+                    const batters = uniq.filter(p => !(p._isPitcher || p.role === 'pitcher'));
+                    const pitchers = uniq.filter(p => (p._isPitcher || p.role === 'pitcher'));
+
+                    // batched multi-season gamelog pull
+                    const byPlayer = {}; // id -> { isPitcher, position, splits:[{date,stat,opp}] }
+                    const abbrOf = (opp) => (opp && (mlbCache.current && mlbCache.current.abbrById && mlbCache.current.abbrById[opp.id])) || (opp && opp.name) || '';
+                    const pullGroup = async (list, group) => {
+                        for (const grp of chunk(list.map(p => p.id), 25)) {
+                            for (const yr of SEASONS) {
+                                let data;
+                                try { data = await mlbFetch(`/people?personIds=${grp.join(',')}&hydrate=stats(group=[${group}],type=[gameLog],season=${yr})`); }
+                                catch (e) { continue; }
+                                (data.people || []).forEach(pp => {
+                                    const splits = (pp.stats && pp.stats[0] && pp.stats[0].splits) || [];
+                                    if (!splits.length) return;
+                                    const rec = byPlayer[pp.id] || (byPlayer[pp.id] = { isPitcher: group === 'pitching', position: pp.primaryPosition && pp.primaryPosition.abbreviation, splits: [] });
+                                    splits.forEach(sp => rec.splits.push({ ts: Date.parse(sp.date + 'T12:00:00Z') || 0, stat: sp.stat || {}, opp: abbrOf(sp.opponent) }));
+                                });
+                            }
+                        }
+                    };
+                    await pullGroup(batters, 'hitting');
+                    await pullGroup(pitchers, 'pitching');
+
+                    const players = Object.values(byPlayer).map(rec => {
+                        rec.splits.sort((a, b) => a.ts - b.ts);
+                        return rec;
+                    }).filter(rec => rec.splits.length >= 40);
+                    if (!players.length) { setMlbTemporal({ error: 'No multi-season MLB game logs returned from statsapi.', ranAt: Date.now() }); return; }
+
+                    const seriesFor = (rec) => {
+                        const keys = Object.keys(MLB_PROP_DEFS).filter(k => !!MLB_PROP_DEFS[k].pitcher === rec.isPitcher);
+                        const opps = rec.splits.map(s => s.opp);
+                        const tss = rec.splits.map(s => s.ts);
+                        return keys.map(k => {
+                            const vals = rec.splits.map(s => MLB_PROP_DEFS[k].get(s.stat) || 0);
+                            return vals.every(v => v === 0) ? null : { k, fam: MLB_STAT_FAMILY[k] || null, vals, opps, tss, position: rec.position };
+                        }).filter(Boolean);
+                    };
+                    const allSeries = players.flatMap(seriesFor);
+
+                    // ---- pass 1: derive cutoffs + curve from TRAIN (pre-holdout) ----
+                    const accTrain = emptyBacktestAcc();
+                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accTrain, { maxTs: holdoutTs }));
+                    const cutoffs = deriveGradeCutoffs(accTrain.score);
+                    const probCal = deriveProbCalib(accTrain.probRaw);
+
+                    // ---- freeze + validate on HOLDOUT (transient — not persisted) ----
+                    const savedCut = GRADE_CUTOFFS, savedCal = PROB_CALIB;
+                    let accHold, accFull;
+                    try {
+                        if (cutoffs) GRADE_CUTOFFS = { ...GRADE_CUTOFFS, mlb: cutoffs };
+                        if (probCal) PROB_CALIB = { ...PROB_CALIB, mlb: probCal };
+                        bumpEdgeCache();
+                        accHold = emptyBacktestAcc(); accHold.mlbFam = {}; accHold.mlbFamPrime = {};
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accHold, { minTs: holdoutTs }));
+                        accFull = emptyBacktestAcc(); accFull.mlbFam = {}; accFull.mlbFamPrime = {};
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, accFull, {}));
+                    } finally {
+                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; bumpEdgeCache();
+                    }
+
+                    // ---- shape ----
+                    const pctOf = (b) => b && b.n ? Math.round((b.hit / b.n) * 100) : null;
+                    const block = (o) => o && o.n ? {
+                        n: o.n, hitRate: Math.round((o.hit / o.n) * 100),
+                        meanProb: Math.round((o.sumProb / o.n) * 10) / 10,
+                        gap: Math.round((o.hit / o.n * 100 - o.sumProb / o.n) * 10) / 10,
+                        brier: Math.round((o.brier / o.n) * 10000) / 10000,
+                        logloss: Math.round((o.ll / o.n) * 10000) / 10000,
+                        buckets: BT_PROB_BUCKETS.map(bk => {
+                            const t = o.buckets[bk];
+                            if (!t || !t.n) return { bucket: bk, n: 0, rate: null, meanProb: null, gap: null };
+                            const rate = Math.round((t.hit / t.n) * 100), mp = Math.round((t.sum / t.n) * 10) / 10;
+                            return { bucket: bk, n: t.n, rate, meanProb: mp, gap: Math.round((rate - mp) * 10) / 10 };
+                        }),
+                        mae: (() => { let n = 0, s = 0; BT_PROB_BUCKETS.forEach(bk => { const t = o.buckets[bk]; if (t && t.n >= 25) { const gp = Math.abs(t.hit / t.n * 100 - t.sum / t.n); n += t.n; s += gp * t.n; } }); return n ? Math.round((s / n) * 100) / 100 : null; })()
+                    } : null;
+                    const grades = {};
+                    ['A', 'B', 'C', 'D'].forEach(g => { const b = accHold[g] || { n: 0, hit: 0 }; grades[g] = { n: b.n, rate: pctOf(b) }; });
+                    const gradesFull = {};
+                    ['A', 'B', 'C', 'D'].forEach(g => { const b = accFull[g] || { n: 0, hit: 0 }; gradesFull[g] = { n: b.n, rate: pctOf(b) }; });
+                    const fam = {}, famPrime = {};
+                    MLB_FAMILY_ORDER.forEach(f => { fam[f] = block(accHold.mlbFam[f]); famPrime[f] = block(accHold.mlbFamPrime[f]); });
+
+                    const result = {
+                        ranAt: Date.now(),
+                        train: { seasons: `${CUR - 4}–${CUR - 1} seasons`, to: `${CUR}-03-14`, n: accTrain._total.n },
+                        holdout: { from: `${CUR}-03-15`, to: 'today', label: `${CUR} MLB season` },
+                        derived: { cutoffs: cutoffs || (GRADE_CUTOFFS && GRADE_CUTOFFS.mlb) || null, hadCurve: !!probCal },
+                        note: `Grade cutoffs + probability curve derived from pre-${CUR} games only, frozen, then validated on the unseen ${CUR} season. NO MLB family calibration applied — this measures each MLB family's own behaviour. NBA's family rules are not copied. Nothing here is persisted or changes the live model.`,
+                        n: accHold._total.n,
+                        overall: { rate: pctOf(accHold._total), ...(block(accHold.mlbAll) || {}) },
+                        overallFull: { rate: pctOf(accFull._total), n: accFull._total.n },
+                        grades, gradesFull,
+                        prime: { ...(block(accHold.mlbAllPrime) || { n: accHold.primeTotal.n }), rate: pctOf(accHold.primeTotal) },
+                        family: fam, familyPrime: famPrime
+                    };
+                    setMlbTemporal(result);
+                    try { localStorage.setItem('beatsedge_mlb_temporal_v1', JSON.stringify(result)); } catch (e) { }
+                    console.log(`%cMLB · Temporal Holdout Validation  (train pre-${CUR} → frozen → holdout = ${CUR} season)`, 'font-weight:bold');
+                    console.log(`holdout N ${result.n.toLocaleString()} · overall hit ${result.overall.rate}% · MAE ${result.overall.mae} · Brier ${result.overall.brier} · logloss ${result.overall.logloss}`);
+                    (console.table || console.log).call(console, MLB_FAMILY_ORDER.reduce((o, f) => {
+                        const x = result.family[f]; if (x) o[MLB_FAMILY_LABEL[f]] = { n: x.n, hit: x.hitRate, meanProb: x.meanProb, gap: x.gap, brier: x.brier, logloss: x.logloss, primeN: result.familyPrime[f] && result.familyPrime[f].n, primeGap: result.familyPrime[f] && result.familyPrime[f].gap };
+                        return o;
+                    }, {}));
+                } catch (e) {
+                    console.error('MLB temporal validation failed:', e);
+                    setMlbTemporal({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally { setMlbTemporalRunning(false); }
+            };
+
             // ── NBA · Stat Family Calibration Stability ─────────────────────
             // Multi-window temporal stability check. Same frozen params as the
             // fresh validation (GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB all
@@ -13223,6 +13534,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaFinalVal={nbaFinalVal}
                                 nbaFinalValRunning={nbaFinalValRunning}
                                 onRunFinalVal={runFinalLockedValidation}
+                                mlbTemporal={mlbTemporal}
+                                mlbTemporalRunning={mlbTemporalRunning}
+                                onRunMlbTemporal={runMlbTemporalValidation}
                                 isPro={isPro}
                                 onUnlock={onUnlock}
                                 dataUpdatedAt={dataUpdatedAt}
