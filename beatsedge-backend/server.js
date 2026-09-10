@@ -6,6 +6,7 @@ const { runNightlyUpdate } = require('./cron/nightlyUpdate');
 const { runMlbNightlyUpdate } = require('./cron/mlbNightlyUpdate');
 const { runNhlNightlyUpdate } = require('./cron/nhlNightlyUpdate');
 const { runSettleSnapshots } = require('./cron/settleSnapshots');
+const { runNbaHistoryRefresh } = require('./cron/refreshNbaHistory');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -72,6 +73,13 @@ cron.schedule('30 7 * * *', () => {
   runSettleSnapshots().catch(err => console.error('[cron] snapshot settle failed:', err));
 });
 
+// Refresh the historical NBA box scores (nba_player_box) — keeps the
+// walk-forward backtest and the current-season DvP grid current in-season.
+cron.schedule('45 8 * * *', () => {
+  console.log('[cron] Refreshing NBA history...');
+  runNbaHistoryRefresh().catch(err => console.error('[cron] NBA history refresh failed:', err));
+});
+
 // Run once shortly after boot too, so a fresh deploy doesn't wait a full
 // day for its first data refresh attempt. Set SKIP_STARTUP_JOBS=1 in dev to
 // keep the process from churning the DB right after start.
@@ -86,4 +94,19 @@ if (!process.env.SKIP_STARTUP_JOBS) {
     console.log('[startup] Running initial NHL update pass...');
     runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
   }, 10_000);
+
+  // Slightly later + guarded: only pull the NBA history if it's missing or
+  // stale (fresh Render deploys start with an empty disk). Cheap no-op once
+  // it's populated and current.
+  setTimeout(() => {
+    try {
+      const db = require('./lib/db');
+      const row = db.prepare(`SELECT COUNT(*) c, MAX(game_date) d FROM nba_player_box`).get();
+      const stale = !row || !row.c || !row.d || (Date.now() - Date.parse(row.d) > 3 * 864e5);
+      if (stale) {
+        console.log('[startup] NBA history missing/stale — refreshing...');
+        runNbaHistoryRefresh().catch(err => console.error('[startup] NBA history refresh failed:', err));
+      }
+    } catch (e) { console.error('[startup] NBA history check failed:', e.message); }
+  }, 25_000);
 }
