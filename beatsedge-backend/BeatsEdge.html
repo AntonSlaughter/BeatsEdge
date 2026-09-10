@@ -4653,7 +4653,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -5455,6 +5455,92 @@
                             );
                         })()}
                         {selectedSport === 'nba' && isPro && (() => {
+                            const r = nbaFinalVal;
+                            const ok = r && !r.error;
+                            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+                            const gapCls = (v) => v == null ? '' : Math.abs(v) <= 2 ? 'calib-ok' : v < 0 ? 'calib-over' : 'calib-under';
+                            const dCls = (b, a) => (b == null || a == null) ? '' : (a < b - 1e-9 ? 'calib-ok' : a > b + 1e-9 ? 'calib-over' : '');
+                            const ba = (b, a, prec) => { const f = prec ? (x) => x : (x) => x; return (b == null || a == null) ? '—' : <span>{f(b)} → <strong className={dCls(b, a)}>{f(a)}</strong></span>; };
+                            const ps = ok ? r.primeSplit : null;
+                            const npUnchanged = ps && ps.nonPrime && Math.abs((ps.nonPrime.meanProbAfter || 0) - (ps.nonPrime.meanProbBefore || 0)) < 0.05 && Math.abs(ps.nonPrime.meanFamAdj || 0) < 0.01
+                                && ps.nonPrime.brierBefore === ps.nonPrime.brierAfter && ps.nonPrime.loglossBefore === ps.nonPrime.loglossAfter;
+                            const famRow = (label, x) => x ? (
+                                <tr key={label}>
+                                    <td>{label}</td><td>{x.n.toLocaleString()}</td>
+                                    <td>{x.hitRate}%</td>
+                                    <td className={gapCls(x.gapBefore)}>{g(x.gapBefore)}</td>
+                                    <td>{g(x.meanFamAdj)}</td>
+                                    <td className={gapCls(x.gapAfter)}><strong>{g(x.gapAfter)}</strong></td>
+                                </tr>
+                            ) : null;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Final Locked Family Calibration Validation</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Validation / reporting only. Latest chronological NBA window NOT used to derive FAMILY_CALIB (built from AFTER 2024-12-19): <strong>2024-07-01 → 2024-12-19</strong>. Same predictions, BEFORE (sport curve) vs AFTER (Prime-only FAMILY_CALIB). Frozen: model, sport calibration, grade, gradeScore, Prime, confluence, edge, ranking, FAMILY_CALIB values. Walk-forward.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nbaFinalValRunning || backtestRunning || nbaFreshValRunning || nbaFamStabilityRunning} onClick={onRunFinalVal} style={{ marginTop: '0.6rem' }}>
+                                        {nbaFinalValRunning ? 'Validating…' : (ok ? 'Re-run final validation' : 'Run final validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Total N <strong>{r.n.toLocaleString()}</strong> · overall hit {r.overall.rate}% · Prime N <strong>{r.prime.n.toLocaleString()}</strong> · A/B/C/D hit: {['A', 'B', 'C', 'D'].map(k => `${k} ${r.grades[k] && r.grades[k].rate != null ? r.grades[k].rate + '%' : '—'} (${(r.grades[k] && r.grades[k].n || 0).toLocaleString()})`).join(' · ')}
+                                            </div>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.3rem', color: npUnchanged ? 'var(--success-green)' : 'var(--danger-red)' }}>
+                                                {npUnchanged
+                                                    ? `✓ Non-Prime unchanged: mean ${ps.nonPrime.meanProbBefore}% → ${ps.nonPrime.meanProbAfter}%, adj ${g(ps.nonPrime.meanFamAdj)}, MAE ${ps.nonPrime.maeBefore} → ${ps.nonPrime.maeAfter}, Brier ${ps.nonPrime.brierBefore} → ${ps.nonPrime.brierAfter}, log loss ${ps.nonPrime.loglossBefore} → ${ps.nonPrime.loglossAfter} (n ${ps.nonPrime.n.toLocaleString()}).`
+                                                    : `⚠ Non-Prime metrics moved — expected identical.`}
+                                            </div>
+                                            <table className="backtest-calib-tbl" style={{ marginTop: '0.5rem' }}>
+                                                <thead><tr><th>Cohort</th><th>Before → after</th></tr></thead>
+                                                <tbody>
+                                                    <tr><td>Overall calibration MAE</td><td>{ba(r.before.calibrationError, r.after.calibrationError)}</td></tr>
+                                                    <tr><td>Overall Brier</td><td>{ba(r.before.brier, r.after.brier)}</td></tr>
+                                                    <tr><td>Overall log loss</td><td>{ba(r.before.logloss, r.after.logloss)}</td></tr>
+                                                    <tr><td>Prime calibration gap</td><td><span className={gapCls(ps.prime.gapBefore)}>{g(ps.prime.gapBefore)}</span> → <strong className={gapCls(ps.prime.gapAfter)}>{g(ps.prime.gapAfter)}</strong></td></tr>
+                                                    <tr><td>Prime MAE</td><td>{ba(ps.prime.maeBefore, ps.prime.maeAfter)}</td></tr>
+                                                    <tr><td>Prime Brier</td><td>{ba(ps.prime.brierBefore, ps.prime.brierAfter)}</td></tr>
+                                                    <tr><td>Prime log loss</td><td>{ba(ps.prime.loglossBefore, ps.prime.loglossAfter)}</td></tr>
+                                                    <tr><td>Prime hit rate</td><td>{ps.prime.hitRate}%</td></tr>
+                                                </tbody>
+                                            </table>
+                                            <table className="backtest-calib-tbl" style={{ marginTop: '0.6rem' }}>
+                                                <thead><tr><th>Prime family</th><th>n</th><th>Hit</th><th>Gap before</th><th>Mean adj</th><th>Gap after</th></tr></thead>
+                                                <tbody>
+                                                    {famRow('Scoring / combo', ps.byFam.scoring_combo)}
+                                                    {famRow('Core individual', ps.byFam.core_individual)}
+                                                    {famRow('Volatile counting', ps.byFam.volatile_counting)}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.78rem', marginTop: '0.7rem' }}>Prime probability-calibration buckets — before vs after</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Bucket</th><th>n (b / a)</th><th>Hit (b / a)</th><th>Mean prob (b → a)</th><th>Gap (b → a)</th></tr></thead>
+                                                <tbody>
+                                                    {BT_PROB_BUCKETS.map(bk => {
+                                                        const b = (ps.prime.bucketsBefore || []).find(x => x.bucket === bk) || {};
+                                                        const a = (ps.prime.bucketsAfter || []).find(x => x.bucket === bk) || {};
+                                                        if (!(b.n) && !(a.n)) return null;
+                                                        return (
+                                                            <tr key={bk}>
+                                                                <td>{bk === '<50' ? '<50' : bk + '%'}</td>
+                                                                <td>{(b.n || 0).toLocaleString()} / {(a.n || 0).toLocaleString()}</td>
+                                                                <td>{b.rate == null ? '—' : b.rate + '%'} / {a.rate == null ? '—' : a.rate + '%'}</td>
+                                                                <td>{b.meanProb == null ? '—' : b.meanProb + '%'} → <strong>{a.meanProb == null ? '—' : a.meanProb + '%'}</strong></td>
+                                                                <td><span className={gapCls(b.gap)}>{g(b.gap)}</span> → <strong className={gapCls(a.gap)}>{g(a.gap)}</strong></td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>{r.note} Ran {new Date(r.ranAt).toLocaleString()}.</div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nba' && isPro && (() => {
                             const st = nbaFamStability;
                             const W = st && !st.error ? st.windows : null;
                             const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
@@ -5647,6 +5733,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_famstab_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaFamStabilityRunning, setNbaFamStabilityRunning] = useState(false);
+            const [nbaFinalVal, setNbaFinalVal] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nbaFinalValRunning, setNbaFinalValRunning] = useState(false);
             const [sortBy, setSortBy] = useState('grade'); // 'grade' | 'edge' | 'time' | 'name' — Browse grid ordering
             const [playerSearch, setPlayerSearch] = useState(''); // Browse: filter by player / team / position
             const [playerSearchDebounced, setPlayerSearchDebounced] = useState('');
@@ -10050,25 +10140,24 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // prediction still walks forward (trailing windows use only games
             // before game i). Reports BEFORE (modelProbSport — sport curve only)
             // vs AFTER (modelProb — + FAMILY_CALIB) on the exact same window.
-            const runFreshFamilyValidation = async () => {
-                if (nbaFreshValRunning || backtestRunning) return;
-                setNbaFreshValRunning(true);
-                try {
-                    const FRESH_START = Date.parse('2023-07-01T00:00:00Z');
-                    const FRESH_END = Date.parse('2024-12-20T00:00:00Z'); // exclusive — no overlap with the family-calib construction window
-                    let pool = [];
-                    if (backendUrl) {
-                        try {
-                            const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
-                            if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
-                        } catch (e) { /* */ }
-                    }
-                    if (pool.length < 20) { setNbaFreshVal({ error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() }); return; }
-                    // Pull enough seasons that predictions in mid-2023 still have a
-                    // real trailing history: 2021-22 .. current.
-                    const yrs = [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2, NBA_YR_PREV - 3, NBA_YR_PREV - 4];
-                    const glMap = await nbaGamelogsMulti([...new Set(pool.map(p => p.id))], yrs);
+            // Shared engine for a single-window family-calibration validation.
+            // Frozen params; nothing derived. Returns the shaped result object
+            // (or {error}). `toEndISO` is EXCLUSIVE.
+            const _computeFamCalibWindow = async (fromISO, toEndISO, winLabel) => {
+                const FRESH_START = Date.parse(fromISO + 'T00:00:00Z');
+                const FRESH_END = Date.parse(toEndISO + 'T00:00:00Z');
+                let pool = [];
+                if (backendUrl) {
+                    try {
+                        const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
+                        if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                    } catch (e) { /* */ }
+                }
+                if (pool.length < 20) return { error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() };
+                const yrs = [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2, NBA_YR_PREV - 3, NBA_YR_PREV - 4];
+                const glMap = await nbaGamelogsMulti([...new Set(pool.map(p => p.id))], yrs);
 
+                try {
                     const fvAcc = emptyBacktestAcc();
                     fvAcc.calibVal = emptyCalibVal();
                     let series = 0;
@@ -10126,9 +10215,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         primeFam[f] = b && b.n ? { n: b.n, hitRate: Math.round((b.hit / b.n) * 100) } : { n: 0, hitRate: null };
                     });
                     const allB = famBlock(cv.all);
+                    const mae = (blk, which) => blk ? calErr(which === 'before' ? blk.bucketsBefore : blk.bucketsAfter) : null;
+                    const psPrime = famBlock(cv.prime), psNon = famBlock(cv.nonPrime);
                     const result = {
-                        ranAt: Date.now(), window: { from: '2023-07-01', to: '2024-12-19' },
-                        note: 'Frozen params (GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB unchanged). Grade, Prime, confluence, edge, ranking not modified. The sport-level curve was fitted on data that includes this window; the FAMILY layer — the thing under test — was not.',
+                        ranAt: Date.now(), window: { from: fromISO, to: winLabel || toEndISO },
+                        note: 'Frozen params — GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB / Prime / confluence / edge / ranking all unchanged, nothing derived. Family calibration is Prime-scoped (non-Prime adj = 0). Walk-forward: every prediction uses only games before it.',
                         seriesEvaluated: series,
                         n: cv.all.n,
                         overall: { rate: pct(fvAcc._total) },
@@ -10158,8 +10249,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         // Prime-only scope check: after this commit the family
                         // adjustment fires for Prime predictions only.
                         primeSplit: {
-                            prime: famBlock(cv.prime),
-                            nonPrime: famBlock(cv.nonPrime),
+                            prime: psPrime && { ...psPrime, maeBefore: mae(psPrime, 'before'), maeAfter: mae(psPrime, 'after') },
+                            nonPrime: psNon && { ...psNon, maeBefore: mae(psNon, 'before'), maeAfter: mae(psNon, 'after') },
                             byFam: {
                                 scoring_combo: famBlock(cv.byFamPrime.scoring_combo),
                                 core_individual: famBlock(cv.byFamPrime.core_individual),
@@ -10167,32 +10258,60 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             }
                         }
                     };
-                    setNbaFreshVal(result);
-                    try { localStorage.setItem('beatsedge_nba_freshval_v1', JSON.stringify(result)); } catch (e) { }
-
-                    // ---- console dump ----------------------------------------
-                    console.log('%cNBA · Fresh OOS Family Calibration Validation  [2023-07-01 → 2024-12-19]  (frozen params, validation only)', 'font-weight:bold');
-                    console.log(`predictions ${result.n.toLocaleString()} · overall hit ${result.overall.rate}% · Prime n ${result.prime.n.toLocaleString()} hit ${result.prime.rate}%`);
-                    (console.table || console.log).call(console, {
-                        'ALL — before': { meanProb: result.before.meanProb, calibErr: result.before.calibrationError, brier: result.before.brier, logloss: result.before.logloss },
-                        'ALL — after': { meanProb: result.after.meanProb, calibErr: result.after.calibrationError, brier: result.after.brier, logloss: result.after.logloss, meanFamAdj: result.after.meanFamAdj }
-                    });
-                    ['scoring_combo', 'core_individual', 'volatile_counting'].forEach(f => {
-                        const x = result.family[f]; if (!x) return;
-                        console.log(`%c${f}`, 'font-weight:bold', {
-                            n: x.n, hitRate: x.hitRate,
-                            gapBefore: x.gapBefore, gapAfter: x.gapAfter,
-                            brierBefore: x.brierBefore, brierAfter: x.brierAfter,
-                            loglossBefore: x.loglossBefore, loglossAfter: x.loglossAfter,
-                            primeHitRate: result.primeFam[f] && result.primeFam[f].hitRate, primeN: result.primeFam[f] && result.primeFam[f].n
-                        });
-                    });
+                    return result;
                 } catch (e) {
-                    console.error('Fresh validation failed:', e);
-                    setNbaFreshVal({ error: String(e && e.message || e), ranAt: Date.now() });
-                } finally {
-                    setNbaFreshValRunning(false);
+                    return { error: String(e && e.message || e), ranAt: Date.now() };
                 }
+            };
+
+            const _famValConsole = (label, r) => {
+                if (!r || r.error) { console.warn(label, r && r.error); return; }
+                console.log(`%c${label}  [${r.window.from} → ${r.window.to}]  (frozen params, validation only)`, 'font-weight:bold');
+                console.log(`predictions ${r.n.toLocaleString()} · overall hit ${r.overall.rate}% · Prime n ${r.prime.n.toLocaleString()} hit ${r.prime.rate}%`);
+                (console.table || console.log).call(console, {
+                    'ALL — before': { meanProb: r.before.meanProb, calibMAE: r.before.calibrationError, brier: r.before.brier, logloss: r.before.logloss },
+                    'ALL — after': { meanProb: r.after.meanProb, calibMAE: r.after.calibrationError, brier: r.after.brier, logloss: r.after.logloss, meanFamAdj: r.after.meanFamAdj },
+                    'PRIME — before': r.primeSplit.prime && { calibMAE: r.primeSplit.prime.maeBefore, gap: r.primeSplit.prime.gapBefore, brier: r.primeSplit.prime.brierBefore, logloss: r.primeSplit.prime.loglossBefore },
+                    'PRIME — after': r.primeSplit.prime && { calibMAE: r.primeSplit.prime.maeAfter, gap: r.primeSplit.prime.gapAfter, brier: r.primeSplit.prime.brierAfter, logloss: r.primeSplit.prime.loglossAfter },
+                    'NON-PRIME — before': r.primeSplit.nonPrime && { calibMAE: r.primeSplit.nonPrime.maeBefore, gap: r.primeSplit.nonPrime.gapBefore, brier: r.primeSplit.nonPrime.brierBefore, logloss: r.primeSplit.nonPrime.loglossBefore },
+                    'NON-PRIME — after': r.primeSplit.nonPrime && { calibMAE: r.primeSplit.nonPrime.maeAfter, gap: r.primeSplit.nonPrime.gapAfter, brier: r.primeSplit.nonPrime.brierAfter, logloss: r.primeSplit.nonPrime.loglossAfter },
+                });
+                (console.table || console.log).call(console, ['scoring_combo', 'core_individual', 'volatile_counting'].reduce((o, f) => {
+                    const x = r.primeSplit.byFam[f];
+                    if (x) o[f + ' · Prime'] = { n: x.n, hit: x.hitRate, gapBefore: x.gapBefore, gapAfter: x.gapAfter, meanAdj: x.meanFamAdj };
+                    return o;
+                }, {}));
+            };
+
+            const runFreshFamilyValidation = async () => {
+                if (nbaFreshValRunning || backtestRunning || nbaFamStabilityRunning) return;
+                setNbaFreshValRunning(true);
+                try {
+                    const r = await _computeFamCalibWindow('2023-07-01', '2024-12-20', '2024-12-19');
+                    setNbaFreshVal(r);
+                    try { localStorage.setItem('beatsedge_nba_freshval_v1', JSON.stringify(r)); } catch (e) { }
+                    _famValConsole('NBA · Fresh OOS Family Calibration Validation', r);
+                } catch (e) {
+                    setNbaFreshVal({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally { setNbaFreshValRunning(false); }
+            };
+
+            // ── NBA · Final Locked Family Calibration Validation ─────────────
+            // The LATEST chronological window that was NOT used to derive
+            // FAMILY_CALIB (which was built from the period AFTER 2024-12-19):
+            // 2024-07-01 → 2024-12-19. Same frozen params, walk-forward,
+            // before (sport curve) vs after (Prime-only FAMILY_CALIB).
+            const runFinalLockedValidation = async () => {
+                if (nbaFinalValRunning || backtestRunning || nbaFreshValRunning || nbaFamStabilityRunning) return;
+                setNbaFinalValRunning(true);
+                try {
+                    const r = await _computeFamCalibWindow('2024-07-01', '2024-12-20', '2024-12-19');
+                    setNbaFinalVal(r);
+                    try { localStorage.setItem('beatsedge_nba_finalval_v1', JSON.stringify(r)); } catch (e) { }
+                    _famValConsole('NBA · Final Locked Family Calibration Validation', r);
+                } catch (e) {
+                    setNbaFinalVal({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally { setNbaFinalValRunning(false); }
             };
 
             // ── NBA · Stat Family Calibration Stability ─────────────────────
@@ -13101,6 +13220,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaFamStability={nbaFamStability}
                                 nbaFamStabilityRunning={nbaFamStabilityRunning}
                                 onRunFamStability={runFamilyStability}
+                                nbaFinalVal={nbaFinalVal}
+                                nbaFinalValRunning={nbaFinalValRunning}
+                                onRunFinalVal={runFinalLockedValidation}
                                 isPro={isPro}
                                 onUnlock={onUnlock}
                                 dataUpdatedAt={dataUpdatedAt}
