@@ -3740,7 +3740,7 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {} }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {} }; }
 
         // Stat -> family, for the Prime diagnostic. "combo" = has scoring in it
         // (more moving parts, edge compounds); "core" = the reliable single
@@ -4953,6 +4953,68 @@
                                                     </table>
                                                 </div>
                                             )}
+                                        </div>
+                                    );
+                                })()}
+                                {bt.primeFamGrade && (() => {
+                                    const FAMS = [['combo', 'Scoring / combo'], ['core', 'Core individual'], ['volatile', 'Volatile counting']];
+                                    const inS = bt.inSample && bt.inSample.primeFamGrade;
+                                    const clsFor = (rate) => rate == null ? '' : rate >= 58 ? 'calib-ok' : rate >= 52 ? 'calib-under' : 'calib-over';
+                                    const gapCls = (g) => g == null ? '' : Math.abs(g) <= 3 ? 'calib-ok' : g < 0 ? 'calib-over' : 'calib-under';
+                                    const anyRow = FAMS.some(([f]) => (bt.primeFamGrade[f] || []).some(r => r.n));
+                                    if (!anyRow) return null;
+                                    const ctrl = bt.primeFamGradeControl || {};
+                                    const fe = bt.primeFamEdge || {};
+                                    const EBL = { e11: '11–16%', e16: '16–22%', e22: '22–30%', e30: '30%+' };
+                                    return (
+                                        <div className="backtest-calib">
+                                            <div className="backtest-calib-title">Prime · family × grade{bt.oosFrom ? ' — out-of-sample' : ''}</div>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th>Family · grade</th><th>Hit</th>{inS ? <th>In-sample</th> : null}<th>n</th><th>Mean prob</th><th>Gap</th></tr></thead>
+                                                <tbody>
+                                                    {FAMS.flatMap(([f, lbl]) => (bt.primeFamGrade[f] || []).filter(r => r.n >= 30).map(r => {
+                                                        const ir = inS && (inS[f] || []).find(x => x.grade === r.grade);
+                                                        return (
+                                                            <tr key={f + r.grade}>
+                                                                <td>{lbl} · {r.grade}</td>
+                                                                <td className={clsFor(r.rate)}>{r.rate == null ? '—' : r.rate + '%'}</td>
+                                                                {inS ? <td style={{ color: 'var(--text-muted)' }}>{ir && ir.rate != null ? ir.rate + '%' : '—'}</td> : null}
+                                                                <td>{r.n.toLocaleString()}</td>
+                                                                <td>{r.meanProb == null ? '—' : r.meanProb + '%'}</td>
+                                                                <td className={gapCls(r.gap)}>{r.gap == null ? '—' : (r.gap >= 0 ? '+' : '') + r.gap}</td>
+                                                            </tr>
+                                                        );
+                                                    }))}
+                                                </tbody>
+                                            </table>
+                                            {Object.keys(fe).length > 0 && (
+                                                <div style={{ marginTop: '0.5rem', overflowX: 'auto' }}>
+                                                    <table className="backtest-calib-tbl backtest-xtab">
+                                                        <thead><tr><th>Edge bucket</th><th>Combo</th><th>Core</th><th>Volatile</th></tr></thead>
+                                                        <tbody>
+                                                            {['e11', 'e16', 'e22', 'e30'].map(eb => {
+                                                                const c = fe['combo|' + eb], co = fe['core|' + eb], v = fe['volatile|' + eb];
+                                                                if (!c && !co && !v) return null;
+                                                                const fmt = x => x ? `${x.rate}% (${x.n.toLocaleString()})` : '—';
+                                                                return <tr key={eb}><td>{EBL[eb]}</td><td>{fmt(c)}</td><td>{fmt(co)}</td><td>{fmt(v)}</td></tr>;
+                                                            }).filter(Boolean)}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                            <div className="backtest-calib-note">
+                                                {FAMS.every(([f]) => (bt.primeFamGrade[f] || []).filter(r => r.n >= 30).every(r => r.grade === 'A'))
+                                                    ? 'Note: a promoted Prime pick almost always already grades A on its own (high confluence + a large edge push gradeScore over the A cutoff), so "family × grade" here is really "family, within grade A". The looser "C + high-conf + large-edge" 70% seen earlier is the coarse-tier cross-tab cell, a wider cohort than the Prime flag. '
+                                                    : ''}
+                                                {ctrl.byGrade == null
+                                                    ? 'Not enough family × grade sample to control for grade yet.'
+                                                    : `Holding GRADE fixed, combo beats volatile by ~${ctrl.byGrade} pts on average across grades` +
+                                                      (ctrl.byGradeEdge != null ? `; holding grade AND edge bucket fixed (${ctrl.gradeEdgeCells} cells) it's ~${ctrl.byGradeEdge} pts.` : '.') +
+                                                      ` ${Math.abs(ctrl.byGrade) >= 5 || (ctrl.byGradeEdge != null && Math.abs(ctrl.byGradeEdge) >= 5)
+                                                          ? 'The family advantage survives a grade control — combo Prime picks are stronger at the SAME letter grade, edge size and confluence. Stat family is carrying information the grade does not.'
+                                                          : 'The family advantage mostly collapses once grade is held fixed — the letter was already capturing it.'}`}
+                                                {' '}Gap = actual − mean stated probability, within each family/grade Prime cell.
+                                            </div>
                                         </div>
                                     );
                                 })()}
@@ -9182,12 +9244,18 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 const pf = acc.primeFam[fam] || (acc.primeFam[fam] = { n: 0, hit: 0, sumEdge: 0, sumConf: 0 });
                                 pf.n++; if (hit) pf.hit++; pf.sumEdge += eSig; pf.sumConf += conf;
                                 // Control cells: does family still separate once
-                                // edge size and confluence share are held fixed?
+                                // edge size, confluence share, and GRADE are held fixed?
                                 const eb = eSig < 16 ? 'e11' : eSig < 22 ? 'e16' : eSig < 30 ? 'e22' : 'e30';
                                 const cb = conf < 0.75 ? 'c67' : conf < 0.86 ? 'c75' : 'c86';
-                                const k = fam + '|' + eb + '|' + cb;
-                                const pc = acc.primeFamCell[k] || (acc.primeFamCell[k] = { n: 0, hit: 0 });
+                                const pc = acc.primeFamCell[fam + '|' + eb + '|' + cb] || (acc.primeFamCell[fam + '|' + eb + '|' + cb] = { n: 0, hit: 0 });
                                 pc.n++; if (hit) pc.hit++;
+                                const fgk = fam + '|' + e.grade;
+                                const fg = acc.primeFamGrade[fgk] || (acc.primeFamGrade[fgk] = { n: 0, hit: 0, sumProb: 0 });
+                                fg.n++; if (hit) fg.hit++; fg.sumProb += (e.modelProbPct || 0);
+                                const fe = acc.primeFamEdge[fam + '|' + eb] || (acc.primeFamEdge[fam + '|' + eb] = { n: 0, hit: 0 });
+                                fe.n++; if (hit) fe.hit++;
+                                const fge = acc.primeFamGradeEdge[fam + '|' + e.grade + '|' + eb] || (acc.primeFamGradeEdge[fam + '|' + e.grade + '|' + eb] = { n: 0, hit: 0 });
+                                fge.n++; if (hit) fge.hit++;
                             }
                         }
                         const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
@@ -9448,6 +9516,44 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         const b = acc.primeFamCell[k];
                         if (b.n >= 40) primeFamCells[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
                     });
+                    // Prime × family × grade — grade A/B/C/D WITHIN Prime per family,
+                    // with mean stated probability + the calibration gap (actual −
+                    // stated) so we can see whether family survives a grade control.
+                    const btPrimeFamGrade = (a) => {
+                        const out = {};
+                        FAM_ORDER.forEach(f => {
+                            out[f] = ['A', 'B', 'C', 'D'].map(g => {
+                                const b = a.primeFamGrade[f + '|' + g];
+                                if (!b || !b.n) return { grade: g, n: 0, rate: null, meanProb: null, gap: null };
+                                const rate = Math.round((b.hit / b.n) * 100);
+                                const meanProb = Math.round((b.sumProb / b.n) * 10) / 10;
+                                return { grade: g, n: b.n, rate, meanProb, gap: Math.round((rate - meanProb) * 10) / 10 };
+                            });
+                        });
+                        return out;
+                    };
+                    const primeFamGrade = btPrimeFamGrade(acc);
+                    const primeFamEdge = {};
+                    Object.keys(acc.primeFamEdge).forEach(k => {
+                        const b = acc.primeFamEdge[k];
+                        if (b.n >= 40) primeFamEdge[k] = { n: b.n, rate: Math.round((b.hit / b.n) * 100) };
+                    });
+                    // combo − volatile gap averaged over (grade) and over (grade×edge),
+                    // to see if the family edge survives a grade control too.
+                    const _cvByGrade = ['A', 'B', 'C', 'D'].map(g => {
+                        const c = acc.primeFamGrade['combo|' + g], v = acc.primeFamGrade['volatile|' + g];
+                        return (c && v && c.n >= 40 && v.n >= 40) ? Math.round((c.hit / c.n - v.hit / v.n) * 100) : null;
+                    }).filter(x => x != null);
+                    const _cvByGradeEdge = [];
+                    ['A', 'B', 'C', 'D'].forEach(g => ['e11', 'e16', 'e22', 'e30'].forEach(eb => {
+                        const c = acc.primeFamGradeEdge['combo|' + g + '|' + eb], v = acc.primeFamGradeEdge['volatile|' + g + '|' + eb];
+                        if (c && v && c.n >= 30 && v.n >= 30) _cvByGradeEdge.push(Math.round((c.hit / c.n - v.hit / v.n) * 100));
+                    }));
+                    const primeFamGradeControl = {
+                        byGrade: _cvByGrade.length ? Math.round(_cvByGrade.reduce((a, b) => a + b, 0) / _cvByGrade.length) : null,
+                        byGradeEdge: _cvByGradeEdge.length ? Math.round(_cvByGradeEdge.reduce((a, b) => a + b, 0) / _cvByGradeEdge.length) : null,
+                        gradeEdgeCells: _cvByGradeEdge.length
+                    };
 
                     // Held-out out-of-sample split (NBA): the tables above are the
                     // post-holdoutTs games the cutoff/calibration fit never saw.
@@ -9464,12 +9570,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             grades: ig,
                             profiles: btProfiles(inSampleAcc),
                             primeByStat: btPrimeByStat(inSampleAcc),
-                            primeFamily: btPrimeFamily(inSampleAcc)
+                            primeFamily: btPrimeFamily(inSampleAcc),
+                            primeFamGrade: btPrimeFamGrade(inSampleAcc)
                         };
                     }
                     const result = {
                         sport: selectedSport, ranAt: Date.now(), seriesEvaluated: evaluated, cutoffs: cutoffs || null,
-                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat, primeFamily, primeFamCells,
+                        oosFrom: holdoutTs || null, inSample, profiles, primeByStat, primeFamily, primeFamCells, primeFamGrade, primeFamEdge, primeFamGradeControl,
                         total: { n: acc._total.n, rate: acc._total.n ? Math.round((acc._total.hit / acc._total.n) * 100) : null },
                         grades, factors, prob, probRaw, align, gradeConf, confEdge, gce,
                         probCurve: (PROB_CALIB && PROB_CALIB[selectedSport]) || null
