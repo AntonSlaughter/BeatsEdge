@@ -2576,7 +2576,60 @@
         }
         .research-side-label.over { color: var(--success-green); }
         .research-side-label.under { color: var(--danger-red); }
+        .research-side-label.prime { color: #ff8a3d; }
         .research-side-label:first-of-type { margin-top: 0.5rem; }
+
+        /* ── ⭐ Prime Plays section (Item 12 — UI only, no model change) ── */
+        .prime-section { position: relative; margin: 0.5rem 0 0.5rem; }
+        .prime-section.pro-locked { overflow: hidden; border-radius: 12px; max-height: 360px; }
+        .prime-section.pro-locked .prime-intro,
+        .prime-section.pro-locked .prime-defs,
+        .prime-section.pro-locked .prime-list { filter: blur(7px); opacity: 0.45; pointer-events: none; user-select: none; }
+        .prime-section.pro-locked .pro-lock-overlay { align-items: flex-start; padding-top: 3.5rem; }
+        .prime-intro { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin-bottom: 0.6rem; }
+        .prime-intro-lead { flex-basis: 100%; font-size: 0.9rem; color: var(--text-secondary); }
+        .prime-chip {
+            display: inline-block; padding: 0.15em 0.6em; border-radius: 6px;
+            background: rgba(255,138,61,0.14); border: 1px solid #ff8a3d;
+            color: #ff8a3d; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em;
+        }
+        .prime-chip-desc { font-size: 0.8rem; color: var(--text-muted); }
+        .prime-defs {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.35rem 1rem; margin-bottom: 0.9rem;
+            font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;
+        }
+        .prime-defs strong { color: var(--text-primary); }
+        .prime-list { display: flex; flex-direction: column; gap: 0.6rem; }
+        .prime-card {
+            border: 1px solid rgba(255,138,61,0.35); border-left: 3px solid #ff8a3d;
+            border-radius: 10px; background: linear-gradient(160deg, rgba(255,138,61,0.06), var(--bg-raised) 60%);
+            overflow: hidden;
+        }
+        .prime-card-main {
+            display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 0.9rem; cursor: pointer;
+        }
+        .prime-card-main:hover { background: rgba(255,138,61,0.05); }
+        .prime-card-rank { font-weight: 800; color: #ff8a3d; font-size: 0.9rem; white-space: nowrap; }
+        .prime-card-id { flex: 1; min-width: 0; }
+        .prime-card-player { font-weight: 700; color: var(--text-primary); }
+        .prime-card-prop { font-size: 0.85rem; color: var(--text-secondary); }
+        .prime-card-stats { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+        .prime-stat { display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+        .prime-stat-v { font-weight: 800; color: var(--text-primary); font-size: 0.95rem; }
+        .prime-stat-k { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+        .prime-why { border-top: 1px solid rgba(255,138,61,0.2); }
+        .prime-why > summary {
+            list-style: none; cursor: pointer; padding: 0.5rem 0.9rem;
+            font-size: 0.8rem; font-weight: 700; color: #ff8a3d;
+        }
+        .prime-why > summary::-webkit-details-marker { display: none; }
+        .prime-why > summary::before { content: '▸ '; }
+        .prime-why[open] > summary::before { content: '▾ '; }
+        .prime-why-body { padding: 0 0.9rem 0.8rem; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.55; }
+        .prime-why-line { margin-top: 0.3rem; }
+        .prime-why-line strong { color: var(--text-primary); }
+        .prime-more { margin-top: 0.6rem; font-size: 0.78rem; color: var(--text-muted); text-align: center; }
 
         /* ── Free → Pro soft gate ───────────────────────────────────── */
         .view-pro-gate { max-width: 640px; }
@@ -3863,6 +3916,32 @@
             return { overs: take(overs, 2), unders: take(unders, 2) };
         }
 
+        // ⭐ Prime Plays (Item 12 — presentation only). Every prop the LIVE
+        // model already flags `prime` (high factor confluence + large model
+        // edge — see `primeCorner` in calculateEdgeScore), best one per player,
+        // ranked the same way as the top picks. No new logic: this just reads
+        // `edge.prime` off the existing engine output.
+        function findPrimePicks(players) {
+            const rank = (e) => [GRADE_RANK[e.grade], -e.gradeScore, -Math.abs(e.edge)];
+            const rows = [];
+            (players || []).forEach(player => {
+                if (player.status === 'OUT' || !Array.isArray(player.props) || !player.props.length) return;
+                if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
+                let best = null;
+                player.props.forEach((prop, idx) => {
+                    if (prop.altLine || prop.crossBook) return;
+                    const edge = calculateEdgeScore(player, prop);
+                    if (!edge.prime) return;
+                    if (!best) { best = { player, prop, propIdx: idx, edge }; return; }
+                    const ra = rank(edge), rb = rank(best.edge);
+                    for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) { if (ra[i] < rb[i]) best = { player, prop, propIdx: idx, edge }; break; } }
+                });
+                if (best) rows.push(best);
+            });
+            rows.sort((a, b) => { const ra = rank(a.edge), rb = rank(b.edge); for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) return ra[i] - rb[i]; } return 0; });
+            return rows;
+        }
+
         const SPORT_LABELS = { nba: 'NBA', nfl: 'NFL', nhl: 'NHL', mlb: 'MLB', ncaaf: 'CFB' };
         const SPORT_ICONS = { nba: '🏀', nfl: '🏈', nhl: '🏒', mlb: '⚾', ncaaf: '🎓' };
 
@@ -5075,6 +5154,9 @@
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
             const hasAny = research.overs.length + research.unders.length > 0;
+            const primePicks = !loading && Array.isArray(playersData) && playersData.length > 0
+                ? findPrimePicks(playersData)
+                : [];
 
             const verdictClass = (label) => label === 'GREEN MATCHUP' ? 'green' : (label === 'RED MATCHUP' ? 'red' : 'mixed');
             const otherReadySports = Object.keys(SPORT_STATUS).filter(s => SPORT_STATUS[s] === 'ready' && s !== selectedSport);
@@ -5094,6 +5176,41 @@
                 }, 1500);
                 return () => { gone = true; clearTimeout(t); };
             }, [backendUrl, selectedSport, dataUpdatedAt]);
+
+            // Compact row for the ⭐ Prime Plays section. Reads only existing
+            // engine output — no Prime logic here.
+            const PrimeCard = ({ p, n }) => {
+                const e = p.edge;
+                const why = e.factors.filter(f => f.supports).map(f => f.name);
+                const confPct = e.totalFactors ? Math.round(e.greenCount / e.totalFactors * 100) : 0;
+                return (
+                    <div className="prime-card">
+                        <div className="prime-card-main" onClick={() => onOpenPick(p.player, p.propIdx)} title="Tap for the full research breakdown">
+                            <div className="prime-card-rank">⭐ {n}</div>
+                            <div className="prime-card-id">
+                                <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
+                                <div className="prime-card-prop">{p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}</div>
+                            </div>
+                            <div className="prime-card-stats">
+                                <div className="prime-stat"><span className="prime-stat-v">{e.modelProbPct}%</span><span className="prime-stat-k">Model prob</span></div>
+                                <div className="prime-stat"><span className="prime-stat-v">{e.edgeSignalPct >= 0 ? '+' : ''}{e.edgeSignalPct}%</span><span className="prime-stat-k">Model edge</span></div>
+                                <div className={`grade-badge-sm ${GRADE_META[e.grade].cls}`}>{e.grade}</div>
+                                <div className="prime-stat"><span className="prime-stat-v">{e.greenCount}/{e.totalFactors}</span><span className="prime-stat-k">Confluence</span></div>
+                            </div>
+                        </div>
+                        <details className="prime-why">
+                            <summary>Why Prime?</summary>
+                            <div className="prime-why-body">
+                                <div className="prime-why-line">
+                                    Factor confluence <strong>{e.greenCount}/{e.totalFactors}</strong> ({confPct}%) — at or above the two-thirds Prime bar. Model edge <strong>{e.edgeSignalPct >= 0 ? '+' : ''}{e.edgeSignalPct}%</strong> of the line — at or above the +11% Prime bar.
+                                </div>
+                                <div className="prime-why-line">Supporting factors: {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}</div>
+                                <div className="prime-why-line">Model projects <strong>{e.projection}</strong> vs the <strong>{p.prop.line}</strong> line ({e.edge >= 0 ? '+' : ''}{e.edge}) · {e.matchupLabel}</div>
+                            </div>
+                        </details>
+                    </div>
+                );
+            };
 
             const PickCard = ({ p, n }) => {
                 const why = p.edge.factors.filter(f => f.supports).map(f => f.name);
@@ -6576,6 +6693,37 @@
                             );
                         })()}
                     </div>
+
+                    {!loading && primePicks.length > 0 && (
+                        <div className={`prime-section ${!isPro ? 'pro-locked' : ''}`}>
+                            {!isPro && (
+                                <div className="pro-lock-overlay">
+                                    <ProLock compact title="⭐ Prime Plays"
+                                        text="The model's highest-conviction signals — high factor confluence plus a meaningful edge over the line."
+                                        onUnlock={onUnlock} />
+                                </div>
+                            )}
+                            <div className="research-side-label prime">⭐ Prime Plays</div>
+                            <div className="prime-intro">
+                                <div className="prime-intro-lead">Highest-conviction research signals identified by the BeatsEdge model.</div>
+                                <span className="prime-chip">PRIME</span>
+                                <span className="prime-chip-desc">High factor confluence + meaningful model edge</span>
+                            </div>
+                            <div className="prime-defs">
+                                <div><strong>⭐ Prime</strong> — high-confluence + large-model-edge signal</div>
+                                <div><strong>Grade</strong> — the A / B / C / D model grade</div>
+                                <div><strong>Factor confluence</strong> — how many available factors agree</div>
+                                <div><strong>Model probability</strong> — estimated probability the side hits</div>
+                                <div><strong>Model edge</strong> — projection vs. the line</div>
+                            </div>
+                            <div className="prime-list">
+                                {primePicks.slice(0, isPro ? 15 : 4).map((p, i) => <PrimeCard key={p.player.id + ':' + p.propIdx} p={p} n={i + 1} />)}
+                            </div>
+                            {isPro && primePicks.length > 15 && (
+                                <div className="prime-more">Showing the 15 top-ranked of {primePicks.length} Prime plays on this {SPORT_LABELS[selectedSport]} slate.</div>
+                            )}
+                        </div>
+                    )}
 
                     {loading ? (
                         <div className="top-picks-grid">
