@@ -7172,20 +7172,21 @@
                             const slate = await fetchCfbSlate(selectedDate);
                             if (!slate.slots.length) {
                                 if (!stale()) setCfbSlateSource('sample');
-                                players = [];
+                                players = generateMockPlayerData('ncaaf');
                             } else if (!proplineKey || !backendUrl) {
                                 setCfbSlateSource('sample');
                                 setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real CFB lines.' : 'PropLine needs "Your Backend" URL set too.');
-                                players = [];
+                                players = generateMockPlayerData('ncaaf');
                             } else {
                                 players = await fetchCfbPropLines(slate, stale);
                                 if (stale()) return;
                                 setCfbSlateSource(players.length ? 'live' : 'sample');
+                                if (!players.length) players = generateMockPlayerData('ncaaf');
                             }
                         } catch (err) {
                             console.warn('CFB slate failed:', err.message);
                             if (!stale()) setCfbSlateSource('sample');
-                            players = [];
+                            players = generateMockPlayerData('ncaaf');
                         }
                     } else if (selectedSport === 'nba') {
                         setMlbSlateSource('checking');
@@ -12622,6 +12623,103 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     }
                 ];
 
+                // Sample CFB slate — shown when there's no live PropLine feed
+                // (mirrors the nba/nfl/mlb mock fallback). Illustrative only.
+                const ncaafData = [
+                    {
+                        id: 301, sport: 'ncaaf', name: 'Deuce Whitfield', team: 'UGA', opponent: 'TENN',
+                        position: 'QB', gameTime: 'Sat 3:30 PM ET', status: 'ACTIVE', injury: null,
+                        isHomeTonight: true, paceRating: 'favorable', paceDetail: 'TENN plays a fast, up-tempo offense — more possessions both ways',
+                        props: [
+                            { type: 'Passing Yards', statKey: 'passYds', line: 275.5, hitRate: 62, odds: -110, direction: 'over' },
+                            { type: 'Pass TDs', statKey: 'passTds', line: 1.5, hitRate: 68, odds: -130, direction: 'over' }
+                        ],
+                        stats: {
+                            recent: { hitRate: 60, avg: 288, median: 279, range: [190, 402], games: 22 },
+                            last5: { hitRate: 60, avg: 296, games: 5 }, last10: { hitRate: 60, avg: 284, games: 10 },
+                            last20: { hitRate: 58, avg: 281, games: 20 }, season: { hitRate: 64, avg: 286, games: 14 },
+                            vsOpp: { hitRate: 67, avg: 305, games: 3 }
+                        },
+                        gameLog: [
+                            { date: '2026-09-05', opponent: 'CLEM', points: 312, line: 275.5 },
+                            { date: '2026-08-30', opponent: 'FSU', points: 268, line: 275.5 },
+                            { date: '2025-11-29', opponent: 'GT', points: 244, line: 275.5 },
+                            { date: '2025-11-22', opponent: 'UMASS', points: 358, line: 275.5 },
+                            { date: '2025-11-15', opponent: 'TENN', points: 297, line: 275.5 }
+                        ],
+                        opponentDefense: null
+                    },
+                    {
+                        id: 302, sport: 'ncaaf', name: 'Marcus Keaton', team: 'OSU', opponent: 'MICH',
+                        position: 'RB', gameTime: 'Sat 12:00 PM ET', status: 'ACTIVE', injury: null,
+                        isHomeTonight: false, paceRating: 'neutral', paceDetail: 'MICH plays a grinding, run-heavy pace — near league average possessions',
+                        props: [
+                            { type: 'Rush Yards', statKey: 'rushYds', line: 95.5, hitRate: 58, odds: -110, direction: 'over' },
+                            { type: 'Rush Attempts', statKey: 'rushAttempts', line: 18.5, hitRate: 61, odds: -115, direction: 'over' }
+                        ],
+                        stats: {
+                            recent: { hitRate: 56, avg: 104, median: 98, range: [41, 187], games: 20 },
+                            last5: { hitRate: 60, avg: 111, games: 5 }, last10: { hitRate: 60, avg: 106, games: 10 },
+                            last20: { hitRate: 55, avg: 101, games: 20 }, season: { hitRate: 57, avg: 103, games: 13 },
+                            vsOpp: { hitRate: 50, avg: 88, games: 2 }
+                        },
+                        gameLog: [
+                            { date: '2026-09-05', opponent: 'TEX', points: 122, line: 95.5 },
+                            { date: '2026-08-30', opponent: 'ND', points: 87, line: 95.5 },
+                            { date: '2025-11-29', opponent: 'MICH', points: 76, line: 95.5 },
+                            { date: '2025-11-22', opponent: 'RUTG', points: 141, line: 95.5 },
+                            { date: '2025-11-15', opponent: 'IND', points: 98, line: 95.5 }
+                        ],
+                        opponentDefense: null
+                    },
+                    {
+                        id: 303, sport: 'ncaaf', name: 'Tyrell Bishop', team: 'TEX', opponent: 'OU',
+                        position: 'WR', gameTime: 'Sat 3:30 PM ET', status: 'ACTIVE', injury: null,
+                        isHomeTonight: true, paceRating: 'favorable', paceDetail: 'OU has leaked chunk plays to the perimeter all year',
+                        props: [
+                            { type: 'Receiving Yards', statKey: 'recYds', line: 78.5, hitRate: 55, odds: -110, direction: 'over' },
+                            { type: 'Receptions', statKey: 'receptions', line: 5.5, hitRate: 57, odds: -115, direction: 'over' }
+                        ],
+                        stats: {
+                            recent: { hitRate: 54, avg: 84, median: 77, range: [22, 165], games: 21 },
+                            last5: { hitRate: 60, avg: 91, games: 5 }, last10: { hitRate: 50, avg: 82, games: 10 },
+                            last20: { hitRate: 55, avg: 80, games: 20 }, season: { hitRate: 54, avg: 83, games: 13 },
+                            vsOpp: { hitRate: 67, avg: 101, games: 3 }
+                        },
+                        gameLog: [
+                            { date: '2026-09-05', opponent: 'OSU', points: 96, line: 78.5 },
+                            { date: '2026-08-30', opponent: 'MICH', points: 62, line: 78.5 },
+                            { date: '2025-11-29', opponent: 'TAMU', points: 118, line: 78.5 },
+                            { date: '2025-11-22', opponent: 'ARK', points: 71, line: 78.5 },
+                            { date: '2025-11-15', opponent: 'OU', points: 84, line: 78.5 }
+                        ],
+                        opponentDefense: null
+                    },
+                    {
+                        id: 304, sport: 'ncaaf', name: 'Jordan Ellison', team: 'BAMA', opponent: 'LSU',
+                        position: 'WR', gameTime: 'Sat 7:00 PM ET', status: 'ACTIVE', injury: null,
+                        isHomeTonight: false, paceRating: 'neutral', paceDetail: 'LSU plays roughly average tempo',
+                        props: [
+                            { type: 'Receptions', statKey: 'receptions', line: 5.5, hitRate: 59, odds: -115, direction: 'over' },
+                            { type: 'Receiving Yards', statKey: 'recYds', line: 71.5, hitRate: 56, odds: -110, direction: 'over' }
+                        ],
+                        stats: {
+                            recent: { hitRate: 58, avg: 6.4, median: 6, range: [2, 12], games: 22 },
+                            last5: { hitRate: 60, avg: 6.8, games: 5 }, last10: { hitRate: 60, avg: 6.5, games: 10 },
+                            last20: { hitRate: 57, avg: 6.2, games: 20 }, season: { hitRate: 59, avg: 6.5, games: 14 },
+                            vsOpp: { hitRate: 60, avg: 7.1, games: 3 }
+                        },
+                        gameLog: [
+                            { date: '2026-09-05', opponent: 'WISC', points: 8, line: 5.5 },
+                            { date: '2026-08-30', opponent: 'FSU', points: 5, line: 5.5 },
+                            { date: '2025-11-29', opponent: 'AUB', points: 7, line: 5.5 },
+                            { date: '2025-11-22', opponent: 'OU', points: 6, line: 5.5 },
+                            { date: '2025-11-15', opponent: 'LSU', points: 9, line: 5.5 }
+                        ],
+                        opponentDefense: null
+                    }
+                ];
+
                 const mlbData = [
                     {
                         id: 201,
@@ -12784,7 +12882,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     }
                 ];
 
-                const bySport = { nba: nbaData, nfl: nflData, mlb: mlbData, nhl: nhlData };
+                const bySport = { nba: nbaData, nfl: nflData, mlb: mlbData, nhl: nhlData, ncaaf: ncaafData };
                 // Tag every sample player so the slate cache / "LIVE" pills never
                 // treat a mock fallback as a real slate. And — since a mock
                 // player carries ONE game log / stats block (scaled for its
