@@ -2638,6 +2638,45 @@
         .prime-why-line strong { color: var(--text-primary); }
         .prime-more { margin-top: 0.6rem; font-size: 0.78rem; color: var(--text-muted); text-align: center; }
 
+        /* ── Private Fantasy Research Builder (Item 14) ─────────────────── */
+        .fb-view { max-width: 1100px; }
+        .fb-private {
+            display: inline-block; margin-left: 0.5rem; padding: 0.1em 0.55em; border-radius: 5px;
+            background: rgba(224,49,49,0.14); border: 1px solid var(--accent-red);
+            color: var(--accent-red); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.08em; vertical-align: middle;
+        }
+        .fb-input {
+            background: var(--bg-secondary); border: 1px solid var(--border-hairline, #2a2f3a);
+            border-radius: 8px; color: var(--text-primary); padding: 0.55rem 0.7rem; font-size: 0.85rem; width: 100%;
+            font-family: inherit;
+        }
+        .fb-textarea { resize: vertical; min-height: 70px; }
+        .fb-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0 0.5rem; }
+        .fb-inp-label { font-size: 0.76rem; color: var(--text-muted); margin-bottom: 0.35rem; }
+        .fb-sec-title {
+            font-size: 0.92rem; font-weight: 800; color: var(--text-primary);
+            margin: 1.6rem 0 0.5rem; padding-top: 0.9rem; border-top: 1px solid var(--border-hairline, #2a2f3a);
+        }
+        .fb-note-inline { font-weight: 400; font-size: 0.75rem; color: var(--text-muted); }
+        .fb-note { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; margin: 0.4rem 0; }
+        .fb-insuff { color: var(--text-muted); font-style: italic; }
+        .fb-sortbar { font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.4rem; }
+        .fb-sortbtn {
+            margin-left: 0.4rem; padding: 0.15em 0.55em; border-radius: 5px; cursor: pointer;
+            background: var(--bg-secondary); border: 1px solid var(--border-hairline, #2a2f3a); color: var(--text-secondary);
+            font-size: 0.75rem; text-transform: capitalize;
+        }
+        .fb-sortbtn.active { background: rgba(255,138,61,0.14); border-color: #ff8a3d; color: #ff8a3d; font-weight: 700; }
+        .fb-tbl { font-size: 0.82rem; }
+        .fb-tbl .fb-name { color: var(--accent-red); cursor: pointer; font-weight: 700; white-space: nowrap; }
+        .fb-tbl .fb-name:hover { text-decoration: underline; }
+        .fb-prime-row { background: rgba(255,138,61,0.06); }
+        .fb-prime-chip { color: #ff8a3d; font-weight: 800; font-size: 0.72rem; white-space: nowrap; }
+        .fb-tbl .fb-pos { color: var(--success-green, #4caf50); font-weight: 700; }
+        .fb-tbl .fb-neg { color: var(--danger-red); font-weight: 700; }
+        tr.fb-pos td:first-child { border-left: 2px solid var(--success-green, #4caf50); }
+        tr.fb-neg td:first-child { border-left: 2px solid var(--danger-red); }
+
         /* ── Free → Pro soft gate ───────────────────────────────────── */
         .view-pro-gate { max-width: 640px; }
         .view-pro-gate .pro-lock-card { margin-top: 1.25rem; }
@@ -3951,6 +3990,148 @@
 
         const SPORT_LABELS = { nba: 'NBA', nfl: 'NFL', nhl: 'NHL', mlb: 'MLB', ncaaf: 'CFB' };
         const SPORT_ICONS = { nba: '🏀', nfl: '🏈', nhl: '🏒', mlb: '⚾', ncaaf: '🎓' };
+
+        // ════════════════════════════════════════════════════════════════════
+        //  FANTASY PROJECTION LAYER  (Item 14 — PRIVATE research builder)
+        //  Completely separate from the BeatsEdge model. Everything here is a
+        //  pure READ of existing engine output (`calculateEdgeScore`) + existing
+        //  player fields. It NEVER writes to any engine state and never touches
+        //  the locked calibration, Prime, or Next-Man-Up logic.
+        //  All historical numbers come from the player's OWN prior game logs
+        //  (walk-forward safe — no future info). Where a feed is missing (age /
+        //  fouls / salary / ownership) the builder shows "Insufficient sample"
+        //  rather than inventing a value.
+        // ════════════════════════════════════════════════════════════════════
+
+        // DraftKings-classic scoring. Keys are BeatsEdge statKeys.
+        const FB_SCORING = {
+            nba: { points: 1, rebounds: 1.25, assists: 1.5, steals: 2, blocks: 2, turnovers: -0.5, threes: 0.5 },
+            nfl: { passYds: 0.04, passTds: 4, interceptions: -1, rushYds: 0.1, rushTds: 6, recYds: 0.1, recTds: 6, receptions: 1 },
+            // MLB hitter (pitcher handled separately / flagged insufficient)
+            mlb: { singles: 3, doubles: 5, triples: 8, homeRuns: 10, rbis: 2, runs: 2, batterWalks: 2, stolenBases: 5, hitByPitch: 2 }
+        };
+        const FB_COMPONENTS = {
+            nba: ['points', 'rebounds', 'assists', 'threes', 'steals', 'blocks', 'turnovers'],
+            nfl: ['passYds', 'passTds', 'interceptions', 'rushYds', 'rushTds', 'recYds', 'recTds', 'receptions'],
+            mlb: ['singles', 'doubles', 'triples', 'homeRuns', 'rbis', 'runs', 'batterWalks', 'stolenBases']
+        };
+        // NBA salary tiers ($). Others get a generic banding by projected pts.
+        const FB_SALARY_TIERS = {
+            nba: [[3000, 4499, '$3.0–4.5K'], [4500, 5999, '$4.5–6.0K'], [6000, 7499, '$6.0–7.5K'], [7500, 8999, '$7.5–9.0K'], [9000, 99999, '$9.0K+']],
+            nfl: [[3000, 4499, '$3.0–4.5K'], [4500, 5999, '$4.5–6.0K'], [6000, 7499, '$6.0–7.5K'], [7500, 8999, '$7.5–9.0K'], [9000, 99999, '$9.0K+']],
+            mlb: [[2000, 3499, '$2.0–3.5K'], [3500, 4499, '$3.5–4.5K'], [4500, 5499, '$4.5–5.5K'], [5500, 99999, '$5.5K+']]
+        };
+
+        const fbNum = (x) => (typeof x === 'number' && isFinite(x)) ? x : null;
+        const fbPctile = (arr, p) => {
+            const a = arr.filter(v => typeof v === 'number' && isFinite(v)).sort((x, y) => x - y);
+            if (!a.length) return null;
+            const i = Math.min(a.length - 1, Math.max(0, Math.round((p / 100) * (a.length - 1))));
+            return a[i];
+        };
+        const fbMean = (a) => a.length ? a.reduce((s, v) => s + v, 0) / a.length : null;
+        // Pearson r over paired arrays (already aligned, equal length).
+        const fbPearson = (xs, ys) => {
+            const n = xs.length;
+            if (n < 3) return null;
+            const mx = fbMean(xs), my = fbMean(ys);
+            let sxy = 0, sxx = 0, syy = 0;
+            for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
+            if (sxx <= 0 || syy <= 0) return null;
+            return sxy / Math.sqrt(sxx * syy);
+        };
+        const fbCorrLabel = (r) => r == null ? '—' : (r >= 0.35 ? 'positive' : r <= -0.35 ? 'negative' : 'weak');
+
+        // Per-game fantasy points from the player's OWN game logs, aligned by
+        // date across the component stats. Returns { games:[{date,fp,parts}],
+        // n, byOppFp:{OPP:[fp]} }. Only counts a game once >= half the
+        // components have a value for that date (avoids undercounting).
+        function fbPlayerGames(player, sport) {
+            const comps = FB_COMPONENTS[sport] || [];
+            const glk = player.gameLogByKey || {};
+            const byDate = {};
+            comps.forEach(k => {
+                (glk[k] || []).forEach(row => {
+                    const d = row.date || row.dateShort;
+                    if (!d) return;
+                    (byDate[d] || (byDate[d] = { opp: row.opponent || null, parts: {} })).parts[k] = fbNum(row.points);
+                });
+            });
+            const sc = FB_SCORING[sport] || {};
+            const games = [], byOppFp = {};
+            Object.keys(byDate).forEach(d => {
+                const g = byDate[d];
+                const have = comps.filter(k => g.parts[k] != null).length;
+                if (have < Math.ceil(comps.length / 2)) return;
+                let fp = 0;
+                comps.forEach(k => { const v = g.parts[k]; if (v != null && sc[k]) fp += v * sc[k]; });
+                // rough NBA double/triple-double bonus from the raw parts
+                if (sport === 'nba') {
+                    const dd = ['points', 'rebounds', 'assists', 'steals', 'blocks'].filter(k => (g.parts[k] || 0) >= 10).length;
+                    if (dd >= 2) fp += 1.5;
+                    if (dd >= 3) fp += 3;
+                }
+                games.push({ date: d, fp: Math.round(fp * 100) / 100, opp: g.opp, parts: g.parts });
+                if (g.opp) (byOppFp[g.opp] || (byOppFp[g.opp] = [])).push(Math.round(fp * 100) / 100);
+            });
+            return { games, n: games.length, byOppFp };
+        }
+
+        // Model-driven fantasy PROJECTION for tonight. For each component stat,
+        // use the BeatsEdge engine's matchup/pace-adjusted `projection` when a
+        // synthetic prop can be scored, else the player's season average.
+        // `calcEdge` is `calculateEdgeScore` passed in (read-only use).
+        function fbProjectFantasy(player, sport, calcEdge) {
+            const comps = FB_COMPONENTS[sport] || [];
+            const sc = FB_SCORING[sport] || {};
+            const sbk = player.statsByKey || {};
+            const parts = {};
+            let fp = 0, modelled = 0;
+            comps.forEach(k => {
+                let v = null, src = 'none';
+                const w = sbk[k];
+                const base = w && (w.season && w.season.avg != null ? w.season.avg
+                    : w.recent && w.recent.avg != null ? w.recent.avg : null);
+                if (base != null) {
+                    try {
+                        const e = calcEdge(player, { statKey: k, type: k, line: Math.max(0.5, base), direction: 'over', lineSource: 'fantasy' });
+                        if (e && typeof e.projection === 'number') { v = e.projection; src = 'model'; modelled++; }
+                    } catch (err) { /* fall through */ }
+                    if (v == null) { v = base; src = 'avg'; }
+                } else if (player.stats && player.stats.season && k === (player.props && player.props[0] && player.props[0].statKey)) {
+                    v = player.stats.season.avg; src = 'avg';
+                }
+                if (v != null) { parts[k] = Math.round(v * 100) / 100; if (sc[k]) fp += v * sc[k]; }
+            });
+            return { fp: Math.round(fp * 100) / 100, parts, modelled, componentsSeen: Object.keys(parts).length };
+        }
+
+        // NBA "fantasy points allowed to this position" — derived from the DvP
+        // grid (points/reb/ast allowed) times the scoring weights. NFL has it
+        // directly. Returns { fpAllowed, rank, source } or null.
+        function fbFpAllowedByPos(player, sport) {
+            const pos = player.position || '';
+            if (sport === 'nfl' || sport === 'ncaaf') {
+                const od = player.opponentDefense;
+                const byP = od && od.byPosition;
+                const grp = ['RB', 'HB', 'FB'].includes(pos) ? 'RB' : ['WR', 'SE', 'FL'].includes(pos) ? 'WR' : pos === 'TE' ? 'TE' : pos === 'QB' ? 'QB' : null;
+                const row = grp && byP && byP[grp];
+                if (row && row.fantasyPointsAllowed != null) return { fpAllowed: row.fantasyPointsAllowed, rank: row.rank ?? null, source: od.isRealByPosition ? 'real' : 'estimate' };
+                return null;
+            }
+            if (sport === 'nba') {
+                const od = player.opponentDefense, byP = od && od.byPosition;
+                const grp = /^(PG|SG|G)$/i.test(pos) ? 'PG' : /^(SF|PF|F)$/i.test(pos) ? 'SF' : 'C';
+                const row = byP && (byP[pos] || byP[grp]);
+                if (row) {
+                    const sc = FB_SCORING.nba;
+                    const fpAllowed = (row.pointsAllowed || 0) * sc.points + (row.reboundsAllowed || 0) * sc.rebounds + (row.assistsAllowed || 0) * sc.assists;
+                    return { fpAllowed: Math.round(fpAllowed * 10) / 10, rank: row.rank ?? null, source: od.isRealByPosition ? 'real' : 'estimate' };
+                }
+                return null;
+            }
+            return null;
+        }
 
         // ── Walk-forward backtest of the grade engine ─────────────────────
         // No historical prop lines exist (PropLine only serves upcoming games),
@@ -6806,6 +6987,326 @@
             );
         }
 
+        // ── PRIVATE Fantasy Research Builder view (Item 14) ─────────────────
+        // Research/analytics only. Reuses BeatsEdge data + `calculateEdgeScore`
+        // output as inputs; changes NOTHING in the model, Prime, or Next Man Up.
+        function FantasyBuilderView({ playersData, selectedSport, onOpenPlayer }) {
+            const sport = selectedSport;
+            const FB_PASS = () => { try { return localStorage.getItem('beatsedge_fb_pass') || 'beatsedge-fantasy'; } catch (e) { return 'beatsedge-fantasy'; } };
+            const [authed, setAuthed] = useState(() => { try { return sessionStorage.getItem('beatsedge_fb_auth') === '1'; } catch (e) { return false; } });
+            const [passIn, setPassIn] = useState('');
+            const [salText, setSalText] = useState(() => { try { return localStorage.getItem('beatsedge_fb_sal_' + sport) || ''; } catch (e) { return ''; } });
+            const [ownText, setOwnText] = useState(() => { try { return localStorage.getItem('beatsedge_fb_own_' + sport) || ''; } catch (e) { return ''; } });
+            const [sortKey, setSortKey] = useState('value');
+            useEffect(() => {
+                try { setSalText(localStorage.getItem('beatsedge_fb_sal_' + sport) || ''); setOwnText(localStorage.getItem('beatsedge_fb_own_' + sport) || ''); } catch (e) { }
+            }, [sport]);
+            const persist = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { } };
+
+            const normName = (n) => String(n || '').toLowerCase().replace(/[^a-z]/g, '');
+            const parseKV = (txt) => {
+                const m = {};
+                String(txt || '').split(/\r?\n/).forEach(line => {
+                    const parts = line.split(/[\t,;|]/).map(s => s.trim());
+                    if (parts.length < 2) return;
+                    const num = parseFloat(String(parts[parts.length - 1]).replace(/[^0-9.\-]/g, ''));
+                    const name = parts.slice(0, parts.length - 1).join(' ').trim();
+                    if (name && isFinite(num)) m[normName(name)] = num;
+                });
+                return m;
+            };
+            const salMap = React.useMemo(() => parseKV(salText), [salText]);
+            const ownMap = React.useMemo(() => parseKV(ownText), [ownText]);
+
+            const analysis = React.useMemo(() => {
+                if (!Array.isArray(playersData) || !playersData.length) return null;
+                const pool = playersData.filter(p => p && p.sport === sport && Array.isArray(p.props) && p.props.length);
+                if (!pool.length) return null;
+                const rows = pool.map(p => {
+                    let prime = false, bestEdge = null;
+                    (p.props || []).forEach((pr, i) => {
+                        if (pr.altLine || pr.crossBook) return;
+                        let e; try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
+                        if (!e) return;
+                        if (e.prime) prime = true;
+                        if (!bestEdge || GRADE_RANK[e.grade] < GRADE_RANK[bestEdge.grade]) bestEdge = e;
+                    });
+                    const proj = fbProjectFantasy(p, sport, calculateEdgeScore);
+                    const hist = fbPlayerGames(p, sport);
+                    const fps = hist.games.map(g => g.fp);
+                    const floor = hist.n >= 5 ? fbPctile(fps, 15) : null;
+                    const median = hist.n >= 5 ? fbPctile(fps, 50) : null;
+                    const ceiling = hist.n >= 5 ? fbPctile(fps, 85) : null;
+                    const sal = salMap[normName(p.name)] ?? null;
+                    const own = ownMap[normName(p.name)] ?? null;
+                    const value = (sal && proj.fp) ? Math.round((proj.fp / (sal / 1000)) * 100) / 100 : null;
+                    const minutes = sport === 'nba' ? (fbNum(p.projMin) ?? null) : null;
+                    const vsOpp = hist.byOppFp[p.opponent] || [];
+                    return {
+                        p, prime, grade: bestEdge && bestEdge.grade, greenCount: bestEdge && bestEdge.greenCount, totalFactors: bestEdge && bestEdge.totalFactors,
+                        edgePct: bestEdge && bestEdge.edgePct,
+                        proj, projFp: proj.fp, floor, median, ceiling, histN: hist.n,
+                        sal, own, value, minutes,
+                        vsOppFp: vsOpp.length ? Math.round(fbMean(vsOpp) * 10) / 10 : null, vsOppN: vsOpp.length,
+                        fpa: fbFpAllowedByPos(p, sport),
+                        opportunity: p.opportunity || null,
+                        status: p.status, statusTrend: p.statusTrend, prevStatus: p.prevStatus, injury: p.injury, injuryDetail: p.injuryDetail,
+                        pace: p.paceRating || null, paceDetail: p.paceDetail || null,
+                        careerGames: (p.statsByKey && Object.values(p.statsByKey)[0] && Object.values(p.statsByKey)[0].season && Object.values(p.statsByKey)[0].season.games) || (p.stats && p.stats.season && p.stats.season.games) || null,
+                        _hist: hist
+                    };
+                }).filter(r => r.projFp > 0);
+
+                // value implied ("should-own") — rank by value percentile
+                const withVal = rows.filter(r => r.value != null).sort((a, b) => b.value - a.value);
+                withVal.forEach((r, i) => { r.valueRank = i + 1; r.impliedOwn = withVal.length > 1 ? Math.round((1 - i / (withVal.length - 1)) * 40 * 10) / 10 : null; });
+
+                // salary tiers
+                const tiers = (FB_SALARY_TIERS[sport] || []).map(([lo, hi, label]) => {
+                    const inTier = rows.filter(r => r.sal != null && r.sal >= lo && r.sal <= hi);
+                    inTier.sort((a, b) => (b.value ?? -1) - (a.value ?? -1));
+                    return { label, lo, hi, n: inTier.length, top: inTier.slice(0, 3), primeInTier: inTier.filter(r => r.prime) };
+                });
+
+                // correlation — same-team pairs, aligned fantasy pts by date
+                const byTeam = {};
+                rows.forEach(r => { (byTeam[r.p.team] || (byTeam[r.p.team] = [])).push(r); });
+                const pairs = [];
+                Object.values(byTeam).forEach(list => {
+                    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+                        const A = list[i]._hist.games, B = list[j]._hist.games;
+                        const bd = {}; B.forEach(g => bd[g.date] = g.fp);
+                        const xs = [], ys = [];
+                        A.forEach(g => { if (bd[g.date] != null) { xs.push(g.fp); ys.push(bd[g.date]); } });
+                        const n = xs.length;
+                        const r = n >= 12 ? fbPearson(xs, ys) : null;
+                        pairs.push({ a: list[i].p.name, b: list[j].p.name, team: list[i].p.team, n, r: r == null ? null : Math.round(r * 100) / 100, label: n >= 12 ? fbCorrLabel(r) : 'Insufficient sample' });
+                    }
+                });
+                pairs.sort((x, y) => (Math.abs(y.r ?? 0) - Math.abs(x.r ?? 0)) || (y.n - x.n));
+
+                // comparable-player vs opp: same team+position pooled vs-opp fp
+                const cmp = [];
+                rows.forEach(r => {
+                    const peers = rows.filter(o => o !== r && o.p.team === r.p.team && (o.p.position || '') === (r.p.position || ''));
+                    const pool2 = peers.flatMap(o => o._hist.byOppFp[r.p.opponent] || []);
+                    if (pool2.length) cmp.push({ name: r.p.name, pos: r.p.position, opp: r.p.opponent, avg: Math.round(fbMean(pool2) * 10) / 10, n: pool2.length });
+                });
+
+                return { rows, tiers, pairs, cmp };
+            }, [playersData, sport, salMap, ownMap]);
+
+            if (!authed) {
+                return (
+                    <div className="fb-view">
+                        <h1 className="top-picks-heading">🔬 Fantasy Research Builder <span className="fb-private">PRIVATE</span></h1>
+                        <p className="top-picks-subhead">Analytics-only tool. Enter the access phrase to continue. (Client-side gate — not cryptographic auth.)</p>
+                        <form onSubmit={(e) => { e.preventDefault(); if (passIn === FB_PASS()) { setAuthed(true); try { sessionStorage.setItem('beatsedge_fb_auth', '1'); } catch (x) { } } else { setPassIn(''); } }} style={{ display: 'flex', gap: '0.6rem', maxWidth: 420 }}>
+                            <input type="password" className="fb-input" placeholder="Access phrase" value={passIn} onChange={e => setPassIn(e.target.value)} autoFocus />
+                            <button className="pro-lock-btn" type="submit">Enter</button>
+                        </form>
+                        <p className="fb-note" style={{ marginTop: '0.8rem' }}>Set your own phrase any time in the console: <code>localStorage.setItem('beatsedge_fb_pass','…')</code>. Default is <code>beatsedge-fantasy</code>.</p>
+                    </div>
+                );
+            }
+
+            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+            const r1 = (v) => v == null ? '—' : (Math.round(v * 10) / 10);
+            const insuff = <span className="fb-insuff">Insufficient sample</span>;
+            const sorted = analysis ? [...analysis.rows].sort((a, b) => {
+                const pick = (r) => sortKey === 'value' ? (r.value ?? -1) : sortKey === 'proj' ? r.projFp : sortKey === 'ceiling' ? (r.ceiling ?? -1) : sortKey === 'floor' ? (r.floor ?? -1) : (r.value ?? -1);
+                return pick(b) - pick(a);
+            }) : [];
+
+            return (
+                <div className="fb-view">
+                    <h1 className="top-picks-heading">🔬 Fantasy Research Builder <span className="fb-private">PRIVATE</span> · {SPORT_LABELS[sport]}</h1>
+                    <p className="top-picks-subhead">
+                        A separate fantasy projection layer on top of the existing BeatsEdge research engine — model calculations,
+                        Prime, and Next-Man-Up are read as inputs and never modified. Historical numbers use each player's own prior
+                        game logs only. Missing feeds show <em>Insufficient sample</em>. DraftKings-classic scoring.
+                    </p>
+
+                    {!analysis && (
+                        <div className="fb-note">No {SPORT_LABELS[sport]} players with props are loaded — open the {SPORT_LABELS[sport]} tab to build the slate first, then come back.</div>
+                    )}
+
+                    {analysis && (<React.Fragment>
+                        <div className="fb-inputs">
+                            <div>
+                                <div className="fb-inp-label">Salaries — paste <code>Name, Salary</code> per line (DK/FD export works)</div>
+                                <textarea className="fb-input fb-textarea" rows={4} value={salText}
+                                    onChange={e => { setSalText(e.target.value); persist('beatsedge_fb_sal_' + sport, e.target.value); }}
+                                    placeholder={"Nikola Jokic, 11800\nLuka Doncic, 11200"} />
+                            </div>
+                            <div>
+                                <div className="fb-inp-label">Projected ownership % (optional) — <code>Name, 24.5</code></div>
+                                <textarea className="fb-input fb-textarea" rows={4} value={ownText}
+                                    onChange={e => { setOwnText(e.target.value); persist('beatsedge_fb_own_' + sport, e.target.value); }}
+                                    placeholder={"Nikola Jokic, 32\nLuka Doncic, 28"} />
+                            </div>
+                        </div>
+
+                        {/* 1-6: projections */}
+                        <div className="fb-sec-title">Fantasy projections · floor / median / projection / ceiling · value</div>
+                        <div className="fb-sortbar">Sort: {['value', 'proj', 'ceiling', 'floor'].map(k => (
+                            <button key={k} className={`fb-sortbtn ${sortKey === k ? 'active' : ''}`} onClick={() => setSortKey(k)}>{k}</button>
+                        ))}</div>
+                        <div style={{ overflowX: 'auto' }}>
+                            <table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr>
+                                    <th>Player</th><th>Pos</th><th>Opp</th><th>Proj FP</th>{sport === 'nba' && <th>Min</th>}
+                                    <th>Floor</th><th>Median</th><th>Ceiling</th><th>Salary</th><th>Value /$1K</th><th>Sample</th><th>Prime</th><th>Grade</th>
+                                </tr></thead>
+                                <tbody>
+                                    {sorted.map(r => (
+                                        <tr key={r.p.id} className={r.prime ? 'fb-prime-row' : ''}>
+                                            <td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                            <td>{r.p.position || '—'}</td>
+                                            <td>{r.p.opponent || '—'}</td>
+                                            <td><strong>{r1(r.projFp)}</strong></td>
+                                            {sport === 'nba' && <td>{r.minutes == null ? insuff : r.minutes}</td>}
+                                            <td>{r.floor == null ? insuff : r1(r.floor)}</td>
+                                            <td>{r.median == null ? insuff : r1(r.median)}</td>
+                                            <td>{r.ceiling == null ? insuff : r1(r.ceiling)}</td>
+                                            <td>{r.sal == null ? '—' : '$' + r.sal.toLocaleString()}</td>
+                                            <td>{r.value == null ? <span className="fb-insuff">need salary</span> : <strong>{r.value.toFixed(2)}</strong>}</td>
+                                            <td>{r.histN} g</td>
+                                            <td>{r.prime ? <span className="fb-prime-chip">⭐ PRIME</span> : '—'}</td>
+                                            <td>{r.grade || '—'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="fb-note">Projection is the BeatsEdge engine's matchup/pace-adjusted per-stat projection, scored. Floor/median/ceiling are the 15th/50th/85th percentiles of this player's own past fantasy games (≥ 5 games required). Value = Proj FP ÷ (Salary ÷ $1,000) — this ranks efficiency, not raw points.</div>
+
+                        {/* 7: value leaders by salary tier + prime by tier */}
+                        <div className="fb-sec-title">Strongest model candidates by salary tier (ranked by value, not raw points)</div>
+                        {analysis.tiers.every(t => t.n === 0)
+                            ? <div className="fb-note">Enter salaries above to populate salary tiers.</div>
+                            : <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Tier</th><th>n</th><th>Top value candidates</th><th>Prime in tier</th></tr></thead>
+                                <tbody>{analysis.tiers.map(t => (
+                                    <tr key={t.label}>
+                                        <td style={{ whiteSpace: 'nowrap' }}>{t.label}</td><td>{t.n}</td>
+                                        <td>{t.top.length ? t.top.map(r => `${r.p.name} (${r.value != null ? r.value.toFixed(2) : '—'})`).join(' · ') : '—'}</td>
+                                        <td>{t.primeInTier.length ? t.primeInTier.map(r => r.p.name).join(' · ') : '—'}</td>
+                                    </tr>
+                                ))}</tbody>
+                            </table></div>}
+
+                        {/* 6: prime fantasy candidates */}
+                        <div className="fb-sec-title">⭐ Prime fantasy candidates <span className="fb-note-inline">(existing BeatsEdge Prime designation — not recomputed)</span></div>
+                        {analysis.rows.some(r => r.prime)
+                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Player</th><th>Opp</th><th>Proj FP</th><th>Ceiling</th><th>Salary</th><th>Value</th><th>Confluence</th></tr></thead>
+                                <tbody>{analysis.rows.filter(r => r.prime).sort((a, b) => (b.value ?? b.projFp) - (a.value ?? a.projFp)).map(r => (
+                                    <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td><td>{r.p.opponent}</td>
+                                        <td><strong>{r1(r.projFp)}</strong></td><td>{r.ceiling == null ? insuff : r1(r.ceiling)}</td>
+                                        <td>{r.sal == null ? '—' : '$' + r.sal.toLocaleString()}</td><td>{r.value == null ? '—' : r.value.toFixed(2)}</td>
+                                        <td>{r.greenCount != null ? `${r.greenCount}/${r.totalFactors}` : '—'}</td></tr>
+                                ))}</tbody>
+                            </table></div>
+                            : <div className="fb-note">No Prime designations on this slate.</div>}
+
+                        {/* 8-9: next man up + injury/role */}
+                        <div className="fb-sec-title">Next Man Up impact <span className="fb-note-inline">(reads the existing injury / role system)</span></div>
+                        {analysis.rows.some(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length)
+                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Player</th><th>Covers for (sidelined)</th><th>Trigger</th><th>Est. minutes Δ</th><th>Est. usage Δ</th><th>Est. FP Δ</th></tr></thead>
+                                <tbody>{analysis.rows.filter(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length).map(r => {
+                                    const outCt = r.opportunity.covers.filter(c => /out/i.test(c.status)).length;
+                                    const minD = sport === 'nba' ? (outCt ? '+4 to +8' : '+2 to +5') : (outCt ? 'more snaps/touches' : 'slight bump');
+                                    const usgD = outCt ? '+3–6%' : '+1–3%';
+                                    const fpD = r.projFp ? '+' + Math.round(r.projFp * (outCt ? 0.12 : 0.06)) + ' to +' + Math.round(r.projFp * (outCt ? 0.22 : 0.10)) : '—';
+                                    return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                        <td>{r.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')}</td>
+                                        <td>{r.opportunity.trigger || '—'}</td><td>{minD}</td><td>{usgD}</td><td>{fpD}</td></tr>;
+                                })}</tbody>
+                            </table></div>
+                            : <div className="fb-note">No active Next-Man-Up chains on this slate.</div>}
+                        <div className="fb-note">Δ estimates are heuristics scaled off the projection — the model does not produce a role-change delta. The trigger + sidelined list come straight from the existing Next-Man-Up system.</div>
+
+                        <div className="fb-sec-title">Injury / role-change watch</div>
+                        {analysis.rows.some(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down')
+                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Player</th><th>Status</th><th>Trend</th><th>Detail</th><th>Proj FP (as-is)</th></tr></thead>
+                                <tbody>{analysis.rows.filter(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down').map(r => (
+                                    <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                        <td>{r.status}</td><td>{r.statusTrend === 'down' ? `▼ was ${r.prevStatus || '?'}` : '—'}</td>
+                                        <td>{r.injuryDetail || r.injury || '—'}</td><td>{r1(r.projFp)}</td></tr>
+                                ))}</tbody>
+                            </table></div>
+                            : <div className="fb-note">No injury or status-downgrade flags on this slate.</div>}
+
+                        {/* 10-11: rookie/young + foul trouble */}
+                        <div className="fb-sec-title">Rookie / young-player opportunity</div>
+                        <div className="fb-note">{insuff} — BeatsEdge has no age or experience feed. Career-games proxy (fewest logged games on the slate): {
+                            analysis.rows.filter(r => r.careerGames != null).sort((a, b) => a.careerGames - b.careerGames).slice(0, 5).map(r => `${r.p.name} (${r.careerGames}g)`).join(' · ') || '—'
+                        }</div>
+
+                        <div className="fb-sec-title">Foul-trouble risk <span className="fb-note-inline">(separate risk factor)</span></div>
+                        <div className="fb-note">{insuff} — the game-log feed does not carry personal fouls per game, so foul-out risk can't be modelled from history yet. Shown as its own line so it isn't folded into the projection.</div>
+
+                        {/* 12-16: matchup */}
+                        <div className="fb-sec-title">Matchup analysis · defense vs position · fantasy points allowed · pace · history vs opponent</div>
+                        <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                            <thead><tr><th>Player</th><th>Pos</th><th>Opp</th><th>FP allowed to pos</th><th>DvP rank</th><th>Pace</th><th>Avg FP vs this opp</th><th>Sample</th><th>Comparable pos vs opp</th></tr></thead>
+                            <tbody>{analysis.rows.slice().sort((a, b) => b.projFp - a.projFp).map(r => {
+                                const c = analysis.cmp.find(x => x.name === r.p.name);
+                                return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                    <td>{r.p.position || '—'}</td><td>{r.p.opponent || '—'}</td>
+                                    <td>{r.fpa ? `${r.fpa.fpAllowed} (${r.fpa.source})` : insuff}</td>
+                                    <td>{r.fpa && r.fpa.rank != null ? '#' + r.fpa.rank : insuff}</td>
+                                    <td>{r.pace ? <span title={r.paceDetail || ''}>{r.pace}</span> : insuff}</td>
+                                    <td>{r.vsOppN >= 3 ? r.vsOppFp : insuff}</td>
+                                    <td>{r.vsOppN ? r.vsOppN + ' g' : '0 g'}</td>
+                                    <td>{c && c.n >= 8 ? `${c.avg} FP (n=${c.n})` : insuff}</td></tr>;
+                            })}</tbody>
+                        </table></div>
+                        <div className="fb-note">"FP allowed to pos" for NBA is derived from the DvP grid (pts+reb+ast allowed × DK weights); NFL uses the feed's fantasyPointsAllowed directly. "real" = backed by your backend's DvP data, "estimate" = sample grid. Avg FP vs opp needs ≥ 3 prior meetings; comparable-position pool needs ≥ 8 games.</div>
+
+                        {/* 17-19: correlation */}
+                        <div className="fb-sec-title">Correlation <span className="fb-note-inline">(from game-level fantasy points, same team — not assumed from roles)</span></div>
+                        {analysis.pairs.length
+                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Pair</th><th>Team</th><th>r</th><th>Direction</th><th>Sample (shared games)</th></tr></thead>
+                                <tbody>{analysis.pairs.slice(0, 30).map((pr, i) => (
+                                    <tr key={i} className={pr.label === 'positive' ? 'fb-pos' : pr.label === 'negative' ? 'fb-neg' : ''}>
+                                        <td>{pr.a} ↔ {pr.b}</td><td>{pr.team}</td>
+                                        <td>{pr.r == null ? '—' : pr.r.toFixed(2)}</td>
+                                        <td>{pr.label === 'Insufficient sample' ? insuff : pr.label}</td>
+                                        <td>{pr.n} g</td>
+                                    </tr>
+                                ))}</tbody>
+                            </table></div>
+                            : <div className="fb-note">No same-team pairs with game logs on this slate.</div>}
+                        <div className="fb-note">r is Pearson correlation of the two players' per-game fantasy points across the games they BOTH played. ≥ 12 shared games required to label a direction; positive ≥ +0.35, negative ≤ −0.35, otherwise weak.</div>
+
+                        {/* 20: ownership */}
+                        <div className="fb-sec-title">Expected ownership vs model projection (leverage)</div>
+                        {Object.keys(ownMap).length
+                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>Player</th><th>Proj FP</th><th>Value</th><th>Model-implied own%</th><th>Your projected own%</th><th>Leverage</th></tr></thead>
+                                <tbody>{analysis.rows.filter(r => r.own != null).sort((a, b) => (a.own - (a.impliedOwn ?? 0)) - (b.own - (b.impliedOwn ?? 0))).map(r => {
+                                    const lev = r.impliedOwn != null ? Math.round((r.impliedOwn - r.own) * 10) / 10 : null;
+                                    return <tr key={r.p.id}><td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>{r.p.name}</td>
+                                        <td>{r1(r.projFp)}</td><td>{r.value == null ? '—' : r.value.toFixed(2)}</td>
+                                        <td>{r.impliedOwn == null ? insuff : r.impliedOwn + '%'}</td><td>{r.own}%</td>
+                                        <td className={lev == null ? '' : lev > 3 ? 'fb-pos' : lev < -3 ? 'fb-neg' : ''}>{lev == null ? '—' : g(lev) + '%'}</td></tr>;
+                                })}</tbody>
+                            </table></div>
+                            : <div className="fb-note">{insuff} — no ownership numbers entered. Paste projected ownership above to see model-vs-field leverage. Model-implied own% is a rank-based proxy from the value board (top value ≈ 40%, bottom ≈ 0%), not a real ownership model.</div>}
+
+                        <div className="fb-note" style={{ marginTop: '1rem', borderTop: '1px solid var(--border-hairline,#2a2f3a)', paddingTop: '0.6rem' }}>
+                            Fantasy layer only. Nothing here changes BeatsEdge model calculations, the locked NBA/MLB/NFL calibration, the Prime designation, or Next-Man-Up. All historical stats are this player's own prior games (no future-game leakage).
+                        </div>
+                    </React.Fragment>)}
+                </div>
+            );
+        }
+
         const App = () => {
             const [selectedPlatform, setSelectedPlatform] = useState('prizepicks');
             const [currentView, setCurrentView] = useState('picks'); // 'picks' | 'browse'
@@ -6821,6 +7322,14 @@
             const [playersData, setPlayersData] = useState([]);
             const [detailModal, setDetailModal] = useState(null); // { playerId, propIdx } — opens the full-breakdown popup
             const openDetail = (playerId, propIdx = 0) => setDetailModal({ playerId, propIdx });
+            // Private Fantasy Research Builder — reachable only via #fantasy
+            // (not in the nav). The view itself gates on an access phrase.
+            useEffect(() => {
+                const applyHash = () => { if ((window.location.hash || '').toLowerCase() === '#fantasy') setCurrentView('fantasy'); };
+                applyHash();
+                window.addEventListener('hashchange', applyHash);
+                return () => window.removeEventListener('hashchange', applyHash);
+            }, []);
             useEffect(() => {
                 if (!detailModal) return;
                 const onKey = (e) => { if (e.key === 'Escape') setDetailModal(null); };
@@ -15136,6 +15645,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         text="Every ruled-out / questionable player on the slate, who moves up when they sit, and an alert the moment a status downgrades — before the line moves." />
                                 </div>
                             )}
+                            </ErrorBoundary>
+                        )}
+
+                        {currentView === 'fantasy' && (
+                            <ErrorBoundary name="FantasyBuilder" resetKey={selectedSport}>
+                                <FantasyBuilderView
+                                    playersData={playersData}
+                                    selectedSport={selectedSport}
+                                    onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
+                                />
                             </ErrorBoundary>
                         )}
                     </main>
