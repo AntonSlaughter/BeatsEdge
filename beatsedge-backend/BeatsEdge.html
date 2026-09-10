@@ -2836,30 +2836,34 @@
 
         // ── MLB rare-event sub-1.0-line calibration (SHIPPED) ────────────────
         // HR / 2B / 3B / SB props are set on a 0.5 line whose true OVER rate is
-        // far below what the generic estimator can express: the normal-CDF base
-        // rate + the 20% regression-toward-50% + the RAW_FLOOR (0.22) + the
-        // PROB_CALIB.mlb curve (holds flat at ~32%) together pin the stated
-        // probability at ~31% when the real rate is ~2-16%. Temporal-holdout
-        // validated (train 2022-2025 → frozen → unseen 2026; commits f13f7fc,
-        // 21b9962). For these four markets on a sub-1.0 line ONLY:
-        //   • the projection estimate regresses toward this frozen per-stat
-        //     LEAGUE base rate instead of 0.50 (directional),
+        // far below what the generic estimator can express: a normal-CDF tail on
+        // a skewed near-zero count + the 20% regression-toward-50% + RAW_FLOOR
+        // (0.22) + the PROB_CALIB.mlb curve (holds flat at ~32%) together pinned
+        // the stated probability at ~31% when the real rate is ~2-16%.
+        // Temporal-holdout validated (train 2022-2025 → frozen → unseen 2026;
+        // commits f13f7fc, 21b9962, 9346585). For these four markets on a
+        // sub-1.0 line ONLY:
+        //   • the distribution base rate is P(X > line | Poisson(λ = model
+        //     projection)) — a discrete low-count model, not the Gaussian tail,
+        //   • it then regresses toward this frozen per-stat LEAGUE base rate
+        //     instead of 0.50 (directional) — now almost a no-op once the
+        //     Poisson estimate is right,
         //   • the MLB sport curve (applyProbCalib) is bypassed — it was fit on
         //     the whole population and its low end is wrong here,
         //   • the raw floor drops 0.22 → 0.03.
-        // Holdout effect on the target OVER cohort: calibration gap −22 → −12,
-        // Brier .130 → .091, with ZERO change to any other market (>=1.0,
-        // non-target sub-1.0, every other sport), grade, Prime, or ranking.
-        // Values are the 2022-2025 TRAIN P(stat >= 1 in a game); NOT re-tuned on
-        // the holdout. A residual ~−12 gap remains (the Gaussian base rate is
-        // still high for a skewed low count) — Step 3.
+        // Holdout effect on the target OVER cohort: calibration gap −22 → ~−1,
+        // Brier .130 → .078, MAE 22 → ~1, with ZERO change to any other market
+        // (>=1.0, non-target sub-1.0, every other sport), grade, Prime, edge, or
+        // ranking. Values are the 2022-2025 TRAIN P(stat >= 1 in a game); NOT
+        // re-tuned on the holdout.
         const MLB_LOWLINE_RARE = { homeRuns: 0.129, doubles: 0.162, triples: 0.016, stolenBases: 0.077 };
 
-        // Optional what-if override for re-validation / Step 3 experiments.
-        // Production value is `null` → the SHIPPED recipe above is what runs.
+        // Optional what-if override for re-validation experiments. Production
+        // value is `null` → the SHIPPED recipe above is what runs.
         // `runMlbTemporalValidation` sets this to { stats, bypassCurve?, rawFloor?,
-        // noAnchor? } around a single holdout pass, then restores it (transient-
-        // GRADE_CUTOFFS discipline). Nothing persists it.
+        // noAnchor?, distModel?, lambdaShrinkK?, ebK?, noShrink? } around a
+        // single holdout pass, then restores it (transient-GRADE_CUTOFFS
+        // discipline). Nothing persists it.
         let _MLB_LOWLINE_EXPT = null;
         function calculateEdgeScore(player, prop) {
             let pm = _edgeCache.get(player);
@@ -3427,20 +3431,23 @@
             const _rk = prop._mlbRealStat || prop.statKey;
             const _llScoped = sport === 'mlb' && line < 1.0 && MLB_LOWLINE_RARE[_rk] != null;
             // The what-if override wins when set; otherwise the SHIPPED recipe
-            // (anchor to the frozen league base rate + bypass the MLB curve +
-            // raw floor 0.03) runs for the four scoped markets.
+            // runs for the four scoped markets: Poisson base rate (λ = the model
+            // projection) + regress toward the frozen league rate + bypass the
+            // MLB curve + raw floor 0.03. (Steps 2 & 3, holdout-validated.)
             const _llx = _MLB_LOWLINE_EXPT
                 ? ((sport === 'mlb' && line < 1.0 && _MLB_LOWLINE_EXPT.stats && _MLB_LOWLINE_EXPT.stats[_rk] != null) ? _MLB_LOWLINE_EXPT : null)
-                : (_llScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03 } : null);
+                : (_llScoped ? { stats: MLB_LOWLINE_RARE, bypassCurve: true, rawFloor: 0.03, distModel: 'poisson' } : null);
 
             const projSd = projStdDev(projection, prop.statKey, s);
             const zOver = projSd > 0 ? (projection - line) / projSd : 0;
             const zPick = direction === 'over' ? zOver : -zOver;
             // Base rate that the projection sits `line` past. Default = normal
-            // CDF of the z-score. `_llx.distModel` (Step 3 experiment ONLY —
-            // production has no distModel, so this is the normal CDF live) swaps
-            // it for a discrete low-count model on the four scoped MLB markets:
-            //   poisson         P(X>line | λ = model projection)
+            // CDF of the z-score. The four scoped MLB rare-event markets use
+            // `distModel: 'poisson'` (SHIPPED — a symmetric Gaussian tail
+            // overstates a skewed near-zero count; Step 3 holdout closed the
+            // residual −12 gap to ~−1). `_MLB_LOWLINE_EXPT` can set the other
+            // distModels for re-validation:
+            //   poisson         P(X>line | λ = model projection)   ← shipped
             //   poisson_league  P(X>line | λ = -ln(1-frozen league OVER rate))
             //   poisson_shrink  as poisson, λ shrunk toward the league λ by
             //                   `lambdaShrinkK` pseudo-games
@@ -3486,7 +3493,9 @@
             probSteps.push({
                 label: 'Base rate from the projection',
                 p: pDist,
-                detail: `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - _shrinkEff) * 100)}% toward ${_llx ? Math.round(distAnchor * 100) + '% — the league rate for this side of a sub-1 ' + (prop.type || 'prop') + ' line' : '50%'} for regression (${sampleGames} game sample)`
+                detail: (_llx && _llx.distModel === 'poisson')
+                    ? `${prop.type || 'This'} on a ${line} line — with the player projected for ${projection}/game, a Poisson count model puts P(${direction}) at ${Math.round(pDistRaw * 100)}%, then nudged ${Math.round((1 - _shrinkEff) * 100)}% toward the ${Math.round(distAnchor * 100)}% league rate (${sampleGames} game sample)`
+                    : `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - _shrinkEff) * 100)}% toward ${_llx ? Math.round(distAnchor * 100) + '% — the league rate for this side of a sub-1 ' + (prop.type || 'prop') + ' line' : '50%'} for regression (${sampleGames} game sample)`
             });
 
             // Directional hit rate at THIS prop's exact line. Recompute it from
@@ -3582,7 +3591,7 @@
                 probSteps.push({
                     label: 'Rare-event market',
                     p: Math.max(0.03, Math.min(0.97, pCal)),
-                    detail: `${prop.type || 'This'} on a sub-1 line clears far less than a coin flip league-wide, so the estimate is anchored to the real base rate and the general MLB calibration curve (tuned on the whole board) is skipped here`
+                    detail: `${prop.type || 'This'} on a sub-1 line clears far less than a coin flip league-wide, so it's modelled as a Poisson count off the projection and the general MLB calibration curve (tuned on the whole board) is skipped here`
                 });
             }
             // Sport-level calibration only — this is the value the grade
@@ -6145,15 +6154,15 @@
                                             {r.lowLineStep3 && (() => {
                                                 const s3 = r.lowLineStep3, b0 = s3.baseline.tgtOver;
                                                 const SK = [['homeRuns', 'HR'], ['doubles', '2B'], ['triples', '3B'], ['stolenBases', 'SB']];
-                                                const rows = [{ key: 'S0', label: 'shipped (Step 2)', t: b0, se: null }].concat(s3.recipes.map(rc => ({ key: rc.key, label: rc.label, t: rc.tgtOver, se: rc.sideEffects })));
+                                                const rows = [{ key: 'S0', label: 'current model — SHIPPED (Steps 2+3, ≈ recipe P)', t: b0, se: null }].concat(s3.recipes.map(rc => ({ key: rc.key, label: rc.label, t: rc.tgtOver, se: rc.sideEffects })));
                                                 const best = s3.recipes.reduce((a, rc) => (rc.tgtOver && (!a || Math.abs(rc.tgtOver.gap) < Math.abs(a.tgtOver.gap)) ? rc : a), null);
                                                 return (
                                                     <React.Fragment>
                                                         <div className="backtest-calib-title" style={{ fontSize: '0.85rem', marginTop: '1.1rem', borderTop: '1px dashed var(--border-hairline, #2a2f3a)', paddingTop: '0.8rem' }}>
-                                                            MLB · Sub-1.0 Floor — Step 3 investigation <span style={{ color: 'var(--warning-yellow, #f5a623)', fontSize: '0.72rem', fontWeight: 700 }}>· INVESTIGATION ONLY — Step 2 stays locked</span>
+                                                            MLB · Sub-1.0 Floor — Step 3 <span style={{ color: 'var(--success-green, #4caf50)', fontSize: '0.72rem', fontWeight: 700 }}>· recipe P SHIPPED</span>
                                                         </div>
                                                         <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
-                                                            Residual after Step 2: the target OVER cohort is still ~12 pts over-confident because <code>pDistRaw = normalCdf(zPick)</code> — a symmetric Gaussian tail — overstates a skewed near-zero count. These recipes keep every shipped Step 2 knob and swap ONLY <code>pDistRaw</code> for a discrete low-count model. S0 = the live model. Frozen: league λ from the 2022-2025 base rates; K constants are first-guesses, not tuned on 2026.
+                                                            After Step 2 the target OVER cohort was still ~12 pts over-confident because <code>pDistRaw = normalCdf(zPick)</code> — a symmetric Gaussian tail — overstates a skewed near-zero count. SHIPPED fix: for these four markets <code>pDistRaw = P(X &gt; line | Poisson(λ = model projection))</code>. S0 already reflects it. PL/PS20/EB15 are counterfactuals: all within noise of P → it was the transform, not the projection.
                                                         </div>
                                                         <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
                                                             <table className="backtest-calib-tbl">
@@ -11198,12 +11207,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 }
                             };
                         }),
-                        note: 'Recipe C (anchor + bypass PROB_CALIB + raw floor 3%) is now SHIPPED as MLB_LOWLINE_RARE, scoped to sport==="mlb" && statKey in {HR,2B,3B,SB} && line<1.0 — so "R0 · current model" already reflects it and equals recipe C. Recipes A/B/D/E remain as counterfactuals (what the other knob combinations would have given). Frozen per-stat base rates are the 2022-2025 TRAIN sub-1.0 OVER hit rates. The residual ~−12 gap is Step 3 (the Gaussian base rate).'
+                        note: 'Step 2 (anchor + bypass PROB_CALIB + raw floor 3%) is SHIPPED and LOCKED, scoped to sport==="mlb" && statKey in {HR,2B,3B,SB} && line<1.0. Step 3 (Poisson pDistRaw) shipped on top and closed the residual — see the Step 3 table below for the current calibration. "R0 · current model" here reflects BOTH steps. Recipes A/B/D/E are Step-2-era counterfactuals. Frozen per-stat base rates = the 2022-2025 TRAIN sub-1.0 OVER hit rates.'
                     } : null;
 
                     // ── Step 3 investigation shaping ─────────────────────────
                     const lowLineStep3 = step2FrozenPriors && step3Recipes.length ? {
-                        note: 'INVESTIGATION ONLY — no production change; Step 2 (5821889) stays the locked baseline. Every recipe layers ON TOP of the shipped Step 2 knobs and only swaps how pDistRaw is built (Gaussian tail → a discrete low-count model). S0 = the shipped model. Frozen inputs (league λ from the 2022-2025 base rates); K constants are first-guesses, not tuned on 2026.',
+                        note: 'Recipe P (Poisson, λ = model projection) is now SHIPPED — S0 already reflects it, so S0 ≈ recipe P. PL/PS20/EB15 remain as counterfactuals (other discrete models, all within noise — confirms it was the Gaussian TRANSFORM, not the projection). Frozen inputs = the 2022-2025 base rates; K constants are first-guesses.',
                         baseline: {
                             tgtOver: llShape(R0tgt, { pb: true }),
                             byStat: ['homeRuns', 'doubles', 'triples', 'stolenBases'].reduce((o, k) => { o[k] = llShape(accHold.lowLine.byStat && accHold.lowLine.byStat[k], {}); return o; }, {})
