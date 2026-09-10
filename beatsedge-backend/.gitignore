@@ -3,5 +3,6 @@ data/beatsedge.db-*
 data/snapshots.db
 data/snapshots.db-*
 data/kaggle-boxscores.csv
+data/hoopr/
 *.log
 .env
