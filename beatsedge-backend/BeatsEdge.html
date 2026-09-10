@@ -4639,7 +4639,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -5397,6 +5397,77 @@
                                 </div>
                             );
                         })()}
+                        {selectedSport === 'nba' && isPro && (() => {
+                            const st = nbaFamStability;
+                            const W = st && !st.error ? st.windows : null;
+                            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+                            const gapCls = (v) => v == null ? '' : Math.abs(v) <= 2 ? 'calib-ok' : v < 0 ? 'calib-over' : 'calib-under';
+                            const dCls = (b, a) => (b == null || a == null) ? '' : (a < b - 1e-9 ? 'calib-ok' : a > b + 1e-9 ? 'calib-over' : '');
+                            const FAMS = [['scoring_combo', 'Scoring / combo'], ['core_individual', 'Core individual'], ['volatile_counting', 'Volatile counting']];
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Stat Family Calibration Stability</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Temporal-stability check of the FROZEN family calibration across chronological, non-overlapping windows. No params derived or changed. Walk-forward (each prediction uses only prior games). W1–W3 predate the <strong>2024-12-19</strong> boundary used to build FAMILY_CALIB (unseen); W4–W5 are inside that period (reference). BEFORE = sport curve only; AFTER = + FAMILY_CALIB.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nbaFamStabilityRunning || backtestRunning || nbaFreshValRunning} onClick={onRunFamStability} style={{ marginTop: '0.6rem' }}>
+                                        {nbaFamStabilityRunning ? 'Running windows…' : (W ? 'Re-run stability' : 'Run stability')}
+                                    </button>
+                                    {st && st.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{st.error}</div>}
+                                    {W && (
+                                        <React.Fragment>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Window</th><th>Range</th><th>n</th><th>Seen?</th><th>Overall gap b → a</th><th>MAE b → a</th><th>Brier b → a</th><th>Log loss b → a</th></tr></thead>
+                                                    <tbody>
+                                                        {W.map(w => (
+                                                            <tr key={w.label}>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{w.label}</td>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{w.from} → {w.to}</td>
+                                                                <td>{w.n.toLocaleString()}</td>
+                                                                <td>{w.seen ? 'yes' : 'no'}</td>
+                                                                <td><span className={gapCls(w.overall.gapBefore)}>{g(w.overall.gapBefore)}</span> → <strong className={gapCls(w.overall.gapAfter)}>{g(w.overall.gapAfter)}</strong></td>
+                                                                <td>{w.overall.maeBefore} → <strong className={dCls(w.overall.maeBefore, w.overall.maeAfter)}>{w.overall.maeAfter}</strong></td>
+                                                                <td>{w.overall.brierBefore} → <strong className={dCls(w.overall.brierBefore, w.overall.brierAfter)}>{w.overall.brierAfter}</strong></td>
+                                                                <td>{w.overall.loglossBefore} → <strong className={dCls(w.overall.loglossBefore, w.overall.loglossAfter)}>{w.overall.loglossAfter}</strong></td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            {FAMS.map(([fk, flabel]) => (
+                                                <div key={fk} style={{ overflowX: 'auto', marginTop: '0.7rem' }}>
+                                                    <div className="backtest-calib-title" style={{ fontSize: '0.78rem' }}>{flabel}</div>
+                                                    <table className="backtest-calib-tbl">
+                                                        <thead><tr><th>Window</th><th>n</th><th>Mean prob (before)</th><th>Actual hit</th><th>Gap before</th><th>Fam adj</th><th>Gap after</th><th>Prime hit (n)</th></tr></thead>
+                                                        <tbody>
+                                                            {W.map(w => {
+                                                                const x = w.family[fk]; const pf = w.primeFam[fk] || {};
+                                                                return (
+                                                                    <tr key={w.label + fk}>
+                                                                        <td style={{ whiteSpace: 'nowrap' }}>{w.label}</td>
+                                                                        <td>{x ? x.n.toLocaleString() : '—'}</td>
+                                                                        <td>{x ? x.meanProbBefore + '%' : '—'}</td>
+                                                                        <td>{x ? x.hitRate + '%' : '—'}</td>
+                                                                        <td className={x ? gapCls(x.gapBefore) : ''}>{x ? g(x.gapBefore) : '—'}</td>
+                                                                        <td>{x ? g(x.meanFamAdj) : '—'}</td>
+                                                                        <td className={x ? gapCls(x.gapAfter) : ''}><strong>{x ? g(x.gapAfter) : '—'}</strong></td>
+                                                                        <td>{pf.rate == null ? '—' : pf.rate + '% (' + (pf.n || 0).toLocaleString() + ')'}</td>
+                                                                    </tr>
+                                                                );
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            ))}
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                                                Gap = actual hit rate − mean stated probability (points). MAE = sample-weighted mean |bucket gap| (buckets n≥25). Frozen: GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB / Prime / confluence / edge / ranking. Grade & Prime hit rates are the same before and after by construction. Ran {new Date(st.ranAt).toLocaleString()}.
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     {loading ? (
@@ -5515,6 +5586,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_freshval_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaFreshValRunning, setNbaFreshValRunning] = useState(false);
+            const [nbaFamStability, setNbaFamStability] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nba_famstab_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nbaFamStabilityRunning, setNbaFamStabilityRunning] = useState(false);
             const [sortBy, setSortBy] = useState('grade'); // 'grade' | 'edge' | 'time' | 'name' — Browse grid ordering
             const [playerSearch, setPlayerSearch] = useState(''); // Browse: filter by player / team / position
             const [playerSearchDebounced, setPlayerSearchDebounced] = useState('');
@@ -10048,6 +10123,120 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 }
             };
 
+            // ── NBA · Stat Family Calibration Stability ─────────────────────
+            // Multi-window temporal stability check. Same frozen params as the
+            // fresh validation (GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB all
+            // untouched, nothing derived). One 5-season gamelog pull, then a
+            // sequence of CHRONOLOGICAL, NON-OVERLAPPING windows across the
+            // available data — each scored with a {minTs,maxTs} gate, walk-
+            // forward (trailing windows use only prior games). Windows 1-3 pre-
+            // date the 2024-12-19 boundary used to build FAMILY_CALIB (genuinely
+            // unseen); 4-5 are inside that construction period (reference).
+            const runFamilyStability = async () => {
+                if (nbaFamStabilityRunning || backtestRunning || nbaFreshValRunning) return;
+                setNbaFamStabilityRunning(true);
+                try {
+                    const D = (s) => Date.parse(s + 'T00:00:00Z');
+                    const WINDOWS = [
+                        { label: 'W1 · 2022-23', from: '2022-07-01', to: '2023-06-30', seen: false },
+                        { label: 'W2 · 2023-24', from: '2023-07-01', to: '2024-06-30', seen: false },
+                        { label: 'W3 · 2024-25 (Jul–Dec 19)', from: '2024-07-01', to: '2024-12-19', seen: false },
+                        { label: 'W4 · 2024-25 (Dec 20–Jun)', from: '2024-12-20', to: '2025-06-30', seen: true },
+                        { label: 'W5 · 2025-26', from: '2025-07-01', to: '2026-06-13', seen: true },
+                    ];
+                    let pool = [];
+                    if (backendUrl) {
+                        try {
+                            const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
+                            if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                        } catch (e) { /* */ }
+                    }
+                    if (pool.length < 20) { setNbaFamStability({ error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() }); return; }
+                    const yrs = [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2, NBA_YR_PREV - 3, NBA_YR_PREV - 4];
+                    const glMap = await nbaGamelogsMulti([...new Set(pool.map(p => p.id))], yrs);
+                    const series = pool.map(p => {
+                        const rows = (glMap[p.id] || []).filter(r => r.ts);
+                        if (rows.length < 20) return null;
+                        const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                        return {
+                            group, opps: rows.map(r => r.opponent || ''), tss: rows.map(r => r.ts || 0),
+                            mins: rows.map(r => (r.row && r.row.minutes) || null), homes: rows.map(r => !/^@/.test(r.vsLabel || '')),
+                            vals: Object.fromEntries(nbaAllKeys.map(k => [k, rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0)]))
+                        };
+                    }).filter(Boolean);
+
+                    const pct = (h, n) => n ? Math.round((h / n) * 100) : null;
+                    const mae = (buckets) => { let n = 0, s = 0; Object.keys(buckets).forEach(bk => { const b = buckets[bk]; if (b.n >= 25) { const gap = Math.abs(b.hit / b.n * 100 - b.sum / b.n); n += b.n; s += gap * b.n; } }); return n ? Math.round((s / n) * 100) / 100 : null; };
+                    const famRow = (o) => o && o.n ? {
+                        n: o.n, meanProbBefore: Math.round((o.sB / o.n) * 10) / 10, hitRate: Math.round((o.hit / o.n) * 100),
+                        gapBefore: Math.round((o.hit / o.n * 100 - o.sB / o.n) * 10) / 10,
+                        meanFamAdj: Math.round((o.sAdj / o.n) * 100) / 100,
+                        gapAfter: Math.round((o.hit / o.n * 100 - o.sA / o.n) * 10) / 10,
+                        brierBefore: Math.round((o.brB / o.n) * 10000) / 10000, brierAfter: Math.round((o.brA / o.n) * 10000) / 10000,
+                        loglossBefore: Math.round((o.llB / o.n) * 10000) / 10000, loglossAfter: Math.round((o.llA / o.n) * 10000) / 10000,
+                    } : null;
+
+                    const windows = WINDOWS.map(win => {
+                        const acc = emptyBacktestAcc();
+                        acc.calibVal = emptyCalibVal();
+                        const gate = { minTs: D(win.from), maxTs: D(win.to) + 864e5 };
+                        series.forEach(s => nbaAllKeys.forEach(k => {
+                            if (s.vals[k].every(v => v === 0)) return;
+                            nbaBacktestSeries(s.vals[k], s.mins, s.opps, s.tss, s.homes, s.group, k, acc, gate);
+                        }));
+                        const cv = acc.calibVal, all = cv.all;
+                        const primeFam = {};
+                        [['scoring_combo', 'combo'], ['core_individual', 'core'], ['volatile_counting', 'volatile']].forEach(([lng, sh]) => {
+                            const b = acc.primeFam[sh]; primeFam[lng] = b && b.n ? { n: b.n, rate: Math.round((b.hit / b.n) * 100) } : { n: 0, rate: null };
+                        });
+                        return {
+                            label: win.label, from: win.from, to: win.to, seen: win.seen,
+                            n: all.n,
+                            overall: {
+                                rate: pct(acc._total.hit, acc._total.n),
+                                gapBefore: all.n ? Math.round((all.hit / all.n * 100 - all.sB / all.n) * 10) / 10 : null,
+                                gapAfter: all.n ? Math.round((all.hit / all.n * 100 - all.sA / all.n) * 10) / 10 : null,
+                                maeBefore: mae(all.bucketsB), maeAfter: mae(all.bucketsA),
+                                brierBefore: all.n ? Math.round((all.brB / all.n) * 10000) / 10000 : null,
+                                brierAfter: all.n ? Math.round((all.brA / all.n) * 10000) / 10000 : null,
+                                loglossBefore: all.n ? Math.round((all.llB / all.n) * 10000) / 10000 : null,
+                                loglossAfter: all.n ? Math.round((all.llA / all.n) * 10000) / 10000 : null,
+                            },
+                            family: {
+                                scoring_combo: famRow(cv.byFam.scoring_combo),
+                                core_individual: famRow(cv.byFam.core_individual),
+                                volatile_counting: famRow(cv.byFam.volatile_counting),
+                            },
+                            primeFam
+                        };
+                    });
+
+                    const result = { ranAt: Date.now(), boundary: '2024-12-19', windows };
+                    setNbaFamStability(result);
+                    try { localStorage.setItem('beatsedge_nba_famstab_v1', JSON.stringify(result)); } catch (e) { }
+                    console.log('%cNBA · Stat Family Calibration Stability  (frozen params, non-overlapping windows, walk-forward)', 'font-weight:bold');
+                    (console.table || console.log).call(console, windows.map(w => ({
+                        window: w.label, n: w.n, seenByFamilyCalib: w.seen,
+                        gapBefore: w.overall.gapBefore, gapAfter: w.overall.gapAfter,
+                        maeBefore: w.overall.maeBefore, maeAfter: w.overall.maeAfter,
+                        brierBefore: w.overall.brierBefore, brierAfter: w.overall.brierAfter,
+                        loglossBefore: w.overall.loglossBefore, loglossAfter: w.overall.loglossAfter,
+                    })));
+                    ['scoring_combo', 'core_individual', 'volatile_counting'].forEach(f => {
+                        console.log('%c' + f, 'font-weight:bold');
+                        (console.table || console.log).call(console, windows.map(w => {
+                            const x = w.family[f] || {}; const pf = w.primeFam[f] || {};
+                            return { window: w.label, n: x.n, meanProbBefore: x.meanProbBefore, actualHit: x.hitRate, gapBefore: x.gapBefore, meanFamAdj: x.meanFamAdj, gapAfter: x.gapAfter, primeHit: pf.rate, primeN: pf.n };
+                        }));
+                    });
+                } catch (e) {
+                    console.error('Family stability run failed:', e);
+                    setNbaFamStability({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNbaFamStabilityRunning(false);
+                }
+            };
+
             const fetchPlayerProps = () => {
                 // ⚠️ HONEST NOTE ON DATA SOURCES:
                 // Player prop LINES (the actual over/under numbers PrizePicks,
@@ -12837,6 +13026,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaFreshVal={nbaFreshVal}
                                 nbaFreshValRunning={nbaFreshValRunning}
                                 onRunFreshVal={runFreshFamilyValidation}
+                                nbaFamStability={nbaFamStability}
+                                nbaFamStabilityRunning={nbaFamStabilityRunning}
+                                onRunFamStability={runFamilyStability}
                                 isPro={isPro}
                                 onUnlock={onUnlock}
                                 dataUpdatedAt={dataUpdatedAt}
