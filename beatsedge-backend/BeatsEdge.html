@@ -2833,6 +2833,14 @@
         const _edgeCache = new WeakMap();
         let _edgeRev = 0;
         function bumpEdgeCache() { _edgeRev++; }
+
+        // Step 2 sub-1.0 floor EXPERIMENT hook. Production value is `null` — the
+        // engine has no scoped-MLB-sub-1.0 branch active. `runMlbTemporalValidation`
+        // sets this to { stats:{homeRuns,doubles,triples,stolenBases -> frozen
+        // 2022-2025 base rate}, bypassCurve?:bool, rawFloor?:number } around a
+        // single holdout pass, then restores it (see the transient GRADE_CUTOFFS
+        // pattern). Nothing persists it; nothing else reads it.
+        let _MLB_LOWLINE_EXPT = null;
         function calculateEdgeScore(player, prop) {
             let pm = _edgeCache.get(player);
             if (!pm) { pm = new Map(); _edgeCache.set(player, pm); }
@@ -3402,11 +3410,28 @@
             // toward a coin flip: harder when the game log is short. This is
             // what keeps a lucky 12-game hot streak from reading as "88%".
             const shrink = Math.min(0.80, 0.45 + Math.min(sampleGames, 40) / 40 * 0.35);
-            const pDist = 0.5 + (pDistRaw - 0.5) * shrink;
+            // The distribution estimate regresses toward an ANCHOR (normally a
+            // coin flip). `_MLB_LOWLINE_EXPT` — null in production, set ONLY by
+            // the Step 2 sub-1.0 floor experiment — swaps that anchor for a
+            // frozen per-stat base rate on MLB HR/2B/3B/SB sub-1.0 lines, so a
+            // ~12%-real event isn't dragged up toward 50%. Nothing else about
+            // the pipeline changes; the flag is restored immediately after the
+            // experiment pass (same discipline as the transient GRADE_CUTOFFS).
+            // `_mlbRealStat` — the MLB backtest passes the generic key 'X' to the
+            // engine (so projStdDev etc. stay on their tuned generic path); this
+            // side field carries the true stat key for the experiment gate only.
+            const _rk = prop._mlbRealStat || prop.statKey;
+            const _llx = (_MLB_LOWLINE_EXPT && sport === 'mlb' && line < 1.0
+                && _MLB_LOWLINE_EXPT.stats && _MLB_LOWLINE_EXPT.stats[_rk] != null)
+                ? _MLB_LOWLINE_EXPT : null;
+            const distAnchor = (_llx && !_llx.noAnchor)
+                ? (direction === 'over' ? _llx.stats[_rk] : 1 - _llx.stats[_rk])
+                : 0.5;
+            const pDist = distAnchor + (pDistRaw - distAnchor) * shrink;
             probSteps.push({
                 label: 'Base rate from the projection',
                 p: pDist,
-                detail: `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - shrink) * 100)}% toward 50% for regression (${sampleGames} game sample)`
+                detail: `model ${projection} vs a ${line} line — ${Math.abs(Math.round((projection - line) * 10) / 10)} ${projection >= line ? 'above' : 'below'}; this stat swings ~±${Math.round(projSd * 10) / 10}/game and the estimate is pulled ${Math.round((1 - shrink) * 100)}% toward ${_llx ? Math.round(distAnchor * 100) + '% (frozen base rate)' : '50%'} for regression (${sampleGames} game sample)`
             });
 
             // Directional hit rate at THIS prop's exact line. Recompute it from
@@ -3483,14 +3508,21 @@
             }
 
             // Raw estimate — kept inside the band the estimator was tuned for.
-            const RAW_FLOOR = 0.22, RAW_CEIL = 0.78;
+            // The Step 2 experiment can widen the floor for its scoped MLB
+            // sub-1.0 markets (`_llx.rawFloor`) so a genuinely ~5-15% event
+            // isn't clamped back up to 22%. null flag → 0.22, unchanged.
+            const RAW_FLOOR = (_llx && typeof _llx.rawFloor === 'number') ? _llx.rawFloor : 0.22;
+            const RAW_CEIL = 0.78;
             const rawModelProb = Math.max(RAW_FLOOR, Math.min(RAW_CEIL, pAdj));
             // Map the raw estimate onto how often calls at that confidence have
             // ACTUALLY landed for this sport (see PROB_CALIB / the backtest).
             // No curve stored (well-calibrated sport, or never backtested) → the
             // raw estimate passes straight through. The calibrated value is
             // allowed a wider band (a backtested "90%" should be able to say so).
-            const pCal = applyProbCalib(rawModelProb, sport);
+            // `_llx.bypassCurve` (Step 2 experiment only) skips the MLB curve for
+            // the scoped sub-1.0 markets, whose ~32% bottom anchor otherwise
+            // pins them; production flag is null so this never fires live.
+            const pCal = (_llx && _llx.bypassCurve) ? rawModelProb : applyProbCalib(rawModelProb, sport);
             // Sport-level calibration only — this is the value the grade
             // reconciliation guards and the betting-edge % below still use, so
             // their behaviour is byte-for-byte unchanged by the family layer.
@@ -3809,7 +3841,7 @@
         const LL_PBUCKETS = ['<10', '10-14', '15-19', '20-21', '22-24', '25-29', '30-39', '40-49', '50+'];
         const llPBucket = (p) => p < 10 ? '<10' : p < 15 ? '10-14' : p < 20 ? '15-19' : p < 22 ? '20-21' : p < 25 ? '22-24' : p < 30 ? '25-29' : p < 40 ? '30-39' : p < 50 ? '40-49' : '50+';
         const LL_TARGET = new Set(['homeRuns', 'doubles', 'triples', 'stolenBases']);
-        const llBin = () => ({ n: 0, hit: 0, sumRaw: 0, sumFinal: 0, sumPre: 0, minFinal: 101, maxFinal: -1, atRawFloorN: 0, atEffFloorN: 0, brier: 0, ll: 0, cand: {}, pb: {} });
+        const llBin = () => ({ n: 0, hit: 0, sumRaw: 0, sumFinal: 0, sumPre: 0, minFinal: 101, maxFinal: -1, atRawFloorN: 0, atEffFloorN: 0, brier: 0, ll: 0, cand: {}, pb: {}, gradeN: {}, primeN: 0, sumEdge: 0 });
 
         // Walk-forward for ONE MLB player-stat series, with a {minTs,maxTs} date
         // gate (temporal holdout) and stat-family tallying. Mirrors
@@ -3846,7 +3878,7 @@
                 const w = btWindowsAsOf(hv, ho, tonightOpp, line);
                 const fake = { sport: 'mlb', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
                 for (const dir of ['over', 'under']) {
-                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', _mlbRealStat: statKey, line, direction: dir, lineSource: 'backtest' });
                     const hit = dir === 'over' ? actual > line : actual < line;
                     const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                     g.n++; if (hit) g.hit++;
@@ -3892,6 +3924,9 @@
                             if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
                             if (preRaw < 0.22) bin.atRawFloorN++;
                             if (Math.abs(finalPct - effFloorPct) <= 0.5) bin.atEffFloorN++;
+                            bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
+                            if (e.prime) bin.primeN++;
+                            bin.sumEdge += (typeof e.edgePct === 'number' ? e.edgePct : 0);
                             bin.brier += (p - y) * (p - y);
                             bin.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
                             const pk = llPBucket(finalPct);
@@ -5965,6 +6000,82 @@
                                                             </table>
                                                         </div>
                                                         <div className="backtest-panel-note" style={{ marginTop: '0.4rem', color: 'var(--text-muted)' }}>{ll.note}</div>
+                                                    </React.Fragment>
+                                                );
+                                            })()}
+
+                                            {r.lowLineStep2 && (() => {
+                                                const s2 = r.lowLineStep2, fp = s2.frozenPriors, b0 = s2.baseline.tgtOver;
+                                                const SK = [['homeRuns', 'HR'], ['doubles', '2B'], ['triples', '3B'], ['stolenBases', 'SB']];
+                                                const rows = [{ key: 'R0', label: 'current model', t: b0, se: null }].concat(s2.recipes.map(rc => ({ key: rc.key, label: rc.label, t: rc.tgtOver, se: rc.sideEffects })));
+                                                return (
+                                                    <React.Fragment>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.85rem', marginTop: '1.1rem', borderTop: '1px dashed var(--border-hairline, #2a2f3a)', paddingTop: '0.8rem' }}>
+                                                            MLB · Sub-1.0 Floor — Step 2 experiment <span style={{ color: 'var(--warning-yellow, #f5a623)', fontSize: '0.72rem', fontWeight: 700 }}>· DIAGNOSTIC ONLY — no model change</span>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                                            Q2 answer: the pull toward 50% is <code>pDist = 0.5 + (pDistRaw − 0.5) · shrink</code> in <code>_calculateEdgeScoreImpl</code> (shrink ≈ 0.80 for 40+ games → 20% pull toward 0.50), plus <code>rateAt()</code>'s <code>+k/2</code> pseudo-count. Recipes swap that 0.50 anchor for a <strong>frozen 2022–2025 per-stat base rate</strong> (HR {fp.homeRuns}% · 2B {fp.doubles}% · 3B {fp.triples}% · SB {fp.stolenBases}%), and optionally bypass <code>PROB_CALIB.mlb</code> and/or widen the raw floor. Scope: <code>mlb</code> + {'{'}HR,2B,3B,SB{'}'} + line &lt; 1.0. Evaluated on the unseen 2026 holdout.
+                                                        </div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Recipe</th><th>n</th><th>Actual</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th><th>Log loss</th><th>Prob range</th></tr></thead>
+                                                                <tbody>
+                                                                    {rows.map(rw => rw.t ? (
+                                                                        <tr key={rw.key} style={rw.key === 'B' ? { background: 'rgba(80,200,120,0.10)' } : null}>
+                                                                            <td style={{ whiteSpace: 'nowrap' }}><strong>{rw.key}</strong> · {rw.label}</td>
+                                                                            <td>{rw.t.n.toLocaleString()}</td>
+                                                                            <td>{rw.t.hitRate}%</td>
+                                                                            <td>{rw.t.meanFinal}%</td>
+                                                                            <td className={gapCls(rw.t.gap)}><strong>{g(rw.t.gap)}</strong></td>
+                                                                            <td>{rw.t.mae == null ? '—' : rw.t.mae}</td>
+                                                                            <td>{rw.t.brier}</td>
+                                                                            <td>{rw.t.logloss}</td>
+                                                                            <td>{rw.t.minFinal}–{rw.t.maxFinal}%</td>
+                                                                        </tr>
+                                                                    ) : null)}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Per-stat calibration gap (2026 holdout)</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Stat</th><th>R0</th>{s2.recipes.map(rc => <th key={rc.key}>{rc.key}</th>)}</tr></thead>
+                                                                <tbody>
+                                                                    {SK.map(([k, lbl]) => (
+                                                                        <tr key={k}>
+                                                                            <td><strong>{lbl}</strong></td>
+                                                                            <td className={s2.baseline.byStat[k] ? gapCls(s2.baseline.byStat[k].gap) : ''}>{s2.baseline.byStat[k] ? g(s2.baseline.byStat[k].gap) : '—'}</td>
+                                                                            {s2.recipes.map(rc => <td key={rc.key} className={rc.byStat[k] ? gapCls(rc.byStat[k].gap) : ''}>{rc.byStat[k] ? g(rc.byStat[k].gap) : '—'}</td>)}
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.76rem', marginTop: '0.7rem' }}>Side-effects vs R0 — is anything outside the scope touched?</div>
+                                                        <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                            <table className="backtest-calib-tbl">
+                                                                <thead><tr><th>Recipe</th><th>Target grade Δ (A/B/C/D)</th><th>Target Prime Δ</th><th>Target edge Δ</th><th>≥1.0 identical</th><th>Non-target sub-1.0 identical</th><th>Overall Brier Δ</th></tr></thead>
+                                                                <tbody>
+                                                                    {s2.recipes.map(rc => {
+                                                                        const se = rc.sideEffects;
+                                                                        return (
+                                                                            <tr key={rc.key}>
+                                                                                <td><strong>{rc.key}</strong></td>
+                                                                                <td>{se.targetGradeDelta.A}/{se.targetGradeDelta.B}/{se.targetGradeDelta.C}/{se.targetGradeDelta.D}</td>
+                                                                                <td>{se.targetPrimeDelta}</td>
+                                                                                <td>{se.targetMeanEdgeDelta == null ? '—' : g(se.targetMeanEdgeDelta)}</td>
+                                                                                <td style={{ color: se.ge1Identical ? 'var(--success-green, #4caf50)' : 'var(--danger-red)' }}>{se.ge1Identical ? 'yes' : 'NO'}</td>
+                                                                                <td style={{ color: se.nonTargetSub1Identical ? 'var(--success-green, #4caf50)' : 'var(--danger-red)' }}>{se.nonTargetSub1Identical ? 'yes' : 'NO'}</td>
+                                                                                <td>{se.overallBrierDelta == null ? '—' : (se.overallBrierDelta > 0 ? '+' : '') + se.overallBrierDelta}</td>
+                                                                            </tr>
+                                                                        );
+                                                                    })}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        <div className="backtest-panel-note" style={{ marginTop: '0.4rem', color: 'var(--text-muted)' }}>
+                                                            Target grade Δ = grade-count change on the ~40k target sub-1.0 OVER predictions (they were ~all D already; a floored over stays D). "≥1.0 identical" / "non-target sub-1.0 identical" must be <strong>yes</strong> for the scope to hold. {s2.note}
+                                                        </div>
                                                     </React.Fragment>
                                                 );
                                             })()}
@@ -10752,7 +10863,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                     // ---- freeze + validate on HOLDOUT (transient — not persisted) ----
                     const savedCut = GRADE_CUTOFFS, savedCal = PROB_CALIB;
-                    let accHold, accFull;
+                    let accHold, accFull, step2Recipes = [], step2FrozenPriors = null;
                     try {
                         if (cutoffs) GRADE_CUTOFFS = { ...GRADE_CUTOFFS, mlb: cutoffs };
                         if (probCal) PROB_CALIB = { ...PROB_CALIB, mlb: probCal };
@@ -10761,8 +10872,43 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutTs }));
                         accFull = emptyBacktestAcc(); accFull.mlbFam = {}; accFull.mlbFamPrime = {};
                         allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
+
+                        // ── STEP 2 EXPERIMENT ─────────────────────────────────
+                        // Same frozen train cutoffs/curve. Frozen per-stat base
+                        // rates = the 2022-2025 TRAIN sub-1.0 OVER hit rates
+                        // (NOT the 2026 number). For each recipe, run one extra
+                        // holdout pass with `_MLB_LOWLINE_EXPT` set, then restore.
+                        const _bs = (accTrain.lowLine && accTrain.lowLine.byStat) || {};
+                        const _rate = (k) => (_bs[k] && _bs[k].n) ? Math.round(_bs[k].hit / _bs[k].n * 1000) / 1000 : null;
+                        const frozenPriors = {
+                            homeRuns: _rate('homeRuns'), doubles: _rate('doubles'),
+                            triples: _rate('triples'), stolenBases: _rate('stolenBases')
+                        };
+                        const haveAllPriors = ['homeRuns', 'doubles', 'triples', 'stolenBases'].every(k => frozenPriors[k] != null);
+                        step2Recipes = [];
+                        if (haveAllPriors) {
+                            const RECIPES = [
+                                { key: 'A', label: 'base-rate anchor only', cfg: { stats: frozenPriors } },
+                                { key: 'B', label: 'anchor + bypass PROB_CALIB', cfg: { stats: frozenPriors, bypassCurve: true } },
+                                { key: 'C', label: 'anchor + bypass + raw floor 3%', cfg: { stats: frozenPriors, bypassCurve: true, rawFloor: 0.03 } },
+                                { key: 'D', label: 'bypass PROB_CALIB only (no anchor)', cfg: { stats: frozenPriors, noAnchor: true, bypassCurve: true } },
+                                { key: 'E', label: 'raw floor 3% only (no anchor, keep curve)', cfg: { stats: frozenPriors, noAnchor: true, rawFloor: 0.03 } }
+                            ];
+                            for (const R of RECIPES) {
+                                let accR;
+                                try {
+                                    _MLB_LOWLINE_EXPT = R.cfg; bumpEdgeCache();
+                                    accR = emptyBacktestAcc(); accR.lowLine = {};
+                                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutTs }));
+                                } finally {
+                                    _MLB_LOWLINE_EXPT = null; bumpEdgeCache();
+                                }
+                                step2Recipes.push({ key: R.key, label: R.label, acc: accR });
+                            }
+                        }
+                        step2FrozenPriors = frozenPriors;
                     } finally {
-                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; bumpEdgeCache();
+                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; _MLB_LOWLINE_EXPT = null; bumpEdgeCache();
                     }
 
                     // ---- shape ----
@@ -10849,6 +10995,48 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         note: 'DIAGNOSTIC ONLY. Candidate-floor rows re-score the compressed low-tail (pre-floor estimate < 22%) of target-stat HR/2B/3B/SB sub-1.0 OVER picks to a flat output; every other prediction is byte-identical across candidates, so >=1.0 / non-target / under rows do not move. The recommended floor is the 2022-2025 TRAIN over-rate (leak-free); the 2026 holdout sweep only confirms it and must NOT be used to pick the production value.'
                     };
 
+                    // ── Step 2 experiment shaping ─────────────────────────────
+                    const gEq = (a, b) => { a = a || {}; b = b || {}; const ks = new Set([...Object.keys(a), ...Object.keys(b)]); for (const k of ks) if ((a[k] || 0) !== (b[k] || 0)) return false; return true; };
+                    const R0tgt = (accHold.lowLine && accHold.lowLine.tgtOver) || null;
+                    const R0ge1 = (accHold.lowLine && accHold.lowLine.ge1) || null;
+                    const R0nt = (accHold.lowLine && accHold.lowLine.byStat && accHold.lowLine.byStat.rbis) || null;
+                    const R0all = (accHold.lowLine && accHold.lowLine.all) || null;
+                    const meanEdgeOf = (bin) => (bin && bin.n) ? Math.round(bin.sumEdge / bin.n * 10) / 10 : null;
+                    const lowLineStep2 = step2FrozenPriors && step2Recipes.length ? {
+                        frozenPriors: {
+                            homeRuns: step2FrozenPriors.homeRuns != null ? Math.round(step2FrozenPriors.homeRuns * 1000) / 10 : null,
+                            doubles: step2FrozenPriors.doubles != null ? Math.round(step2FrozenPriors.doubles * 1000) / 10 : null,
+                            triples: step2FrozenPriors.triples != null ? Math.round(step2FrozenPriors.triples * 1000) / 10 : null,
+                            stolenBases: step2FrozenPriors.stolenBases != null ? Math.round(step2FrozenPriors.stolenBases * 1000) / 10 : null
+                        },
+                        baseline: {
+                            tgtOver: llShape(R0tgt, { pb: true }),
+                            byStat: ['homeRuns', 'doubles', 'triples', 'stolenBases'].reduce((o, k) => { o[k] = llShape(accHold.lowLine.byStat && accHold.lowLine.byStat[k], {}); return o; }, {}),
+                            targetGradeN: R0tgt ? R0tgt.gradeN : {}, targetPrimeN: R0tgt ? R0tgt.primeN : 0, targetMeanEdge: meanEdgeOf(R0tgt)
+                        },
+                        recipes: step2Recipes.map(({ key, label, acc }) => {
+                            const t = (acc.lowLine && acc.lowLine.tgtOver) || null;
+                            const ge = (acc.lowLine && acc.lowLine.ge1) || null;
+                            const nt = (acc.lowLine && acc.lowLine.byStat && acc.lowLine.byStat.rbis) || null;
+                            const al = (acc.lowLine && acc.lowLine.all) || null;
+                            const dg = {}; ['A', 'B', 'C', 'D'].forEach(g => { dg[g] = ((t && t.gradeN[g]) || 0) - ((R0tgt && R0tgt.gradeN[g]) || 0); });
+                            return {
+                                key, label,
+                                tgtOver: llShape(t, { pb: true }),
+                                byStat: ['homeRuns', 'doubles', 'triples', 'stolenBases'].reduce((o, k) => { o[k] = llShape(acc.lowLine.byStat && acc.lowLine.byStat[k], {}); return o; }, {}),
+                                sideEffects: {
+                                    targetGradeDelta: dg,
+                                    targetPrimeDelta: ((t && t.primeN) || 0) - ((R0tgt && R0tgt.primeN) || 0),
+                                    targetMeanEdgeDelta: (meanEdgeOf(t) != null && meanEdgeOf(R0tgt) != null) ? Math.round((meanEdgeOf(t) - meanEdgeOf(R0tgt)) * 10) / 10 : null,
+                                    ge1Identical: !!(ge && R0ge1 && Math.abs(ge.brier - R0ge1.brier) < 1e-9 && gEq(ge.gradeN, R0ge1.gradeN)),
+                                    nonTargetSub1Identical: !!(nt && R0nt && Math.abs(nt.brier - R0nt.brier) < 1e-9 && gEq(nt.gradeN, R0nt.gradeN)),
+                                    overallBrierDelta: (al && R0all) ? Math.round((al.brier / al.n - R0all.brier / R0all.n) * 100000) / 100000 : null
+                                }
+                            };
+                        }),
+                        note: 'DIAGNOSTIC ONLY — no production model change. Frozen per-stat base rates are the 2022-2025 TRAIN sub-1.0 OVER hit rates (the 2026 holdout rate is NOT used as input). Each recipe = one extra holdout pass with the `_MLB_LOWLINE_EXPT` engine hook set (production value null). Scope: sport==="mlb" && statKey in {HR,2B,3B,SB} && line<1.0.'
+                    } : null;
+
                     const result = {
                         ranAt: Date.now(),
                         train: { seasons: `${CUR - 4}–${CUR - 1} seasons`, to: `${CUR}-03-14`, n: accTrain._total.n },
@@ -10861,7 +11049,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         grades, gradesFull,
                         prime: { ...(block(accHold.mlbAllPrime) || { n: accHold.primeTotal.n }), rate: pctOf(accHold.primeTotal) },
                         family: fam, familyPrime: famPrime,
-                        lowLineFloor
+                        lowLineFloor, lowLineStep2
                     };
                     setMlbTemporal(result);
                     try { localStorage.setItem('beatsedge_mlb_temporal_v1', JSON.stringify(result)); } catch (e) { }
@@ -10881,6 +11069,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         (console.table || console.log).call(console, (to.cand || []).reduce((o, c) => { if (c.n) o[c.floor + '%'] = { n: c.n, hit: c.hitRate, meanProb: c.meanProb, gap: c.gap, brier: c.brier, logloss: c.logloss }; return o; }, {}));
                         (console.table || console.log).call(console, Object.keys(_ll.holdout.byStat).reduce((o, k) => {
                             const x = _ll.holdout.byStat[k]; if (x) o[_ll.statLabel[k] || k] = { n: x.n, actual: x.hitRate, meanProb: x.meanFinal, gap: x.gap, mae: x.mae, brier: x.brier, logloss: x.logloss, atFloorPct: x.atEffFloorPct };
+                            return o;
+                        }, {}));
+                    }
+                    // Step 2 experiment dump
+                    const _s2 = result.lowLineStep2;
+                    if (_s2) {
+                        console.log(`%cMLB · Sub-1.0 Floor — Step 2 experiment  (DIAGNOSTIC ONLY, no model change)`, 'font-weight:bold');
+                        console.log(`frozen 2022-2025 base rates → HR ${_s2.frozenPriors.homeRuns}% · 2B ${_s2.frozenPriors.doubles}% · 3B ${_s2.frozenPriors.triples}% · SB ${_s2.frozenPriors.stolenBases}%`);
+                        const bt = _s2.baseline.tgtOver;
+                        (console.table || console.log).call(console, [{ recipe: 'R0 · current', n: bt.n, hit: bt.hitRate, meanProb: bt.meanFinal, gap: bt.gap, MAE: bt.mae, brier: bt.brier, logloss: bt.logloss, minP: bt.minFinal, maxP: bt.maxFinal }].concat(
+                            _s2.recipes.map(r => ({ recipe: r.key + ' · ' + r.label, n: r.tgtOver.n, hit: r.tgtOver.hitRate, meanProb: r.tgtOver.meanFinal, gap: r.tgtOver.gap, MAE: r.tgtOver.mae, brier: r.tgtOver.brier, logloss: r.tgtOver.logloss, minP: r.tgtOver.minFinal, maxP: r.tgtOver.maxFinal }))
+                        ).reduce((o, x) => { o[x.recipe] = x; delete x.recipe; return o; }, {}));
+                        _s2.recipes.forEach(r => {
+                            console.log(`  ${r.key} side-effects: target grade Δ A${r.sideEffects.targetGradeDelta.A}/B${r.sideEffects.targetGradeDelta.B}/C${r.sideEffects.targetGradeDelta.C}/D${r.sideEffects.targetGradeDelta.D} · prime Δ ${r.sideEffects.targetPrimeDelta} · mean-edge Δ ${r.sideEffects.targetMeanEdgeDelta} · ≥1.0 identical ${r.sideEffects.ge1Identical} · non-target sub-1.0 identical ${r.sideEffects.nonTargetSub1Identical} · overall Brier Δ ${r.sideEffects.overallBrierDelta}`);
+                        });
+                        (console.table || console.log).call(console, _s2.recipes.reduce((o, r) => {
+                            ['homeRuns', 'doubles', 'triples', 'stolenBases'].forEach(k => {
+                                const x = r.byStat[k]; if (x) o[r.key + ' ' + (_ll.statLabel[k] || k)] = { n: x.n, actual: x.hitRate, meanProb: x.meanFinal, gap: x.gap, brier: x.brier, logloss: x.logloss };
+                            });
                             return o;
                         }, {}));
                     }
