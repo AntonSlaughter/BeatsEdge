@@ -4025,6 +4025,95 @@
                 }
             }
         }
+        // Walk-forward for ONE NFL player-stat series with a {minTs,maxTs} date
+        // gate (temporal holdout, Item 11) + family / per-stat / confluence /
+        // rare-line calibration tallies. Mirrors mlbBacktestSeries. Diagnostic
+        // only — no NFL model change; there is no scoped NFL engine path, so
+        // this measures the CURRENT model on unseen data.
+        function nflBacktestSeries(vals, opps, tss, position, fam, statKey, acc, gate) {
+            const MIN = (gate && gate.minGames) || 6;
+            const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
+            for (let i = MIN; i < vals.length; i++) {
+                const gTs = tss[i] || 0;
+                if (maxTs && gTs && gTs >= maxTs) continue;
+                if (minTs && (!gTs || gTs < minTs)) continue;
+                const hv = vals.slice(0, i), ho = opps.slice(0, i);
+                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                if (seasonAvg <= 0) continue;
+                // Scale-aware synthetic line: big for yards, half-points for counts.
+                const step = seasonAvg > 15 ? 5 : 1;
+                const start = step === 5 ? 2.5 : 0.5;
+                let line = null, bestGap = 99;
+                for (let cand = start; cand <= seasonAvg * 1.8 + step; cand += step) {
+                    const over = hv.filter(v => v > cand).length / hv.length;
+                    const gp = Math.abs(over - 0.48);
+                    if (gp < bestGap) { bestGap = gp; line = cand; }
+                }
+                if (line == null || line <= 0) continue;
+                const actual = vals[i], tonightOpp = opps[i];
+                if (actual === line) continue;
+                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                const fake = { sport: 'nfl', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
+                for (const dir of ['over', 'under']) {
+                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                    const hit = dir === 'over' ? actual > line : actual < line;
+                    const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
+                    g.n++; if (hit) g.hit++;
+                    acc._total.n++; if (hit) acc._total.hit++;
+                    btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
+                    const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
+                    const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
+                    sb.n++; if (hit) sb.hit++;
+                    if (e.prime) { acc.primeTotal.n++; if (hit) acc.primeTotal.hit++; }
+                    btFileAlign(acc, e.greenCount, e.totalFactors, hit);
+                    btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                    if (acc.nflFam) {
+                        const y = hit ? 1 : 0, p = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 50) / 100));
+                        const tally = (o) => {
+                            o.n++; o.hit += y; o.sumProb += p * 100;
+                            o.brier += (p - y) * (p - y);
+                            o.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+                            const bk = btProbBucket(p * 100);
+                            if (bk) { const t = o.buckets[bk] || (o.buckets[bk] = { n: 0, hit: 0, sum: 0 }); t.n++; t.hit += y; t.sum += p * 100; }
+                        };
+                        tally(acc.nflAll || (acc.nflAll = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        if (fam) tally(acc.nflFam[fam] || (acc.nflFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        acc.nflByStat = acc.nflByStat || {};
+                        tally(acc.nflByStat[statKey] || (acc.nflByStat[statKey] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                        const ct = btConfTier(e.greenCount, e.totalFactors);
+                        if (ct) { acc.nflConf = acc.nflConf || {}; tally(acc.nflConf[ct] || (acc.nflConf[ct] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} })); }
+                    }
+                    // rare / low-line diagnostic (line < 1.0) — reuse the MLB helpers
+                    if (acc.lowLine) {
+                        const y = hit ? 1 : 0, finalPct = e.modelProbPct, rawPct = e.rawModelProbPct;
+                        const prePct = (typeof e.preFloorProbPct === 'number') ? e.preFloorProbPct : finalPct;
+                        const preRaw = (typeof e.preFloorRaw === 'number') ? e.preFloorRaw : prePct / 100;
+                        const pp = Math.max(0.001, Math.min(0.999, finalPct / 100));
+                        const sub1 = line < 1.0, isRare = NFL_RARE_STATS.indexOf(statKey) >= 0;
+                        const push = (bin) => {
+                            bin.n++; bin.hit += y;
+                            bin.sumRaw += rawPct; bin.sumFinal += finalPct; bin.sumPre += prePct;
+                            if (finalPct < bin.minFinal) bin.minFinal = finalPct;
+                            if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
+                            if (preRaw < 0.22) bin.atRawFloorN++;
+                            bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
+                            bin.brier += (pp - y) * (pp - y);
+                            bin.ll += -(y * Math.log(pp) + (1 - y) * Math.log(1 - pp));
+                            const pk = llPBucket(finalPct);
+                            const t = bin.pb[pk] || (bin.pb[pk] = { n: 0, hit: 0, sumP: 0 });
+                            t.n++; t.hit += y; t.sumP += finalPct;
+                        };
+                        push(acc.lowLine.all || (acc.lowLine.all = llBin()));
+                        push((sub1 ? (acc.lowLine.lt1 || (acc.lowLine.lt1 = llBin())) : (acc.lowLine.ge1 || (acc.lowLine.ge1 = llBin()))));
+                        if (sub1 && dir === 'over') {
+                            acc.lowLine.byStat = acc.lowLine.byStat || {};
+                            push(acc.lowLine.byStat[statKey] || (acc.lowLine.byStat[statKey] = llBin()));
+                            if (isRare) push(acc.lowLine.rareOver || (acc.lowLine.rareOver = llBin()));
+                        }
+                    }
+                }
+            }
+        }
         // Dual-probability calibration accumulator — filled ONLY on the fresh
         // family-calibration validation pass (nbaBacktestSeries tallies it when
         // `acc.calibVal` is present). Tracks, for "before" (sport curve only) and
@@ -4435,6 +4524,32 @@
         };
         const MLB_FAMILY_ORDER = ['hitting_volume', 'power', 'total_bases', 'run_production', 'hitter_combo', 'batter_discipline', 'speed', 'pitching_strikeout', 'pitching_outs', 'pitching_walks', 'pitching_runs', 'pitching_hits', 'pitcher_combo'];
         const MLB_FAMILY_LABEL = { hitting_volume: 'Hitting volume', power: 'Power', total_bases: 'Total bases', run_production: 'Run production', hitter_combo: 'Hitter combo', batter_discipline: 'Batter discipline', speed: 'Speed', pitching_strikeout: 'Pitching strikeout', pitching_outs: 'Pitching outs', pitching_walks: 'Pitching walks', pitching_runs: 'Pitching earned runs', pitching_hits: 'Pitching hits allowed', pitcher_combo: 'Pitcher combo' };
+
+        // Candidate NFL stat families — DIAGNOSTIC ONLY (the NFL temporal-holdout
+        // validation, Item 11). Grouped by how the number is produced. Nothing
+        // here feeds the live model. Module-scoped so nflBacktestSeries and
+        // TopPicksView both see it.
+        const NFL_STAT_FAMILY = {
+            passYds: 'passing', passAttempts: 'passing', passCompletions: 'passing',
+            passTds: 'passing_td',
+            interceptions: 'interception',
+            passRushYds: 'qb_combo',
+            rushYds: 'rushing', rushAttempts: 'rushing',
+            rushTds: 'rushing_td',
+            recYds: 'receiving', receptions: 'receiving', targets: 'receiving',
+            recTds: 'receiving_td',
+            rushRecYds: 'flex_combo',
+            longRush: 'longest', longRec: 'longest',
+            kickingPts: 'kicking', fgMade: 'kicking'
+        };
+        const NFL_FAMILY_ORDER = ['passing', 'passing_td', 'interception', 'qb_combo', 'rushing', 'rushing_td', 'receiving', 'receiving_td', 'flex_combo', 'longest', 'kicking'];
+        const NFL_FAMILY_LABEL = { passing: 'Passing volume', passing_td: 'Passing TDs', interception: 'Interceptions', qb_combo: 'QB pass+rush', rushing: 'Rushing volume', rushing_td: 'Rushing TDs', receiving: 'Receiving volume', receiving_td: 'Receiving TDs', flex_combo: 'Rush+Rec yards', longest: 'Longest play', kicking: 'Kicking' };
+        const NFL_STAT_LABEL = { passYds: 'Pass Yds', passAttempts: 'Pass Att', passCompletions: 'Completions', passTds: 'Pass TDs', interceptions: 'INT', passRushYds: 'Pass+Rush Yds', rushYds: 'Rush Yds', rushAttempts: 'Rush Att', rushTds: 'Rush TDs', recYds: 'Rec Yds', receptions: 'Receptions', targets: 'Targets', recTds: 'Rec TDs', rushRecYds: 'Rush+Rec Yds', longRush: 'Long Rush', longRec: 'Long Rec', kickingPts: 'Kicking Pts', fgMade: 'FG Made' };
+        // The low-count NFL markets whose sample line is 0.5 — the analogue of
+        // MLB HR/2B/3B/SB. The diagnostic checks whether they show the same
+        // Gaussian-tail-on-a-skewed-count over-confidence.
+        const NFL_RARE_STATS = ['passTds', 'rushTds', 'recTds', 'interceptions', 'fgMade'];
+
         function statFamilyOf(sport, statKey) {
             return (STAT_FAMILY_BY_SPORT[sport] || {})[statKey] || null;
         }
@@ -4924,7 +5039,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -6233,6 +6348,144 @@
                                 </div>
                             );
                         })()}
+
+                        {selectedSport === 'nfl' && isPro && (() => {
+                            const r = nflTemporal;
+                            const ok = r && !r.error && r.overall && r.grades;
+                            const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
+                            const gapCls = (v) => v == null ? '' : Math.abs(v) <= 3 ? 'calib-ok' : v < 0 ? 'calib-over' : 'calib-under';
+                            const FO = r && r.famOrder || [];
+                            const FL = r && r.famLabel || {};
+                            const SL = r && r.statLabel || {};
+                            const RARE = r && r.rareStats || [];
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NFL · Temporal Holdout Validation <span style={{ color: 'var(--warning-yellow, #f5a623)', fontSize: '0.72rem', fontWeight: 700 }}>· DIAGNOSTIC ONLY</span></div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        NFL model frozen. Grade cutoffs + probability curve derived from the older seasons only, then validated on the <strong>most recent complete season</strong> (unseen). Walk-forward. Synthetic half-point lines — no historical NFL line feed yet, so this validates the <strong>model</strong>, not the market (line-movement backtest still needs an archived-line history).
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nflTemporalRunning || backtestRunning || mlbTemporalRunning} onClick={onRunNflTemporal} style={{ marginTop: '0.6rem' }}>
+                                        {nflTemporalRunning ? 'Validating… (pulling 4 seasons of ESPN logs)' : (ok ? 'Re-run NFL holdout' : 'Run NFL holdout')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Train {r.train.seasons} ({r.train.n.toLocaleString()} graded sides) · Holdout {r.holdout.season} season ({r.holdout.n.toLocaleString()} sides) · Derived cutoffs {r.train.cutoffs ? 'A ' + r.train.cutoffs.A + ' / B ' + r.train.cutoffs.B + ' / C ' + r.train.cutoffs.C : '(train pool < 4k — existing kept)'}{r.train.hadCurve ? ' · curve re-fit' : ' · curve unchanged'}.
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.4rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Holdout OOS</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th><th>Log loss</th></tr></thead>
+                                                    <tbody><tr>
+                                                        <td>Overall</td>
+                                                        <td>{r.holdout.n.toLocaleString()}</td>
+                                                        <td>{r.overall.rate}%</td>
+                                                        <td>{r.overall.meanProb == null ? '—' : r.overall.meanProb + '%'}</td>
+                                                        <td className={gapCls(r.overall.gap)}><strong>{g(r.overall.gap)}</strong></td>
+                                                        <td>{r.overall.mae == null ? '—' : r.overall.mae}</td>
+                                                        <td>{r.overall.brier == null ? '—' : r.overall.brier}</td>
+                                                        <td>{r.overall.logloss == null ? '—' : r.overall.logloss}</td>
+                                                    </tr></tbody>
+                                                </table>
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.4rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Grade (holdout)</th><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>
+                                                    <tbody>
+                                                        <tr><td>Hit rate</td>{['A', 'B', 'C', 'D'].map(k => <td key={k}>{r.grades[k].rate == null ? '—' : r.grades[k].rate + '%'}</td>)}</tr>
+                                                        <tr><td>n</td>{['A', 'B', 'C', 'D'].map(k => <td key={k}>{r.grades[k].n.toLocaleString()}</td>)}</tr>
+                                                        <tr><td>full-sample hit</td>{['A', 'B', 'C', 'D'].map(k => <td key={k}>{r.full.grades[k].rate == null ? '—' : r.full.grades[k].rate + '%'}</td>)}</tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.8rem', marginTop: '0.8rem' }}>By stat family</div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Family</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th></tr></thead>
+                                                    <tbody>
+                                                        {FO.map(fk => { const x = r.family[fk]; if (!x) return null; return (
+                                                            <tr key={fk}>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{FL[fk] || fk}</td>
+                                                                <td>{x.n.toLocaleString()}</td><td>{x.hitRate}%</td><td>{x.meanProb}%</td>
+                                                                <td className={gapCls(x.gap)}>{g(x.gap)}</td><td>{x.mae == null ? '—' : x.mae}</td><td>{x.brier}</td>
+                                                            </tr>
+                                                        ); })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.8rem', marginTop: '0.8rem' }}>By stat</div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Stat</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>MAE</th><th>Brier</th></tr></thead>
+                                                    <tbody>
+                                                        {Object.keys(r.byStat).sort((a, b) => (r.byStat[b] ? r.byStat[b].n : 0) - (r.byStat[a] ? r.byStat[a].n : 0)).map(k => { const x = r.byStat[k]; if (!x) return null; const rare = RARE.indexOf(k) >= 0; return (
+                                                            <tr key={k}>
+                                                                <td style={{ whiteSpace: 'nowrap', fontWeight: rare ? 700 : 400 }}>{SL[k] || k}{rare ? ' ·rare' : ''}</td>
+                                                                <td>{x.n.toLocaleString()}</td><td>{x.hitRate}%</td><td>{x.meanProb}%</td>
+                                                                <td className={gapCls(x.gap)}>{g(x.gap)}</td><td>{x.mae == null ? '—' : x.mae}</td><td>{x.brier}</td>
+                                                            </tr>
+                                                        ); })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.8rem', marginTop: '0.8rem' }}>Confluence calibration</div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Factor tier</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th></tr></thead>
+                                                    <tbody>
+                                                        {['low', 'med', 'high'].map(t => { const x = r.conf[t]; if (!x) return null; return (
+                                                            <tr key={t}><td>{t}</td><td>{x.n.toLocaleString()}</td><td>{x.hitRate}%</td><td>{x.meanProb}%</td><td className={gapCls(x.gap)}>{g(x.gap)}</td></tr>
+                                                        ); })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            {r.align && r.align.length > 0 && (
+                                                <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                    <table className="backtest-calib-tbl">
+                                                        <thead><tr><th>Factors aligned</th>{r.align.map(a => <th key={a.green}>{a.green}</th>)}</tr></thead>
+                                                        <tbody>
+                                                            <tr><td>Hit rate</td>{r.align.map(a => <td key={a.green}>{a.rate}%</td>)}</tr>
+                                                            <tr><td>n</td>{r.align.map(a => <td key={a.green}>{a.n.toLocaleString()}</td>)}</tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                            <div className="backtest-calib-title" style={{ fontSize: '0.8rem', marginTop: '0.8rem' }}>Rare / low-line scan (does NFL have MLB's 0.5-line problem?)</div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Cohort</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th><th>Prob range</th></tr></thead>
+                                                    <tbody>
+                                                        {[['Line ≥ 1.0', r.lowLine.ge1], ['Line < 1.0 (all)', r.lowLine.lt1], ['Rare 0.5-line OVER (TD/INT/FG)', r.lowLine.rareOver]].map(([lab, x]) => x ? (
+                                                            <tr key={lab}>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{lab}</td>
+                                                                <td>{x.n.toLocaleString()}</td><td>{x.hitRate}%</td><td>{x.meanFinal}%</td>
+                                                                <td className={gapCls(x.gap)}><strong>{g(x.gap)}</strong></td>
+                                                                <td>{x.minFinal}–{x.maxFinal}%</td>
+                                                            </tr>
+                                                        ) : null)}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            {r.lowLine.byStat && Object.keys(r.lowLine.byStat).length > 0 && (
+                                                <div style={{ overflowX: 'auto', marginTop: '0.3rem' }}>
+                                                    <table className="backtest-calib-tbl">
+                                                        <thead><tr><th>0.5-line OVER by stat</th><th>n</th><th>Hit</th><th>Mean prob</th><th>Gap</th></tr></thead>
+                                                        <tbody>
+                                                            {Object.keys(r.lowLine.byStat).sort((a, b) => (r.lowLine.byStat[b] ? r.lowLine.byStat[b].n : 0) - (r.lowLine.byStat[a] ? r.lowLine.byStat[a].n : 0)).map(k => { const x = r.lowLine.byStat[k]; if (!x) return null; return (
+                                                                <tr key={k}><td style={{ whiteSpace: 'nowrap' }}>{SL[k] || k}</td><td>{x.n.toLocaleString()}</td><td>{x.hitRate}%</td><td>{x.meanFinal}%</td><td className={gapCls(x.gap)}>{g(x.gap)}</td></tr>
+                                                            ); })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                                                Gap = actual hit − mean stated probability (points). Full-sample (train+holdout) reference hit: {r.full.rate}% on {r.full.n.toLocaleString()}. {r.note} Ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     {loading ? (
@@ -6363,6 +6616,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_mlb_temporal_v1') || 'null'); } catch (e) { return null; }
             });
             const [mlbTemporalRunning, setMlbTemporalRunning] = useState(false);
+            const [nflTemporal, setNflTemporal] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nfl_temporal_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nflTemporalRunning, setNflTemporalRunning] = useState(false);
             const [sortBy, setSortBy] = useState('grade'); // 'grade' | 'edge' | 'time' | 'name' — Browse grid ordering
             const [playerSearch, setPlayerSearch] = useState(''); // Browse: filter by player / team / position
             const [playerSearchDebounced, setPlayerSearchDebounced] = useState('');
@@ -11319,6 +11576,148 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 } finally { setMlbTemporalRunning(false); }
             };
 
+            // ── NFL · Temporal Holdout Validation (Item 11) ─────────────────
+            // Same discipline as MLB. FREEZE the NFL model → derive grade
+            // cutoffs + the probability curve from OLD seasons only → validate
+            // on the most recent COMPLETE season (unseen). Break down by stat,
+            // by structural family, by A/B/C/D, by confluence tier, and scan the
+            // 0.5-line rare markets (TDs / INT / FG) for the same over-confidence
+            // MLB's HR/2B/3B/SB had. DIAGNOSTIC ONLY — no NFL model change.
+            const runNflTemporalValidation = async () => {
+                if (nflTemporalRunning || backtestRunning || mlbTemporalRunning) return;
+                setNflTemporalRunning(true);
+                try {
+                    const CUR = NFL_SEASON;
+                    const SEASONS = [CUR - 1, CUR - 2, CUR - 3, CUR - 4]; // holdout = CUR-1, train = CUR-4..CUR-2
+                    const holdoutStart = Date.parse((CUR - 1) + '-08-01T00:00:00Z');
+                    const holdoutEnd = Date.parse(CUR + '-08-01T00:00:00Z');
+                    // Build the validation pool from ESPN team rosters directly
+                    // (like NBA's backtest-pool) so the diagnostic runs whatever
+                    // the live slate looks like; seed it with any NFL players
+                    // already on the slate. Depth order ≈ starters first.
+                    const pool = new Map();
+                    (Array.isArray(playersData) ? playersData : []).filter(p => p && p.sport === 'nfl' && p.id).forEach(p => pool.set(String(p.id), { id: String(p.id), position: p.position }));
+                    const perTeamCap = { QB: 2, RB: 4, WR: 5, TE: 3, K: 1 };
+                    await Promise.all(Array.from({ length: 34 }, (_, i) => i + 1).map(async tid => {
+                        for (const u of [`${NFL_ESPN}/teams/${tid}/roster`, `${NFL_ESPN}/teams/${tid}?enable=roster`]) {
+                            try {
+                                const res = await fetch(u);
+                                if (!res.ok) continue;
+                                const rj = await res.json();
+                                const groups = rj.athletes || (rj.team && rj.team.athletes) || [];
+                                if (!groups.length) continue;
+                                const athletes = groups.flatMap(grp => Array.isArray(grp.items) ? grp.items : [grp]);
+                                const cnt = {};
+                                athletes.forEach(a => {
+                                    const pos = NFL_SKILL_POS[a.position && a.position.abbreviation];
+                                    if (!pos || !a.id || pool.has(String(a.id))) return;
+                                    if (a.status && a.status.type && /injured-reserve|suspension/i.test(a.status.type)) return;
+                                    cnt[pos] = (cnt[pos] || 0) + 1;
+                                    if (cnt[pos] > (perTeamCap[pos] || 0)) return;
+                                    pool.set(String(a.id), { id: String(a.id), position: pos });
+                                });
+                                break;
+                            } catch (e) { /* next shape / skip team */ }
+                        }
+                    }));
+                    const uniq = Array.from(pool.values()).slice(0, 150);
+                    if (uniq.length < 20) { setNflTemporal({ error: 'Could not build an NFL player pool from ESPN rosters (network?).', ranAt: Date.now() }); return; }
+                    const glMap = await nflGamelogsMulti(uniq.map(p => p.id), SEASONS);
+
+                    const allSeries = [];
+                    uniq.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        if (rows.length < 12) return;
+                        const opps = rows.map(r => r.opponent || ''), tss = rows.map(r => r.ts || 0);
+                        nflPosKeys(p.position).forEach(k => {
+                            const def = NFL_PROP_DEFS[k];
+                            const vals = rows.map(r => def.get(r.row) || 0);
+                            if (vals.every(v => v === 0)) return;
+                            allSeries.push({ k, fam: NFL_STAT_FAMILY[k] || null, vals, opps, tss, position: p.position });
+                        });
+                    });
+                    if (!allSeries.length) { setNflTemporal({ error: 'No multi-season NFL game logs returned from ESPN.', ranAt: Date.now() }); return; }
+
+                    const accTrain = emptyBacktestAcc();
+                    allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutStart }));
+                    const cutoffs = deriveGradeCutoffs(accTrain.score);
+                    const probCal = deriveProbCalib(accTrain.probRaw);
+
+                    const savedCut = GRADE_CUTOFFS, savedCal = PROB_CALIB;
+                    let accHold, accFull;
+                    try {
+                        if (cutoffs) GRADE_CUTOFFS = { ...GRADE_CUTOFFS, nfl: cutoffs };
+                        if (probCal) PROB_CALIB = { ...PROB_CALIB, nfl: probCal };
+                        bumpEdgeCache();
+                        accHold = emptyBacktestAcc(); accHold.nflFam = {}; accHold.lowLine = {};
+                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutStart, maxTs: holdoutEnd }));
+                        accFull = emptyBacktestAcc(); accFull.nflFam = {};
+                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
+                    } finally {
+                        GRADE_CUTOFFS = savedCut; PROB_CALIB = savedCal; bumpEdgeCache();
+                    }
+
+                    const pctOf = b => b && b.n ? Math.round(b.hit / b.n * 100) : null;
+                    const block = o => o && o.n ? {
+                        n: o.n, hitRate: Math.round(o.hit / o.n * 1000) / 10,
+                        meanProb: Math.round(o.sumProb / o.n * 10) / 10,
+                        gap: Math.round((o.hit / o.n * 100 - o.sumProb / o.n) * 10) / 10,
+                        brier: Math.round(o.brier / o.n * 10000) / 10000,
+                        logloss: Math.round(o.ll / o.n * 10000) / 10000,
+                        mae: (() => { let n = 0, s = 0; BT_PROB_BUCKETS.forEach(bk => { const t = o.buckets[bk]; if (t && t.n >= 25) { const gp = Math.abs(t.hit / t.n * 100 - t.sum / t.n); n += t.n; s += gp * t.n; } }); return n ? Math.round(s / n * 100) / 100 : null; })(),
+                        buckets: BT_PROB_BUCKETS.map(bk => { const t = o.buckets[bk]; if (!t || !t.n) return { bucket: bk, n: 0 }; const rate = Math.round(t.hit / t.n * 1000) / 10, mp = Math.round(t.sum / t.n * 10) / 10; return { bucket: bk, n: t.n, rate, meanProb: mp, gap: Math.round((rate - mp) * 10) / 10 }; })
+                    } : null;
+                    const grades = {}, gradesFull = {};
+                    ['A', 'B', 'C', 'D'].forEach(gg => { grades[gg] = { n: (accHold[gg] || {}).n || 0, rate: pctOf(accHold[gg]) }; gradesFull[gg] = { n: (accFull[gg] || {}).n || 0, rate: pctOf(accFull[gg]) }; });
+                    const fam = {}; NFL_FAMILY_ORDER.forEach(f => fam[f] = block(accHold.nflFam[f]));
+                    const byStat = {}; Object.keys(accHold.nflByStat || {}).forEach(k => byStat[k] = block(accHold.nflByStat[k]));
+                    const conf = {}; BT_CONF_TIERS.forEach(t => conf[t] = block((accHold.nflConf || {})[t]));
+                    const align = Object.keys(accHold.align || {}).map(gk => { const b = accHold.align[gk]; return { green: +gk, n: b.n, rate: Math.round(b.hit / b.n * 1000) / 10, avgTotal: Math.round(b.totTot / b.n * 10) / 10 }; }).filter(x => x.n >= 20).sort((a, b) => a.green - b.green);
+                    const gradeConf = {}; Object.keys(accHold.gradeConf || {}).forEach(k => { const b = accHold.gradeConf[k]; if (b.n >= 20) gradeConf[k] = { n: b.n, rate: Math.round(b.hit / b.n * 1000) / 10 }; });
+                    const llShapeN = (bin) => {
+                        if (!bin || !bin.n) return null;
+                        const n = bin.n;
+                        return {
+                            n, hitRate: Math.round(bin.hit / n * 1000) / 10,
+                            meanFinal: Math.round(bin.sumFinal / n * 10) / 10, meanPre: Math.round(bin.sumPre / n * 10) / 10,
+                            gap: Math.round((bin.hit / n * 100 - bin.sumFinal / n) * 10) / 10,
+                            brier: Math.round(bin.brier / n * 10000) / 10000,
+                            minFinal: bin.minFinal <= 100 ? bin.minFinal : null, maxFinal: bin.maxFinal >= 0 ? bin.maxFinal : null,
+                            gradeN: bin.gradeN,
+                            pb: LL_PBUCKETS.map(bk => { const t = bin.pb[bk]; if (!t || !t.n) return { bucket: bk, n: 0 }; const rate = Math.round(t.hit / t.n * 1000) / 10, mp = Math.round(t.sumP / t.n * 10) / 10; return { bucket: bk, n: t.n, rate, meanProb: mp, gap: Math.round((rate - mp) * 10) / 10 }; })
+                        };
+                    };
+                    const llH = accHold.lowLine || {};
+                    const lowLine = {
+                        all: llShapeN(llH.all), ge1: llShapeN(llH.ge1), lt1: llShapeN(llH.lt1), rareOver: llShapeN(llH.rareOver),
+                        byStat: Object.keys(llH.byStat || {}).reduce((o, k) => { o[k] = llShapeN(llH.byStat[k]); return o; }, {})
+                    };
+
+                    const result = {
+                        ranAt: Date.now(),
+                        train: { seasons: `${CUR - 4}–${CUR - 2}`, n: accTrain._total.n, cutoffs: cutoffs || null, hadCurve: !!probCal },
+                        holdout: { season: `${CUR - 1}`, n: accHold._total.n },
+                        full: { n: accFull._total.n, rate: pctOf(accFull._total), grades: gradesFull },
+                        overall: { rate: pctOf(accHold._total), ...(block(accHold.nflAll) || {}) },
+                        grades, family: fam, byStat, conf, align, gradeConf, lowLine,
+                        statLabel: NFL_STAT_LABEL, famLabel: NFL_FAMILY_LABEL, famOrder: NFL_FAMILY_ORDER, rareStats: NFL_RARE_STATS,
+                        note: `NFL model FROZEN. Grade cutoffs + probability curve derived from ${CUR - 4}–${CUR - 2} game logs only, then validated on the unseen ${CUR - 1} season. Walk-forward. Synthetic half-point lines (no historical NFL line feed yet) → this validates the MODEL, not the market. No NFL model change.`
+                    };
+                    setNflTemporal(result);
+                    try { localStorage.setItem('beatsedge_nfl_temporal_v1', JSON.stringify(result)); } catch (e) { }
+                    console.log(`%cNFL · Temporal Holdout Validation (train ${CUR - 4}-${CUR - 2} → frozen → holdout ${CUR - 1})`, 'font-weight:bold');
+                    console.log(`holdout N ${accHold._total.n.toLocaleString()} · hit ${result.overall.rate}% · gap ${result.overall.gap} · Brier ${result.overall.brier} · MAE ${result.overall.mae}`);
+                    (console.table || console.log).call(console, NFL_FAMILY_ORDER.reduce((o, f) => { const x = result.family[f]; if (x) o[NFL_FAMILY_LABEL[f]] = { n: x.n, hit: x.hitRate, meanProb: x.meanProb, gap: x.gap, mae: x.mae, brier: x.brier }; return o; }, {}));
+                    (console.table || console.log).call(console, Object.keys(result.byStat).reduce((o, k) => { const x = result.byStat[k]; if (x) o[NFL_STAT_LABEL[k] || k] = { n: x.n, hit: x.hitRate, meanProb: x.meanProb, gap: x.gap, brier: x.brier }; return o; }, {}));
+                    (console.table || console.log).call(console, { A: result.grades.A, B: result.grades.B, C: result.grades.C, D: result.grades.D });
+                    (console.table || console.log).call(console, result.conf);
+                    if (result.lowLine.rareOver) console.log(`rare 0.5-line OVER (TD/INT/FG): n ${result.lowLine.rareOver.n} · hit ${result.lowLine.rareOver.hitRate}% · mean ${result.lowLine.rareOver.meanFinal}% · gap ${result.lowLine.rareOver.gap} · range ${result.lowLine.rareOver.minFinal}-${result.lowLine.rareOver.maxFinal}%`);
+                } catch (e) {
+                    console.error('NFL temporal validation failed:', e);
+                    setNflTemporal({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally { setNflTemporalRunning(false); }
+            };
+
             // ── NBA · Stat Family Calibration Stability ─────────────────────
             // Multi-window temporal stability check. Same frozen params as the
             // fresh validation (GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB all
@@ -14231,6 +14630,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 mlbTemporal={mlbTemporal}
                                 mlbTemporalRunning={mlbTemporalRunning}
                                 onRunMlbTemporal={runMlbTemporalValidation}
+                                nflTemporal={nflTemporal}
+                                nflTemporalRunning={nflTemporalRunning}
+                                onRunNflTemporal={runNflTemporalValidation}
                                 isPro={isPro}
                                 onUnlock={onUnlock}
                                 dataUpdatedAt={dataUpdatedAt}
