@@ -15840,13 +15840,22 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             }, [basePlayers, statFilter, gradeVersion, norm]);
 
             // CHEAP part — filter by the debounced query + sort by precomputed grade.
-            // The grid order is FROZEN while the detail modal is open: opening a
-            // card triggers a data pull (game log, opponent DvP, …) that bumps
-            // that player's grade, which would otherwise re-sort the grid and
-            // slide a different player's card under the (semi-transparent)
-            // modal — the modal lives inside its card's DOM, so a re-sort makes
-            // it look like "the background jumped to another player".
+            // The grid order is FROZEN across re-renders that aren't an explicit
+            // user action (sort/search/category change, or a sport/date switch).
+            // Two things bump `playersData` without the user asking for a
+            // reshuffle: opening a card (its data pull nudges that player's
+            // grade) and the background auto-refresh (every ~90s, silently).
+            // Either one re-sorting the grid would slide a different player's
+            // card under wherever the user is looking/reading/has a modal open
+            // — "the background jumped to another player". So: only re-sort
+            // fresh when the EXPLICIT context (sort key, search, stat filter,
+            // sport, date) actually changed; otherwise keep every already-seen
+            // player pinned to their existing slot and just let their card
+            // content (props/grade/etc.) update in place. New players entering
+            // the filtered set (first load, a newly-matched search) still sort
+            // in normally among themselves.
             const orderRef = React.useRef([]);
+            const orderKeyRef = React.useRef(null);
             const filteredPlayers = React.useMemo(() => {
                 const q = norm(playerSearchDebounced.trim());
                 const rows = q
@@ -15861,8 +15870,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     time: (a, b) => String(a.p.gameTime || '').localeCompare(String(b.p.gameTime || '')),
                     name: (a, b) => String(a.p.name).localeCompare(String(b.p.name))
                 }[sortBy] || (() => 0);
+                const orderKey = `${sortBy}|${playerSearchDebounced}|${statFilter}|${selectedSport}|${selectedDate}`;
                 let sortedRows;
-                if (detailModal && orderRef.current.length) {
+                if (orderKey === orderKeyRef.current && orderRef.current.length) {
                     const pos = new Map(orderRef.current.map((id, i) => [id, i]));
                     sortedRows = rows.slice().sort((a, b) => {
                         const ai = pos.has(a.p.id) ? pos.get(a.p.id) : Infinity;
@@ -15873,9 +15883,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     sortedRows = rows.sort(cmp);
                 }
                 const out = sortedRows.map(x => x.p);
-                if (!detailModal) orderRef.current = out.map(p => p.id);
+                orderRef.current = out.map(p => p.id);
+                orderKeyRef.current = orderKey;
                 return out;
-            }, [gradedPlayers, sortBy, playerSearchDebounced, norm, detailModal]);
+            }, [gradedPlayers, sortBy, playerSearchDebounced, statFilter, selectedSport, selectedDate, norm]);
 
             // Free plan: Browse renders EXACTLY today's 4 research picks (the 2
             // best overs + 2 best unders) — each card trimmed to just the one
