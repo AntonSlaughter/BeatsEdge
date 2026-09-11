@@ -8053,6 +8053,12 @@
             const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real CFB slate from ESPN + PropLine
             const [nbaSlateSource, setNbaSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NBA slate from ESPN + PropLine
             const [wnbaSlateSource, setWnbaSlateSource] = useState('checking'); // same, for WNBA
+            // True when WNBA's CURRENT props actually came from PropLine;
+            // false when PropLine was unavailable (no key, rate-limited) and
+            // the ESPN-scoreboard + ParlayAPI fallback carried the slate
+            // instead — read by the source pill so it never claims
+            // "PropLine" for lines PropLine had no part in.
+            const [wnbaUsedProLine, setWnbaUsedProLine] = useState(true);
             const [backtest, setBacktest] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_backtest_v1') || 'null'); } catch (e) { return null; }
             });
@@ -11949,8 +11955,50 @@
             // NBA players before enough games exist).
             const wnbaDvpFor = () => null;
 
+            // Fallback slate source when PropLine's own event list is
+            // unavailable (rate-limited, key missing, etc.) — ESPN's
+            // scoreboard takes an explicit `?dates=YYYYMMDD` and is keyless,
+            // so it can answer "what games are on/coming up" independently of
+            // PropLine. Searches forward day-by-day (same "next available
+            // slate" behavior PropLine's own 72h-window fallback has) since
+            // WNBA doesn't play every day. Builds the exact same `games[]`
+            // shape fetchWnbaSlate's PropLine path does, EXCEPT `gameId` is
+            // an `espn:`-prefixed id (no PropLine event to key off of) —
+            // fetchWnbaPropLines checks for that prefix to know to skip
+            // straight to ParlayAPI instead of wasting a PropLine odds call
+            // on an id PropLine has never heard of.
+            const wnbaFetchGamesFromEspn = async (date) => {
+                for (let i = 0; i < 14; i++) {
+                    const d = new Date(Date.parse(String(date) + 'T12:00:00Z') + i * 86400000);
+                    const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+                    let sb;
+                    try { sb = await nflFetch(`${WNBA_ESPN}/scoreboard?dates=${ymd}`); } catch (e) { continue; }
+                    const evs = (sb && sb.events) || [];
+                    if (!evs.length) continue;
+                    const games = [];
+                    evs.forEach(ev => {
+                        const c = ev.competitions && ev.competitions[0];
+                        if (!c) return;
+                        const home = (c.competitors || []).find(x => x.homeAway === 'home');
+                        const away = (c.competitors || []).find(x => x.homeAway === 'away');
+                        if (!home || !away || !home.team || !away.team) return;
+                        const iso = ev.date || c.date;
+                        const kickoffMs = Date.parse(iso);
+                        if (!Number.isFinite(kickoffMs)) return;
+                        const when = new Date(kickoffMs);
+                        games.push({
+                            gameId: `espn:${ev.id}`, homeId: String(home.team.id), awayId: String(away.team.id),
+                            iso, kickoffMs, state: 'pre', status: 'Scheduled',
+                            gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                        });
+                    });
+                    if (games.length) return games;
+                }
+                return [];
+            };
+
             const fetchWnbaSlate = async (date) => {
-                if (!backendUrl || !proplineKey) return { slots: [], games: [] };
+                if (!backendUrl) return { slots: [], games: [] };
                 const plFetch = async (path) => {
                     const [p, q] = path.replace(/^\//, '').split('?');
                     const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
@@ -11960,38 +12008,45 @@
                 };
                 const resolveTeam = wnbaResolveTeam;
 
-                let events;
-                try { events = await plFetch('/v1/sports/basketball_wnba/events'); } catch (e) { return { slots: [], games: [] }; }
-                const evs = (Array.isArray(events) ? events : []).filter(e => e && e.commence_time)
-                    .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
-                if (!evs.length) return { slots: [], games: [] };
-                const dayLo = Date.parse(String(date) + 'T00:00:00Z');
-                const dayHi = dayLo + 30 * 3600 * 1000;
-                let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
-                if (!window.length) {
-                    const t0 = Date.parse(evs[0].commence_time);
-                    window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
+                let games = [];
+                if (proplineKey) {
+                    let events = null;
+                    try { events = await plFetch('/v1/sports/basketball_wnba/events'); } catch (e) { /* fall to ESPN below */ }
+                    const evs = (Array.isArray(events) ? events : []).filter(e => e && e.commence_time)
+                        .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
+                    if (evs.length) {
+                        const dayLo = Date.parse(String(date) + 'T00:00:00Z');
+                        const dayHi = dayLo + 30 * 3600 * 1000;
+                        let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
+                        if (!window.length) {
+                            const t0 = Date.parse(evs[0].commence_time);
+                            window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
+                        }
+                        const byPair = {};
+                        window.forEach(ev => {
+                            const home = resolveTeam(ev.home_team), away = resolveTeam(ev.away_team);
+                            if (!home || !away || home.id === away.id) return;
+                            const key = [home.id, away.id].sort().join('-');
+                            const ct = Date.parse(ev.commence_time);
+                            if (!byPair[key] || ct < byPair[key].ct) byPair[key] = { evId: ev.id, ct, home, away, iso: ev.commence_time };
+                        });
+                        Object.values(byPair).forEach(g => {
+                            const when = new Date(g.iso);
+                            games.push({
+                                gameId: g.evId, homeId: g.home.id, awayId: g.away.id,
+                                iso: g.iso, kickoffMs: g.ct, state: 'pre', status: 'Scheduled',
+                                gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                            });
+                        });
+                    }
                 }
-                const byPair = {};
-                window.forEach(ev => {
-                    const home = resolveTeam(ev.home_team), away = resolveTeam(ev.away_team);
-                    if (!home || !away || home.id === away.id) return;
-                    const key = [home.id, away.id].sort().join('-');
-                    const ct = Date.parse(ev.commence_time);
-                    if (!byPair[key] || ct < byPair[key].ct) byPair[key] = { evId: ev.id, ct, home, away, iso: ev.commence_time };
-                });
-                const teamMeta = {}, games = [];
-                Object.values(byPair).forEach(g => {
-                    teamMeta[g.home.id] = { abbr: g.home.abbreviation, name: g.home.displayName };
-                    teamMeta[g.away.id] = { abbr: g.away.abbreviation, name: g.away.displayName };
-                    const when = new Date(g.iso);
-                    games.push({
-                        gameId: g.evId, homeId: g.home.id, awayId: g.away.id,
-                        iso: g.iso, kickoffMs: g.ct, state: 'pre', status: 'Scheduled',
-                        gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-                    });
-                });
+                // PropLine gave us nothing (no key, rate-limited, or genuinely
+                // no posted events) — ESPN's own scoreboard still knows what
+                // games are being played, independent of PropLine entirely.
+                if (!games.length) games = await wnbaFetchGamesFromEspn(date).catch(() => []);
                 if (!games.length) return { slots: [], games: [] };
+                const teamMeta = {};
+                WNBA_TEAMS.forEach(([id, abbr, nick]) => { teamMeta[id] = { abbr, name: nick }; });
 
                 const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
                 const gameByTeam = {};
@@ -12045,7 +12100,7 @@
                 const gone = () => typeof isStale === 'function' && isStale();
                 const { games } = slate;
                 if (gone()) return [];
-                if (!backendUrl || !proplineKey) { setPropLineSource('sample'); return []; }
+                if (!backendUrl) { setPropLineSource('sample'); return []; }
                 const plFetch = async (path) => {
                     const [p, q] = path.replace(/^\//, '').split('?');
                     const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
@@ -12061,7 +12116,13 @@
                 const markets = [...new Set(Object.values(NBA_PROP_DEFS).map(d => d.market))].join(',');
                 const books = PROPLINE_BOOK_PRIORITY.join(',');
                 const linesByName = {};
-                await Promise.all(wantEventIds.map(async eid => {
+                // Skip PropLine's odds call entirely when there's no key, or
+                // when the slate came from the ESPN-scoreboard fallback above
+                // (`espn:`-prefixed game ids PropLine has never heard of) — no
+                // point spending a PropLine request on an id it can't match.
+                const usingProLineSlate = wantEventIds.length && !String(wantEventIds[0]).startsWith('espn:');
+                const canUseProLine = !!proplineKey && usingProLineSlate;
+                if (canUseProLine) await Promise.all(wantEventIds.map(async eid => {
                     try {
                         const data = await plFetch(`/v1/sports/basketball_wnba/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
                         (data.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => {
@@ -12093,14 +12154,28 @@
                 if (gone()) return [];
 
                 const bySlot = wnbaCache.current.byNorm || {};
+                const hadRealProLineLines = Object.keys(linesByName).some(nm => bySlot[nm]);
+                let parlayAdded = 0;
                 if (parlayApiKey) {
                     const pa = await fetchParlayProps('basketball_wnba', PARLAY_BB_MKT);
-                    setParlayCount(mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null));
+                    parlayAdded = mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null);
+                    setParlayCount(parlayAdded);
                 } else { setParlaySource('off'); }
                 nflConsolidate(linesByName);
+                // True once this slate has ANY prop actually sourced from
+                // PropLine — read by the pill below so it never claims
+                // "PropLine" when every line here actually came from the
+                // ESPN+ParlayAPI fallback path.
+                setWnbaUsedProLine(hadRealProLineLines);
 
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
-                if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('PropLine returned WNBA lines but none matched the roster scan (name join).'); return []; }
+                if (!matchedNames.length) {
+                    setPropLineSource('sample');
+                    setProplineError(canUseProLine
+                        ? 'PropLine returned WNBA lines but none matched the roster scan (name join).'
+                        : (parlayApiKey ? 'PropLine unavailable for WNBA (no key, or rate-limited) — ParlayAPI fallback had no matching props either.' : 'PropLine unavailable for WNBA (no key, or rate-limited), and no ParlayAPI key set for a fallback.'));
+                    return [];
+                }
 
                 const glMap = await wnbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
@@ -16779,7 +16854,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba' || selectedSport === 'wnba') ? (
                                 <span className={`source-pill ${propLineSource === 'live' ? 'live' : (propLineSource === 'sample' ? 'sample' : 'checking')}`}>
                                     {propLineSource === 'live'
-                                        ? '🟢 LIVE — Prop Lines (PropLine)'
+                                        ? (selectedSport === 'wnba' && !wnbaUsedProLine
+                                            ? '🟢 LIVE — Prop Lines (ESPN slate + ParlayAPI — PropLine unavailable)'
+                                            : '🟢 LIVE — Prop Lines (PropLine)')
                                         : (propLineSource === 'sample'
                                             ? (!proplineKey ? '🟡 SAMPLE — Prop Lines (add a PropLine key in Data Sources)'
                                                 : (!backendUrl ? '🟡 SAMPLE — Prop Lines (PropLine needs "Your Backend" URL set too)'
