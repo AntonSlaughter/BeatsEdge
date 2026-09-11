@@ -8189,6 +8189,37 @@
             // on every normal fetch trigger and on any explicit sort/search/
             // filter change (see the two effects that touch it below).
             const isSilentRefreshRef = React.useRef(false);
+            // True for the ENTIRE span of a normal (non-silent) foreground
+            // load's progressive-enrichment pipeline — form windows, PropLine/
+            // ParlayAPI lines, injuries, defense data, BallDontLie, situational
+            // — which is really ~10 separate sequential setPlayersData calls,
+            // each individually capable of nudging a grade and, before this,
+            // triggering its OWN full grid resort. That's what "random
+            // movement to different players" while just browsing turned out to
+            // be: not one jump from thin data to Prime-at-top, but up to ~10
+            // rolling reshuffles as each step landed. The grid now stays
+            // frozen (like modal-open/silent-refresh) for the whole pipeline
+            // and does exactly ONE fresh sort right as it finishes — Prime/
+            // A-grade picks still settle to the top, just in a single clean
+            // transition instead of a dozen small ones. Set true at the start
+            // of every non-silent fetchData call; cleared in that call's
+            // `finally`, guarded so a stale/abandoned call can never clear a
+            // newer call's still-in-progress freeze.
+            const enrichingRef = React.useRef(false);
+            // Mutating enrichingRef alone does NOT schedule a re-render — React
+            // only reads it whenever a render happens to occur for some OTHER
+            // reason. The pipeline's own last setPlayersData call can (and in
+            // practice sometimes does) get rendered by React BEFORE this
+            // component's `finally` line actually runs and flips the ref, since
+            // ref writes and React's own flush of a queued state update aren't
+            // ordered against each other. Left alone, that means the ONE render
+            // that matters — the settle — can land while enrichingRef still
+            // reads true, freeze it against the pre-settle order, and then
+            // nothing ever asks for a fresh sort again. `enrichTick` is a real
+            // state bump fired in the same `finally`, specifically to FORCE one
+            // more render/recompute right after the freeze lifts — independent
+            // of whatever ordering the pipeline's own last data update landed.
+            const [enrichTick, setEnrichTick] = useState(0);
             const slateMatchesSport = (list, sport) =>
                 Array.isArray(list) && list.every(p => !p || !p.sport || p.sport === sport);
             useEffect(() => {
@@ -8346,6 +8377,7 @@
                     // — keep showing the current cards instead of flashing the
                     // full-page loading state over them.
                     if (!silent) setLoading(true);
+                    if (!silent) enrichingRef.current = true;
 
                     // 1. Load the base player/prop dataset first so we know which
                     //    teams are actually in play. For MLB this is now the REAL
@@ -8487,6 +8519,30 @@
                 } catch (error) {
                     console.error('Error fetching data:', error);
                     if (!stale()) setLoading(false);
+                } finally {
+                    // Only the call that's still current may lift the freeze —
+                    // otherwise a stale/superseded call resolving late could
+                    // clear a NEWER call's still-in-progress enrichment freeze.
+                    if (loadSeqRef.current === mySeq) {
+                        // isSilentRefreshRef used to only ever get set true here
+                        // (right before a silent call) and reset false at the
+                        // START of the next NON-silent load — meaning after the
+                        // very first ~90s background refresh ever fires, the grid
+                        // stayed frozen against that refresh's pre-update order
+                        // PERMANENTLY, for the rest of the session, since nothing
+                        // ever turned it back off in between. Reset it here too,
+                        // right as this silent call's own pipeline finishes, so
+                        // the freeze only lasts for the refresh it was meant to
+                        // cover.
+                        if (silent) isSilentRefreshRef.current = false;
+                        if (!silent) enrichingRef.current = false;
+                        // Force the one render that actually reads the lifted
+                        // freeze — see enrichTick's declaration for why a ref
+                        // flip alone isn't reliably enough (mutating a ref never
+                        // schedules a render, and the pipeline's own last data
+                        // update can render before this line runs).
+                        setEnrichTick(t => t + 1);
+                    }
                 }
             };
 
@@ -15984,14 +16040,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // detail modal open (its own data pull nudges that player's
             // grade), the render right after that modal CLOSES (closing must
             // return to the same list the user was viewing, not trigger a
-            // fresh broad resort), and the ~90s silent background auto-refresh
-            // (isSilentRefreshRef, set by the fetch effects below) all keep
-            // every already-seen player pinned to their existing slot. Only
-            // the normal foreground load's OWN progressive enrichment —
-            // upgrading from season-only data to real L5/L10/matchup/PropLine
-            // numbers while no modal is open and nothing was silent — still
-            // sorts fresh each time, so Prime and A-grade picks correctly
-            // settle to the top once the real data is in.
+            // fresh broad resort), the ~90s silent background auto-refresh
+            // (isSilentRefreshRef), and the WHOLE SPAN of a normal foreground
+            // load's progressive-enrichment pipeline (enrichingRef) all keep
+            // every already-seen player pinned to their existing slot. That
+            // last one used to be unfrozen — "so Prime/A-grade picks settle to
+            // the top once real data is in" — but the pipeline is really ~10
+            // separate sequential updates (form windows, PropLine/ParlayAPI,
+            // injuries, defense data, BallDontLie, situational), each one
+            // individually triggering its own full resort: not one clean jump,
+            // a dozen small reshuffles while the user's mid-browse. Freezing
+            // the whole span and only unfreezing for ONE render right as the
+            // pipeline finishes (enrichingRef flips false in fetchData's
+            // `finally`, read by the very next render) keeps the Prime-at-top
+            // result but delivers it as a single clean settle instead.
             const orderRef = React.useRef([]);
             // isSilentRefreshRef/modalWasOpenRef are refs (not state), so they
             // can lag a render behind a state-driven freeze/unfreeze — fine
@@ -16024,7 +16086,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const modalOpenOrJustClosed = !!detailModal || modalWasOpenRef.current;
                 modalWasOpenRef.current = !!detailModal;
                 let sortedRows;
-                if (!explicitlyChanged && (modalOpenOrJustClosed || isSilentRefreshRef.current) && orderRef.current.length) {
+                if (!explicitlyChanged && (modalOpenOrJustClosed || isSilentRefreshRef.current || enrichingRef.current) && orderRef.current.length) {
                     const pos = new Map(orderRef.current.map((id, i) => [id, i]));
                     sortedRows = rows.slice().sort((a, b) => {
                         const ai = pos.has(a.p.id) ? pos.get(a.p.id) : Infinity;
@@ -16037,7 +16099,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const out = sortedRows.map(x => x.p);
                 orderRef.current = out.map(p => p.id);
                 return out;
-            }, [gradedPlayers, sortBy, playerSearchDebounced, statFilter, selectedSport, selectedDate, norm, detailModal]);
+            }, [gradedPlayers, sortBy, playerSearchDebounced, statFilter, selectedSport, selectedDate, norm, detailModal, enrichTick]);
 
             // Free plan: Browse renders EXACTLY today's 4 research picks (the 2
             // best overs + 2 best unders) — each card trimmed to just the one
