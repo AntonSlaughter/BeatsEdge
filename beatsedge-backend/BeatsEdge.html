@@ -10137,7 +10137,23 @@
                         const tByBook = tByStat[sk] || (tByStat[sk] = {});
                         Object.entries(byBook).forEach(([book, arr]) => {
                             if (tByBook[book] && tByBook[book].length) return; // PropLine wins
-                            tByBook[book] = arr.map(e => ({ ...e, primary: e.ppType === 'standard' }));
+                            const rows = arr.map(e => ({ ...e, primary: e.ppType === 'standard' }));
+                            // ParlayAPI's feed can rarely tag MORE than one line
+                            // "standard" for the same book+stat (seen live: WNBA
+                            // Points returned both a real 20.5 full-game standard
+                            // AND an erroneous 5.5 — almost certainly a partial-
+                            // game/segment market mis-tagged under the same
+                            // market_key). That's ambiguous source data, not a
+                            // real multi-primary board — letting the sort below
+                            // arbitrarily pick between tied primaries risks
+                            // showing the wrong one as THE line. Keep only the
+                            // highest-line "standard" entry primary (a genuine
+                            // full-game counting-stat line is never smaller than
+                            // a same-tagged duplicate) and demote the rest to
+                            // alt lines instead of guessing.
+                            const stdIdx = rows.reduce((best, e, i) => (e.primary && (best < 0 || e.line > rows[best].line)) ? i : best, -1);
+                            rows.forEach((e, i) => { if (e.primary && i !== stdIdx) e.primary = false; });
+                            tByBook[book] = rows;
                             added += arr.length;
                         });
                     });
@@ -10560,7 +10576,22 @@
                         if (!DFS_PLATFORMS.has(bk)) return;
                         const arr = byBook[bk];
                         if (!arr || !arr.length) return;
-                        const std = arr.find(e => e.ppType === 'standard');
+                        // A source can (rarely) tag MORE than one line
+                        // "standard" for the same book+stat — seen live: a DFS
+                        // feed returned both a real 20.5 full-game Points
+                        // standard AND an erroneous 5.5 for the same player,
+                        // almost certainly a partial-game/segment market mis-
+                        // tagged under the same key. `.find()` would just grab
+                        // whichever sorts first and silently show the wrong
+                        // number as THE line. When that happens, prefer
+                        // whichever tagged-standard line sits closest to the
+                        // sharp-book consensus if we have one; otherwise the
+                        // highest line (a genuine full-game counting-stat
+                        // number is never smaller than a same-tagged dupe).
+                        const stds = arr.filter(e => e.ppType === 'standard');
+                        const std = stds.length <= 1 ? stds[0] : (marketLine != null
+                            ? stds.slice().sort((a, b) => Math.abs(a.line - marketLine) - Math.abs(b.line - marketLine))[0]
+                            : stds.reduce((a, b) => b.line > a.line ? b : a));
                         const anchor = marketLine != null ? marketLine : median(arr.map(e => e.line));
                         const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
                         if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(3, Math.abs(marketLine) * 0.6)) { byBook[bk] = []; return; }
