@@ -14383,9 +14383,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             : activeProp.lineSource
                                                                 ? `🟢 Real line — ${activeProp.lineSource}`
                                                                 : (activeProp.isProjection
-                                                                    ? (/Fantasy/i.test(activeProp.type)
+                                                                    ? (activeProp.type === 'Pitcher Fantasy Score'
                                                                         ? '📊 Model projection — PropLine posts no fantasy-score line; this is our PrizePicks-scoring estimate (out +1, K +3, ER −3, W +6, QS +4) off the real game log'
-                                                                        : '📊 Model projection — PropLine posts no line for this stat; number is our estimate off the real game log')
+                                                                        : activeProp.type === 'Hitter Fantasy Score'
+                                                                            ? '📊 Model projection — PropLine posts no fantasy-score line; this is our DraftKings-classic scoring estimate (1B +3, 2B +5, 3B +8, HR +10, RBI +2, R +2, BB +2, HBP +2, SB +5) off the real game log'
+                                                                            : '📊 Model projection — PropLine posts no line for this stat; number is our estimate off the real game log')
                                                                     : '🟡 Sample line (anchored to season rate)')}
                                                         </div>
                                                         {activeProp.move && (
