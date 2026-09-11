@@ -2667,6 +2667,10 @@
             font-size: 0.75rem; text-transform: capitalize;
         }
         .fb-sortbtn.active { background: rgba(255,138,61,0.14); border-color: #ff8a3d; color: #ff8a3d; font-weight: 700; }
+        .fb-sortbtn:disabled, .fb-sortbtn.active:disabled {
+            cursor: not-allowed; opacity: 0.4; background: var(--bg-secondary);
+            border-color: var(--border-hairline, #2a2f3a); color: var(--text-muted); font-weight: 400;
+        }
         .fb-tbl { font-size: 0.82rem; }
         .fb-tbl .fb-name { color: var(--accent-red); cursor: pointer; font-weight: 700; white-space: nowrap; }
         .fb-tbl .fb-name:hover .fb-nametext { text-decoration: underline; }
@@ -7522,9 +7526,12 @@
                         <button className="fb-sortbtn active" style={{ fontWeight: 800 }} onClick={runBuild} disabled={!roster || buildPool.length < rosterSize}>
                             Build {buildN} lineup{buildN === 1 ? '' : 's'}
                         </button>
+                        {roster && buildPool.length < rosterSize && (
+                            <span className="fb-neg" style={{ fontWeight: 700 }}>⚠ Paste salaries above first — only {buildPool.length} of the {rosterSize} needed are priced</span>
+                        )}
                         <span className="fb-note" style={{ margin: 0 }}>
                             {showdown ? 'Showdown: 1 CPT (1.5× pts & salary) + 5 FLEX. ' : (roster ? roster.label + '. ' : '')}
-                            Pool with salary: <strong>{buildPool.length}</strong>{buildPool.length < rosterSize ? ` — need ≥ ${rosterSize}, paste salaries above (Name, Salary — a DK/FD CSV export works too)` : ''}
+                            Pool with salary: <strong>{buildPool.length}</strong>
                         </span>
                     </div>
                     {!roster && <div className="fb-note">{insuff} — no roster template for {SPORT_LABELS[sport]}.</div>}
