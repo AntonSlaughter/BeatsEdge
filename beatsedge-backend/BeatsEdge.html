@@ -7352,8 +7352,18 @@
                 const applyHash = () => { if ((window.location.hash || '').toLowerCase() === '#fantasy') setCurrentView('fantasy'); };
                 applyHash();
                 window.addEventListener('hashchange', applyHash);
-                return () => window.removeEventListener('hashchange', applyHash);
+                window.addEventListener('popstate', applyHash);
+                return () => { window.removeEventListener('hashchange', applyHash); window.removeEventListener('popstate', applyHash); };
             }, []);
+            // Once the user navigates off the Fantasy view (e.g. clicks a player,
+            // taps a nav item), drop the #fantasy hash so retyping the same URL
+            // fires `hashchange` again and lands them back — without it the hash
+            // never changes and the SPA ignores the re-entry.
+            useEffect(() => {
+                if (currentView !== 'fantasy' && (window.location.hash || '').toLowerCase() === '#fantasy') {
+                    try { window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) { window.location.hash = ''; }
+                }
+            }, [currentView]);
             useEffect(() => {
                 if (!detailModal) return;
                 const onKey = (e) => { if (e.key === 'Escape') setDetailModal(null); };
