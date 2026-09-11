@@ -10170,25 +10170,24 @@
                     const slateNorm = {};
                     players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
                     const keyFor = nn => slateNorm[nn] || null;
-                    // General gap-fill: best-effort pull across every mapped
-                    // market, for the rare case PropLine's own call missed a
-                    // stat it normally carries.
-                    const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT);
-                    let added = mergeParlay(allLinesByPid, pa, keyFor);
-                    // Hitter Fantasy Score has NO PropLine market at all
-                    // (MLB_PROP_DEFS.fantasy.market is null, by design — PropLine's
-                    // MLB odds feed genuinely carries no fantasy-score market on
-                    // any book) — so ParlayAPI is this stat's ONLY possible real
-                    // line, for every player, every day. The unfiltered pull above
-                    // spans every market across a full slate and truncates at
+                    // ONE call, scoped to just Hitter Fantasy Score — the only
+                    // stat in this map with NO PropLine market at all
+                    // (MLB_PROP_DEFS.fantasy.market is null, by design), so
+                    // ParlayAPI is its ONLY possible real-line source, for every
+                    // player, every day. An unfiltered pull across every mapped
+                    // market spans the whole day's slate and truncates at
                     // `limit` long before reaching most players (verified live:
-                    // 0 William Contreras rows at limit=1000 unfiltered). A
-                    // dedicated call scoped to just this market stays far under
-                    // the row limit (~800 rows for a full MLB slate) and reliably
-                    // covers every player, so it always gets a real chance here
-                    // instead of silently falling back to a modeled estimate.
-                    const paFantasy = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, 'player_hitter_fantasy_score');
-                    added += mergeParlay(allLinesByPid, paFantasy, keyFor);
+                    // 0 William Contreras rows at limit=1000 unfiltered) — worse,
+                    // it's pure waste for every OTHER mapped stat, since PropLine
+                    // already carries those directly and ParlayAPI's gap-fill for
+                    // them is a rare edge case. Every ParlayAPI call spends real
+                    // metered credits (confirmed live: the account hit its
+                    // billing-period credit limit during testing), so this stays
+                    // a single scoped call — same call count as before this
+                    // stat existed, not double — rather than one unfiltered call
+                    // plus one scoped call.
+                    const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, 'player_hitter_fantasy_score');
+                    const added = mergeParlay(allLinesByPid, pa, keyFor);
                     setParlayCount(added);
                 } else { setParlaySource('off'); }
 
