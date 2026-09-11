@@ -2701,6 +2701,9 @@
             font-size: 0.76rem; white-space: nowrap; }
         .fb-lu-slot { font-weight: 800; color: var(--accent-red); font-size: 0.68rem; }
         .fb-lu-sal { color: var(--text-muted); font-size: 0.7rem; }
+        .fb-lu-row { cursor: pointer; }
+        .fb-lu-row:hover td { background: var(--bg-raised, rgba(255,255,255,0.04)); }
+        .fb-lu-chip.fb-lu-locked { border-color: #ff8a3d; box-shadow: inset 0 0 0 1px #ff8a3d; }
         .fb-lu-total { font-size: 0.8rem; background: var(--bg-raised, rgba(255,255,255,0.05));
             border: 1px solid var(--border-hairline, rgba(255,255,255,0.1)); border-radius: 6px; padding: 0.25rem 0.55rem; white-space: nowrap; }
         .fb-tbl tfoot td { border-top: 2px solid var(--border-color); }
@@ -4153,7 +4156,11 @@
         // Greedy + jittered lineup construction. Returns up to `count` unique
         // rosters that satisfy the position slots and salary cap, biased toward
         // high projected FP and Prime plays. `pool` items: {row, id, pos, sal,
-        // proj, prime}. Read-only — no engine state touched.
+        // proj, prime}. `opts.locks` = { [slotIndex]: playerId } — slots the
+        // caller has hand-picked (the "build your own" grid); every generated
+        // lineup keeps them fixed and only the remaining slots are optimised/
+        // varied. Locking every slot collapses the result to that one lineup.
+        // Read-only — no engine state touched.
         const fbBuildLineups = (pool, roster, opts) => {
             const o = opts || {};
             const count = Math.max(1, Math.min(150, o.count || 20));
@@ -4165,8 +4172,23 @@
             const usable = pool.filter(x => x.sal > 0 && x.proj > 0);
             const eligibleFor = (slot, x) => slot.e == null || slot.e.includes(x.pos);
             const effSal = (slot, x) => (showdown && slot.n === 'CPT') ? Math.round(x.sal * 1.5) : x.sal;
+            const effProj = (slot, x) => (showdown && slot.n === 'CPT') ? Math.round(x.proj * 1.5 * 100) / 100 : x.proj;
+            const byId = {}; usable.forEach(x => { byId[x.id] = x; });
+
+            // Locked slots: resolve once (they don't change across attempts).
+            const rawLocks = o.locks || {};
+            const lockedIdx = Object.keys(rawLocks).map(Number).filter(i => slots[i] && rawLocks[i] != null && byId[rawLocks[i]] && eligibleFor(slots[i], byId[rawLocks[i]]));
+            const lockedPick = {};
+            lockedIdx.forEach(i => {
+                const x = byId[rawLocks[i]];
+                lockedPick[i] = { slot: slots[i].n, ...x, sal: effSal(slots[i], x), proj: effProj(slots[i], x), cpt: showdown && slots[i].n === 'CPT', baseSal: x.sal, locked: true };
+            });
+            const lockedSal = Object.values(lockedPick).reduce((s, p) => s + p.sal, 0);
+            const lockedIds = new Set(Object.values(lockedPick).map(p => p.id));
+            const freeIdx = slots.map((_, i) => i).filter(i => lockedPick[i] == null);
+
             // cheapest priced player per position group, for the "reserve enough
-            // for the slots still to fill" feasibility guard.
+            // for the slots still to fill" feasibility guard (unlocked slots only).
             const cheapByPos = {};
             usable.forEach(x => { if (cheapByPos[x.pos] == null || x.sal < cheapByPos[x.pos]) cheapByPos[x.pos] = x.sal; });
             const slotMin = (slot) => {
@@ -4174,9 +4196,9 @@
                 let m = Infinity; pgs.forEach(pg => { if (cheapByPos[pg] != null) m = Math.min(m, cheapByPos[pg]); });
                 return m;
             };
-            const suffixMin = slots.map(() => 0);
-            for (let i = slots.length - 1; i >= 0; i--) suffixMin[i] = (i + 1 < slots.length ? suffixMin[i + 1] : 0) + slotMin(slots[i]);
-            if (!isFinite(suffixMin[0])) return { lineups: [], cap, minSal: softMin, poolSize: usable.length };
+            const reserveAfter = new Array(slots.length + 1).fill(0);
+            for (let i = slots.length - 1; i >= 0; i--) reserveAfter[i] = reserveAfter[i + 1] + (lockedPick[i] ? 0 : slotMin(slots[i]));
+            if (lockedSal + reserveAfter[0] > cap || !isFinite(reserveAfter[0])) return { lineups: [], cap, minSal: softMin, poolSize: usable.length, infeasible: true };
 
             const seen = new Set(), out = [];
             let attempts = 0, maxAttempts = count * 80 + 600;
@@ -4185,28 +4207,30 @@
                 const jitter = 0.5 + (out.length / count) * 1.1; // widen as we go for diversity
                 const ranked = usable.map(x => ({ x, w: (x.proj * (x.prime ? 1.12 : 1)) * (1 + (Math.random() - 0.5) * jitter) }))
                     .sort((a, b) => b.w - a.w).map(r => r.x);
-                const picked = [], usedIds = new Set();
-                let sal = 0, ok = true;
-                for (let si = 0; si < slots.length; si++) {
-                    const slot = slots[si];
-                    const reserve = si + 1 < slots.length ? suffixMin[si + 1] : 0;
+                const picked = new Array(slots.length).fill(null);
+                lockedIdx.forEach(i => { picked[i] = lockedPick[i]; });
+                const usedIds = new Set(lockedIds);
+                let sal = lockedSal, ok = true;
+                for (let k = 0; k < freeIdx.length; k++) {
+                    const si = freeIdx[k], slot = slots[si];
+                    const reserve = reserveAfter[si + 1];
                     const cand = ranked.find(x => !usedIds.has(x.id) && eligibleFor(slot, x) && sal + effSal(slot, x) + reserve <= cap);
                     if (!cand) { ok = false; break; }
                     usedIds.add(cand.id);
                     const es = effSal(slot, cand);
-                    picked.push({ slot: slot.n, ...cand, sal: es, proj: (showdown && slot.n === 'CPT') ? Math.round(cand.proj * 1.5 * 100) / 100 : cand.proj, cpt: showdown && slot.n === 'CPT', baseSal: cand.sal });
+                    picked[si] = { slot: slot.n, ...cand, sal: es, proj: effProj(slot, cand), cpt: showdown && slot.n === 'CPT', baseSal: cand.sal };
                     sal += es;
                 }
                 if (!ok) continue;
                 // upgrade pass: spend down toward the cap for a higher projection —
-                // swap the weakest picks for costlier unused eligible players.
-                // Softer target for showdown so a thin single-game pool still
-                // yields varied lineups.
+                // swap the weakest UNLOCKED picks for costlier unused eligible
+                // players. Softer target for showdown so a thin single-game pool
+                // still yields varied lineups.
                 let guard = 0;
                 const upTarget = Math.round(cap * (showdown ? 0.90 : 0.97));
                 while (sal < upTarget && guard++ < 14) {
                     let best = null;
-                    for (let j = 0; j < picked.length; j++) {
+                    for (const j of freeIdx) {
                         const cur = picked[j], slot = slots[j];
                         const room = cap - sal + cur.sal;
                         for (const x of usable) {
@@ -4214,7 +4238,7 @@
                             if (!eligibleFor(slot, x)) continue;
                             const es = effSal(slot, x);
                             if (es > room || es <= cur.sal) continue;
-                            const np = (showdown && slot.n === 'CPT') ? x.proj * 1.5 : x.proj;
+                            const np = effProj(slot, x);
                             const gain = np - cur.proj;
                             if (gain > 0 && (!best || gain > best.gain)) best = { j, x, es, np, gain };
                         }
@@ -7212,13 +7236,42 @@
             const persist = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { } };
 
             const normName = (n) => String(n || '').toLowerCase().replace(/[^a-z]/g, '');
+            // Accepts three shapes: (1) a raw DK/FD CSV export with a header row
+            // (Name/Nickname/Player + Salary columns, in any order, extra columns
+            // ignored, "Name (12345)" ID suffixes stripped); (2) simple "Name,
+            // Salary" lines; (3) a messier multi-column paste — picks the
+            // right-most token that looks like a real salary ($500-$20,000)
+            // rather than assuming it's the last column, so stray columns
+            // (game info, team, avg pts) don't get mistaken for it.
             const parseKV = (txt) => {
                 const m = {};
-                String(txt || '').split(/\r?\n/).forEach(line => {
-                    const parts = line.split(/[\t,;|]/).map(s => s.trim());
+                const lines = String(txt || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                if (!lines.length) return m;
+                const stripId = (s) => s.trim().replace(/\s*\(\d+\)\s*$/, '').trim();
+                const header = lines[0].split(',').map(s => s.trim().toLowerCase());
+                const nameIdx = header.findIndex(h => h === 'name' || h === 'nickname' || h === 'player');
+                const salIdx = header.findIndex(h => h === 'salary');
+                if (nameIdx >= 0 && salIdx >= 0) {
+                    lines.slice(1).forEach(line => {
+                        const parts = line.split(',');
+                        if (parts.length <= Math.max(nameIdx, salIdx)) return;
+                        const name = stripId(parts[nameIdx] || '');
+                        const num = parseFloat(String(parts[salIdx] || '').replace(/[^0-9.\-]/g, ''));
+                        if (name && isFinite(num)) m[normName(name)] = num;
+                    });
+                    return m;
+                }
+                lines.forEach(line => {
+                    const parts = line.split(/[\t,;|]/).map(s => s.trim()).filter(Boolean);
                     if (parts.length < 2) return;
-                    const num = parseFloat(String(parts[parts.length - 1]).replace(/[^0-9.\-]/g, ''));
-                    const name = parts.slice(0, parts.length - 1).join(' ').trim();
+                    let numIdx = -1;
+                    for (let i = parts.length - 1; i >= 1; i--) {
+                        const v = parseFloat(parts[i].replace(/[^0-9.\-]/g, ''));
+                        if (isFinite(v) && v >= 500 && v <= 20000) { numIdx = i; break; }
+                    }
+                    if (numIdx === -1) return;
+                    const num = parseFloat(parts[numIdx].replace(/[^0-9.\-]/g, ''));
+                    const name = stripId(parts.slice(0, numIdx).join(' '));
                     if (name && isFinite(num)) m[normName(name)] = num;
                 });
                 return m;
@@ -7356,7 +7409,16 @@
                 .filter(r => r.sal != null && r.projFp > 0)
                 .map(r => ({ id: r.p.id, row: r, pos: fbPosGroup(sport, r.p.position), sal: r.sal, proj: r.projFp, prime: !!r.prime }));
             const rosterSize = showdown ? 6 : (roster ? roster.slots.length : 8);
-            const runBuild = () => { if (roster) setLineups(fbBuildLineups(buildPool, roster, { count: buildN, showdown })); };
+            // Whatever is already picked in the grid below acts as a LOCK: every
+            // generated lineup keeps those players in place and only optimises/
+            // varies the remaining slots. Lock every slot and "Build" returns
+            // exactly that one lineup back (as a validity check).
+            const runBuild = () => {
+                if (!roster) return;
+                const locks = {};
+                Object.keys(manualPick).forEach(k => { if (manualPick[k]) locks[k] = manualPick[k]; });
+                setLineups(fbBuildLineups(buildPool, roster, { count: buildN, showdown, locks }));
+            };
 
             // ── Manual "build your own lineup" wiring ─────────────────────
             const manualSlots = showdown
@@ -7404,59 +7466,11 @@
                 });
                 setManualPick(next);
             };
-            const manualPanel = analysis && roster && (
-                <React.Fragment>
-                    <div className="fb-sec-title">✍️ Build your own lineup <span className="fb-note-inline">({showdown ? 'showdown — CPT is 1.5× salary & points' : roster.label} · cap ${manualCap.toLocaleString()})</span></div>
-                    <div className="fb-build-bar">
-                        <span className={`fb-lu-total ${mOverCap ? 'fb-neg' : ''}`}>Salary ${mSalary.toLocaleString()} / ${manualCap.toLocaleString()}{mAllPriced ? ` · $${(manualCap - mSalary).toLocaleString()} left` : ' · some picks unpriced'}{mRemainSlots > 0 && mAllPriced && !mOverCap ? ` · $${Math.floor((manualCap - mSalary) / mRemainSlots).toLocaleString()}/slot avg` : ''}</span>
-                        <span className="fb-lu-total">Proj FP <strong>{r1(mProj)}</strong></span>
-                        <span className="fb-lu-total">{mFilled.length}/{manualSlots.length} filled</span>
-                        {mPrime > 0 && <span className="fb-lu-total">⭐ {mPrime}</span>}
-                        <button className="fb-sortbtn" onClick={manualAutofill} disabled={mRemainSlots === 0 || buildPool.length === 0}>Autofill empty (best value)</button>
-                        <button className="fb-sortbtn" onClick={() => setManualPick({})} disabled={mFilled.length === 0}>Clear</button>
-                        {mOverCap && <span className="fb-neg" style={{ fontWeight: 700 }}>Over the cap by ${(mSalary - manualCap).toLocaleString()}</span>}
-                        {mComplete && !mOverCap && <span className="fb-pos" style={{ fontWeight: 700 }}>✓ Valid lineup</span>}
-                    </div>
-                    <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
-                        <thead><tr><th>Slot</th><th>Player</th><th>Pos</th><th>Opp</th><th>Salary</th><th>Proj FP</th><th>Value</th></tr></thead>
-                        <tbody>{manualSlots.map((slot, i) => {
-                            const r = mRowById[manualPick[i]];
-                            const eff = r ? mEff(i, r) : null;
-                            const opts = buildRows
-                                .filter(x => mEligible(slot, x) && (!mChosenIds.has(x.p.id) || manualPick[i] === x.p.id))
-                                .sort((a, b) => (b.projFp || 0) - (a.projFp || 0));
-                            return (
-                                <tr key={i}>
-                                    <td><span className="fb-lu-slot">{slot.n}</span></td>
-                                    <td>
-                                        <select className="fb-input" style={{ maxWidth: 240 }} value={manualPick[i] || ''}
-                                            onChange={e => setManualPick(pp => ({ ...pp, [i]: e.target.value || undefined }))}>
-                                            <option value="">— pick —</option>
-                                            {opts.map(x => (
-                                                <option key={x.p.id} value={x.p.id}>
-                                                    {x.p.name} · {x.sal != null ? '$' + x.sal.toLocaleString() : 'no salary'} · {r1(x.projFp)} FP{x.prime ? ' ⭐' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </td>
-                                    <td>{r ? (r.p.position || '—') : '—'}</td>
-                                    <td>{r ? (r.p.opponent || '—') : '—'}</td>
-                                    <td>{eff && eff.sal != null ? '$' + eff.sal.toLocaleString() + (eff.isCpt ? ' (1.5×)' : '') : '—'}</td>
-                                    <td>{eff ? <strong>{r1(eff.proj)}</strong> : '—'}</td>
-                                    <td>{eff && eff.sal ? (eff.proj / (eff.sal / 1000)).toFixed(2) : '—'}</td>
-                                </tr>
-                            );
-                        })}</tbody>
-                        <tfoot><tr>
-                            <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total</td>
-                            <td className={mOverCap ? 'fb-neg' : ''} style={{ fontWeight: 700 }}>${mSalary.toLocaleString()}</td>
-                            <td style={{ fontWeight: 700 }}>{r1(mProj)}</td>
-                            <td>{mSalary ? (mProj / (mSalary / 1000)).toFixed(2) : '—'}</td>
-                        </tr></tfoot>
-                    </table></div>
-                    <div className="fb-note">Player lists are filtered to the slots each position can fill and to the selected slate. Salary/value need a pasted salary; projection is the same fantasy-layer number as the tables above. Nothing here is submitted anywhere.</div>
-                </React.Fragment>
-            );
+            // Pull one generated lineup back into the editable grid above (e.g.
+            // to lock a few of its players and re-build, or just to inspect it).
+            const loadLineup = (L) => {
+                const next = {}; L.players.forEach((pl, i) => { if (pl) next[i] = pl.id; }); setManualPick(next);
+            };
             const topAlerts = analysis && (
                 <React.Fragment>
                     <div className="fb-sec-title">⬆ Next Man Up impact <span className="fb-note-inline">(reads the existing injury / role system — shown first)</span></div>
@@ -7491,7 +7505,7 @@
             );
             const builderPanel = analysis && (
                 <React.Fragment>
-                    <div className="fb-sec-title">🧱 Lineup builder <span className="fb-note-inline">(research — maximises projected FP under the DK salary cap; up to 150 lineups)</span></div>
+                    <div className="fb-sec-title">🧱 Lineup builder <span className="fb-note-inline">(research — pick players below and/or hit Build; anything you've picked is locked into every generated lineup, up to 150)</span></div>
                     <div className="fb-build-bar">
                         <label className="fb-inp-label" style={{ margin: 0 }}>Slate&nbsp;
                             <select className="fb-input" style={{ width: 'auto', display: 'inline-block' }} value={slateKey} onChange={e => { setSlateKey(e.target.value); setLineups(null); setManualPick({}); }}>
@@ -7510,21 +7524,73 @@
                         </button>
                         <span className="fb-note" style={{ margin: 0 }}>
                             {showdown ? 'Showdown: 1 CPT (1.5× pts & salary) + 5 FLEX. ' : (roster ? roster.label + '. ' : '')}
-                            Pool with salary: <strong>{buildPool.length}</strong>{buildPool.length < rosterSize ? ` — need ≥ ${rosterSize}, paste more salaries` : ''}
+                            Pool with salary: <strong>{buildPool.length}</strong>{buildPool.length < rosterSize ? ` — need ≥ ${rosterSize}, paste salaries above (Name, Salary — a DK/FD CSV export works too)` : ''}
                         </span>
                     </div>
                     {!roster && <div className="fb-note">{insuff} — no roster template for {SPORT_LABELS[sport]}.</div>}
+
+                    {roster && (<React.Fragment>
+                        <div className="fb-build-bar">
+                            <span className={`fb-lu-total ${mOverCap ? 'fb-neg' : ''}`}>Salary ${mSalary.toLocaleString()} / ${manualCap.toLocaleString()}{mAllPriced ? ` · $${(manualCap - mSalary).toLocaleString()} left` : ' · some picks unpriced'}{mRemainSlots > 0 && mAllPriced && !mOverCap ? ` · $${Math.floor((manualCap - mSalary) / mRemainSlots).toLocaleString()}/slot avg` : ''}</span>
+                            <span className="fb-lu-total">Proj FP <strong>{r1(mProj)}</strong></span>
+                            <span className="fb-lu-total">{mFilled.length}/{manualSlots.length} filled</span>
+                            {mPrime > 0 && <span className="fb-lu-total">⭐ {mPrime}</span>}
+                            <button className="fb-sortbtn" onClick={manualAutofill} disabled={mRemainSlots === 0 || buildPool.length === 0}>Autofill empty (best value)</button>
+                            <button className="fb-sortbtn" onClick={() => setManualPick({})} disabled={mFilled.length === 0}>Clear</button>
+                            {mOverCap && <span className="fb-neg" style={{ fontWeight: 700 }}>Over the cap by ${(mSalary - manualCap).toLocaleString()}</span>}
+                            {mComplete && !mOverCap && <span className="fb-pos" style={{ fontWeight: 700 }}>✓ Valid lineup</span>}
+                        </div>
+                        <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                            <thead><tr><th>Slot</th><th>Player</th><th>Pos</th><th>Opp</th><th>Salary</th><th>Proj FP</th><th>Value</th></tr></thead>
+                            <tbody>{manualSlots.map((slot, i) => {
+                                const r = mRowById[manualPick[i]];
+                                const eff = r ? mEff(i, r) : null;
+                                const opts = buildRows
+                                    .filter(x => mEligible(slot, x) && (!mChosenIds.has(x.p.id) || manualPick[i] === x.p.id))
+                                    .sort((a, b) => (b.projFp || 0) - (a.projFp || 0));
+                                return (
+                                    <tr key={i}>
+                                        <td><span className="fb-lu-slot">{slot.n}</span></td>
+                                        <td>
+                                            <select className="fb-input" style={{ maxWidth: 240 }} value={manualPick[i] || ''}
+                                                onChange={e => setManualPick(pp => ({ ...pp, [i]: e.target.value || undefined }))}>
+                                                <option value="">— pick —</option>
+                                                {opts.map(x => (
+                                                    <option key={x.p.id} value={x.p.id}>
+                                                        {x.p.name} · {x.sal != null ? '$' + x.sal.toLocaleString() : 'no salary'} · {r1(x.projFp)} FP{x.prime ? ' ⭐' : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </td>
+                                        <td>{r ? (r.p.position || '—') : '—'}</td>
+                                        <td>{r ? (r.p.opponent || '—') : '—'}</td>
+                                        <td>{eff && eff.sal != null ? '$' + eff.sal.toLocaleString() + (eff.isCpt ? ' (1.5×)' : '') : '—'}</td>
+                                        <td>{eff ? <strong>{r1(eff.proj)}</strong> : '—'}</td>
+                                        <td>{eff && eff.sal ? (eff.proj / (eff.sal / 1000)).toFixed(2) : '—'}</td>
+                                    </tr>
+                                );
+                            })}</tbody>
+                            <tfoot><tr>
+                                <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total</td>
+                                <td className={mOverCap ? 'fb-neg' : ''} style={{ fontWeight: 700 }}>${mSalary.toLocaleString()}</td>
+                                <td style={{ fontWeight: 700 }}>{r1(mProj)}</td>
+                                <td>{mSalary ? (mProj / (mSalary / 1000)).toFixed(2) : '—'}</td>
+                            </tr></tfoot>
+                        </table></div>
+                        <div className="fb-note">Any slot you pick above is a <strong>lock</strong> — Build fills only what's left and keeps your picks in every result. Leave everything empty for a fully automatic build. Player lists are filtered to the slots each position can fill and to the selected slate; nothing here is submitted anywhere.</div>
+                    </React.Fragment>)}
+
                     {lineups && (lineups.lineups.length === 0
-                        ? <div className="fb-note">No valid lineup fit the cap with this pool. Paste more salaries (especially cheaper players) or widen the slate.</div>
+                        ? <div className="fb-note">No valid lineup fit the cap with this pool{Object.values(manualPick).some(Boolean) ? ' and your locked picks' : ''}. Paste more salaries (especially cheaper players), widen the slate, or clear a locked pick.</div>
                         : <React.Fragment>
-                            <div className="fb-note">Built <strong>{lineups.lineups.length}</strong> unique lineup{lineups.lineups.length === 1 ? '' : 's'} from {lineups.poolSize} priced players · cap ${lineups.cap.toLocaleString()} · min spend ${lineups.minSal.toLocaleString()}{lineups.lineups.length < buildN ? ` (pool only supports ${lineups.lineups.length})` : ''}.</div>
+                            <div className="fb-note">Built <strong>{lineups.lineups.length}</strong> unique lineup{lineups.lineups.length === 1 ? '' : 's'} from {lineups.poolSize} priced players · cap ${lineups.cap.toLocaleString()}{lineups.lineups.length < buildN ? ` (pool only supports ${lineups.lineups.length}${Object.values(manualPick).some(Boolean) ? ' with your current locks' : ''})` : ''}. Click a row to load it into the grid above.</div>
                             <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
                                 <thead><tr><th>#</th><th>Roster</th><th>Salary</th><th>Proj FP</th><th>Prime</th></tr></thead>
                                 <tbody>{lineups.lineups.map((L, i) => (
-                                    <tr key={i}>
+                                    <tr key={i} className="fb-lu-row" onClick={() => loadLineup(L)} title="Load into the grid above">
                                         <td>{i + 1}</td>
                                         <td style={{ whiteSpace: 'normal' }}>{L.players.map((pl, j) => (
-                                            <span key={j} className="fb-lu-chip" title={pl.slot}>
+                                            <span key={j} className={`fb-lu-chip ${pl.locked ? 'fb-lu-locked' : ''}`} title={pl.slot}>
                                                 <span className="fb-lu-slot">{pl.slot}{pl.cpt ? '★' : ''}</span> {pl.row.p.name} <span className="fb-lu-sal">${(pl.sal / 1000).toFixed(1)}k</span>
                                             </span>
                                         ))}</td>
@@ -7535,8 +7601,6 @@
                                 ))}</tbody>
                             </table></div>
                         </React.Fragment>)}
-
-                    {manualPanel}
                 </React.Fragment>
             );
 
