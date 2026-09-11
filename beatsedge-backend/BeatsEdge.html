@@ -1012,6 +1012,10 @@
             border: 1px solid rgba(245,166,35,0.4); order: -1;
         }
 
+        .prop-pill-unavail {
+            font-size: 0.72rem; font-weight: 700; font-style: italic; color: var(--text-muted);
+        }
+
         .hit-indicator {
             width: 8px;
             height: 8px;
@@ -5672,8 +5676,10 @@
                             <div className="prime-card-id">
                                 <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                 <div className="prime-card-prop">
-                                    {p.prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — BeatsEdge estimate, not a real market line">MODEL</span>}
-                                    {' '}{p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}
+                                    {p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'}{' '}
+                                    {p.prop.isProjection
+                                        ? <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line. See Model Projection in the breakdown.">Line unavailable</span>
+                                        : p.prop.line}
                                     {(() => {
                                         // Every Prime pick shows a sportsbook, on every sport. If this
                                         // prop wasn't matched to a specific live book line (a sample/
@@ -5735,8 +5741,10 @@
                                 <div>
                                     <div className="top-pick-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                     <div className="top-pick-prop">
-                                        {p.prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — BeatsEdge estimate, not a real market line">MODEL</span>}
-                                        {' '}{p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
+                                        {p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{' '}
+                                        {p.prop.isProjection
+                                            ? <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line. See Model Projection in the breakdown.">Line unavailable</span>
+                                            : p.prop.line}
                                         {p.prop.lineSource && <span className="top-pick-real" title={p.prop.lineSource}> ●</span>}
                                     </div>
                                 </div>
@@ -14390,14 +14398,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {prop.altLine && !prop.ppKind && <span className="prop-pill-alt">ALT</span>}
                                                 </div>
                                                 <div className="prop-pill-value">
-                                                    {/* isProjection = no book/DFS platform posts this stat — the number
-                                                        is BeatsEdge's own computed line, never a real PrizePicks/
-                                                        sportsbook quote. Marked distinctly so it can never be mistaken
-                                                        for one — the line belongs to the source, the estimate is ours. */}
-                                                    {prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — this number is BeatsEdge's own estimate, not a real PrizePicks/sportsbook line">MODEL</span>}
-                                                    {prop.line}
-                                                    {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
-                                                    {prop.lineSource && <span title={prop.lineSource} style={{ fontSize: '0.6rem', color: 'var(--success-green)', marginLeft: '0.3rem' }}>●</span>}
+                                                    {/* isProjection = no book/DFS platform posts this stat — there is
+                                                        NO real sportsbook/PrizePicks line to show, full stop. The line
+                                                        slot must never hold BeatsEdge's own estimate — that's a
+                                                        SEPARATE field (Model Projection, shown in the detail modal),
+                                                        never displayed here as if it were the source line. */}
+                                                    {prop.isProjection ? (
+                                                        <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection in the detail breakdown.">Line unavailable</span>
+                                                    ) : (
+                                                        <>
+                                                            {prop.line}
+                                                            {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
+                                                            {prop.lineSource && <span title={prop.lineSource} style={{ fontSize: '0.6rem', color: 'var(--success-green)', marginLeft: '0.3rem' }}>●</span>}
+                                                        </>
+                                                    )}
                                                     {prop.move && prop.move.delta !== 0 && (
                                                         <span className={`prop-move ${prop.move.delta > 0 ? 'up' : 'down'}`}
                                                             title={`Opened at ${prop.move.open} today${prop.move.moveCount > 1 ? ` · ${prop.move.moveCount} moves` : ''} · now ${prop.move.to} (${prop.move.openDelta > 0 ? '+' : ''}${prop.move.openDelta} from open)`}>
@@ -14492,9 +14506,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <div>
                                                         <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
                                                         <div className="edge-prop-line">
-                                                            {activeProp.isProjection ? 'Model Line (no live book posts this stat): ' : 'Line: '}{activeProp.line}
-                                                            {activeProp.direction === 'over' ? ' O' : ' U'}
-                                                            {typeof activeProp.odds === 'number' ? ` (${activeProp.odds > 0 ? '+' : ''}${activeProp.odds})` : ''}
+                                                            {activeProp.isProjection ? (
+                                                                <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection below.">
+                                                                    Line unavailable ({activeProp.direction === 'over' ? 'Over' : 'Under'} side)
+                                                                </span>
+                                                            ) : (
+                                                                <>
+                                                                    Line: {activeProp.line}
+                                                                    {activeProp.direction === 'over' ? ' O' : ' U'}
+                                                                    {typeof activeProp.odds === 'number' ? ` (${activeProp.odds > 0 ? '+' : ''}${activeProp.odds})` : ''}
+                                                                </>
+                                                            )}
                                                             {' • '}{player.position} vs {player.opponent}
                                                             {player.sport === 'nba' && player.projMin != null && (
                                                                 <span title="Projected minutes tonight — weighted blend of L5 / L10 / L20 minutes played">
@@ -14647,8 +14669,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         <div className="projection-value">{edge.projection}</div>
                                                     </div>
                                                     <div className="projection-item">
-                                                        <div className="projection-label" title={activeProp.isProjection ? 'No live book posts this stat — BeatsEdge estimate, not a real market line' : 'The real posted line from the source book'}>{activeProp.isProjection ? 'Line (Model)' : 'Line'}</div>
-                                                        <div className="projection-value">{activeProp.line}</div>
+                                                        <div className="projection-label" title={activeProp.isProjection ? 'No live book posts this stat — there is no real sportsbook/PrizePicks line' : 'The real posted line from the source book'}>Line</div>
+                                                        {activeProp.isProjection
+                                                            ? <div className="projection-value prop-pill-unavail" style={{ fontSize: '1rem' }}>Line unavailable</div>
+                                                            : <div className="projection-value">{activeProp.line}</div>}
                                                     </div>
                                                     <div className="projection-item">
                                                         <div className="projection-label">Edge</div>
