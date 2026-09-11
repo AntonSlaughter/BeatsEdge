@@ -2130,6 +2130,9 @@
         .research-tbl td { padding: 0.32rem 0.45rem; border-top: 1px solid var(--border-color); }
         .research-tbl td.num { text-align: right; font-weight: 700; }
         .research-tbl .rs-mine td { background: rgba(255,68,54,0.07); }
+        .edge-compare-books { margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px solid var(--border-color); }
+        .edge-compare-books-title { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 0.35rem; }
+        .edge-compare-books .research-tbl tr.edge-compare-active td { background: rgba(255,68,54,0.1); font-weight: 700; }
         .research-assess { margin-top: 0.5rem; font-size: 0.78rem; font-weight: 700; }
         .research-assess.g { color: var(--success-green); }
         .research-assess.r { color: var(--danger-red); }
@@ -15273,6 +15276,43 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     {Math.abs(gap) >= 0.5
                                                                         ? <span className={better ? 'good' : 'bad'}> — {gap > 0 ? '+' : ''}{gap}, the {better ? 'better' : 'worse'} number for the {activeProp.direction}</span>
                                                                         : <span> — in line with the market</span>}
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                        {(() => {
+                                                            // Every book's line for THIS exact stat, side by side — all
+                                                            // of it already sitting in memory (player._allLines is
+                                                            // fetched once per slate load with every book included,
+                                                            // regardless of which platform tab is currently active),
+                                                            // so this is a pure render, no extra fetch. Real numbers
+                                                            // only: a book with nothing for this stat is simply
+                                                            // absent from the list, never filled in or estimated.
+                                                            const byBook = player._allLines && player._allLines[activeProp.statKey];
+                                                            if (!byBook) return null;
+                                                            const rows = platforms.map(p => {
+                                                                const arr = byBook[p.id];
+                                                                if (!arr || !arr.length) return null;
+                                                                const e = arr.find(x => x.primary) || arr[0];
+                                                                return { id: p.id, name: p.name, line: e.line, over: e.over, under: e.under, ppKind: e.ppType, oneWay: e.under == null };
+                                                            }).filter(Boolean);
+                                                            if (rows.length < 2) return null;
+                                                            const fmtOdds = (o) => o == null ? '—' : (o > 0 ? '+' : '') + o;
+                                                            return (
+                                                                <div className="edge-compare-books">
+                                                                    <div className="edge-compare-books-title">Compare across books — {activeProp.type}</div>
+                                                                    <table className="research-tbl">
+                                                                        <thead><tr><th>Book</th><th style={{ textAlign: 'right' }}>Line</th><th style={{ textAlign: 'right' }}>Over</th><th style={{ textAlign: 'right' }}>Under</th></tr></thead>
+                                                                        <tbody>
+                                                                            {rows.map(r => (
+                                                                                <tr key={r.id} className={r.id === activeProp.book ? 'edge-compare-active' : ''}>
+                                                                                    <td>{r.name}{r.ppKind === 'goblin' ? ' 👺' : r.ppKind === 'demon' ? ' 😈' : ''}</td>
+                                                                                    <td className="num">{r.line}</td>
+                                                                                    <td className="num">{fmtOdds(r.over)}</td>
+                                                                                    <td className="num">{r.oneWay ? '—' : fmtOdds(r.under)}</td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
                                                                 </div>
                                                             );
                                                         })()}
