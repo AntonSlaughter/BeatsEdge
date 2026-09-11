@@ -4110,10 +4110,24 @@
                 slots: [{ n: 'C', e: ['C'] }, { n: '1B', e: ['1B'] }, { n: '2B', e: ['2B'] }, { n: '3B', e: ['3B'] }, { n: 'SS', e: ['SS'] }, { n: 'OF', e: ['OF'] }, { n: 'OF', e: ['OF'] }, { n: 'OF', e: ['OF'] }] }
         };
         const fbPosGroup = (sport, posRaw) => {
-            const p = String(posRaw || '').toUpperCase().replace(/[^A-Z]/g, '');
-            if (sport === 'nba') return /^(PG|SG|G|GUARD)$/.test(p) ? 'G' : /^(SF|PF|F|FORWARD)$/.test(p) ? 'F' : (/^C|CENTER/.test(p) ? 'C' : 'F');
+            const p = String(posRaw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (sport === 'nba') {
+                if (/PG|SG/.test(p) || p === 'G') return 'G';
+                if (/SF|PF/.test(p) || p === 'F') return 'F';
+                if (/^C/.test(p) || /CENTER/.test(p)) return 'C';
+                if (/G/.test(p)) return 'G';
+                return 'F';
+            }
             if (sport === 'nfl' || sport === 'ncaaf') return /QB/.test(p) ? 'QB' : /RB|HB|FB/.test(p) ? 'RB' : /WR|SE|FL/.test(p) ? 'WR' : /TE/.test(p) ? 'TE' : /K|PK/.test(p) ? 'K' : 'WR';
-            if (sport === 'mlb') { if (/^1B|FIRST/.test(p)) return '1B'; if (/^2B|SECOND/.test(p)) return '2B'; if (/^3B|THIRD/.test(p)) return '3B'; if (/^SS|SHORT/.test(p)) return 'SS'; if (/^C$|CATCH/.test(p)) return 'C'; if (/^P|SP|RP|PITCH/.test(p)) return 'P'; return 'OF'; }
+            if (sport === 'mlb') {
+                if (/1B|FIRST/.test(p)) return '1B';
+                if (/2B|SECOND/.test(p)) return '2B';
+                if (/3B|THIRD/.test(p)) return '3B';
+                if (/SS|SHORT/.test(p)) return 'SS';
+                if (p === 'C' || /CATCH/.test(p)) return 'C';
+                if (/^(P|SP|RP)$/.test(p) || /PITCH/.test(p)) return 'P';
+                return 'OF';
+            }
             return p || '?';
         };
         // Group a row set into games; parse a start time from the gameTime label.
@@ -4186,8 +4200,11 @@
                 if (!ok) continue;
                 // upgrade pass: spend down toward the cap for a higher projection —
                 // swap the weakest picks for costlier unused eligible players.
+                // Softer target for showdown so a thin single-game pool still
+                // yields varied lineups.
                 let guard = 0;
-                while (sal < Math.round(cap * 0.97) && guard++ < 14) {
+                const upTarget = Math.round(cap * (showdown ? 0.90 : 0.97));
+                while (sal < upTarget && guard++ < 14) {
                     let best = null;
                     for (let j = 0; j < picked.length; j++) {
                         const cur = picked[j], slot = slots[j];
