@@ -2694,6 +2694,13 @@
         .fb-dt-v { font-size: 1.05rem; font-weight: 800; color: var(--text-primary); }
         .fb-dt-link { color: var(--accent-red); font-weight: 700; cursor: pointer; }
         .fb-dt-link:hover { text-decoration: underline; }
+        .fb-build-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.9rem; margin: 0.3rem 0 0.6rem; }
+        .fb-build-bar select.fb-input, .fb-build-bar input.fb-input { padding: 0.3rem 0.45rem; font-size: 0.82rem; }
+        .fb-lu-chip { display: inline-block; margin: 0.12rem 0.28rem 0.12rem 0; padding: 0.12rem 0.4rem; border-radius: 6px;
+            background: var(--bg-raised, rgba(255,255,255,0.05)); border: 1px solid var(--border-hairline, rgba(255,255,255,0.1));
+            font-size: 0.76rem; white-space: nowrap; }
+        .fb-lu-slot { font-weight: 800; color: var(--accent-red); font-size: 0.68rem; }
+        .fb-lu-sal { color: var(--text-muted); font-size: 0.7rem; }
 
         /* ── Free → Pro soft gate ───────────────────────────────────── */
         .view-pro-gate { max-width: 640px; }
@@ -4082,6 +4089,133 @@
                 return { n: s.length, avg: Math.round(fbMean(s) * 10) / 10, min: Math.round(Math.min(...s) * 10) / 10, max: Math.round(Math.max(...s) * 10) / 10 };
             };
             return { ordered: g, l5: split(5), l10: split(10), l20: split(20), season: split(0) };
+        };
+
+        // ── DFS lineup builder (research-only, fantasy layer) ──────────────
+        // Roster templates per sport. Classic = full-slate; showdown is used
+        // automatically when the user picks a single game. Salary caps mirror
+        // DraftKings. NFL has no DST entity in BeatsEdge, MLB has no pitcher
+        // scoring in this layer — both are flagged in the UI.
+        const FB_ROSTER = {
+            nba: { cap: 50000, minPct: 0.86, label: 'DK-classic (G/F/C granularity)',
+                slots: [{ n: 'G', e: ['G'] }, { n: 'G', e: ['G'] }, { n: 'G', e: ['G'] }, { n: 'F', e: ['F'] }, { n: 'F', e: ['F'] }, { n: 'F', e: ['F'] }, { n: 'C', e: ['C'] }, { n: 'UTIL', e: ['G', 'F', 'C'] }] },
+            nfl: { cap: 50000, minPct: 0.88, label: 'DK-classic minus DST (add DST manually)',
+                slots: [{ n: 'QB', e: ['QB'] }, { n: 'RB', e: ['RB'] }, { n: 'RB', e: ['RB'] }, { n: 'WR', e: ['WR'] }, { n: 'WR', e: ['WR'] }, { n: 'WR', e: ['WR'] }, { n: 'TE', e: ['TE'] }, { n: 'FLEX', e: ['RB', 'WR', 'TE'] }] },
+            ncaaf: { cap: 50000, minPct: 0.88, label: 'DK-classic minus DST (add DST manually)',
+                slots: [{ n: 'QB', e: ['QB'] }, { n: 'RB', e: ['RB'] }, { n: 'RB', e: ['RB'] }, { n: 'WR', e: ['WR'] }, { n: 'WR', e: ['WR'] }, { n: 'WR', e: ['WR'] }, { n: 'TE', e: ['TE'] }, { n: 'FLEX', e: ['RB', 'WR', 'TE'] }] },
+            mlb: { cap: 35000, minPct: 0.80, label: 'hitters only — pitchers not scored here, add 2 P manually',
+                slots: [{ n: 'C', e: ['C'] }, { n: '1B', e: ['1B'] }, { n: '2B', e: ['2B'] }, { n: '3B', e: ['3B'] }, { n: 'SS', e: ['SS'] }, { n: 'OF', e: ['OF'] }, { n: 'OF', e: ['OF'] }, { n: 'OF', e: ['OF'] }] }
+        };
+        const fbPosGroup = (sport, posRaw) => {
+            const p = String(posRaw || '').toUpperCase().replace(/[^A-Z]/g, '');
+            if (sport === 'nba') return /^(PG|SG|G|GUARD)$/.test(p) ? 'G' : /^(SF|PF|F|FORWARD)$/.test(p) ? 'F' : (/^C|CENTER/.test(p) ? 'C' : 'F');
+            if (sport === 'nfl' || sport === 'ncaaf') return /QB/.test(p) ? 'QB' : /RB|HB|FB/.test(p) ? 'RB' : /WR|SE|FL/.test(p) ? 'WR' : /TE/.test(p) ? 'TE' : /K|PK/.test(p) ? 'K' : 'WR';
+            if (sport === 'mlb') { if (/^1B|FIRST/.test(p)) return '1B'; if (/^2B|SECOND/.test(p)) return '2B'; if (/^3B|THIRD/.test(p)) return '3B'; if (/^SS|SHORT/.test(p)) return 'SS'; if (/^C$|CATCH/.test(p)) return 'C'; if (/^P|SP|RP|PITCH/.test(p)) return 'P'; return 'OF'; }
+            return p || '?';
+        };
+        // Group a row set into games; parse a start time from the gameTime label.
+        const fbSlateGames = (rows) => {
+            const parseStart = (lbl) => {
+                const m = String(lbl || '').match(/(\d{1,2}):(\d{2})\s*(a|p)m/i);
+                if (!m) return null;
+                let h = +m[1] % 12; if (/p/i.test(m[3])) h += 12;
+                return h * 60 + (+m[2]);
+            };
+            const by = {};
+            rows.forEach(r => {
+                const p = r.p;
+                const key = p.gamePk != null ? 'g' + p.gamePk : [p.team, p.opponent].filter(Boolean).sort().join('@') || 'slate';
+                (by[key] || (by[key] = { key, label: null, teams: new Set(), startMin: parseStart(p.gameTime), timeLabel: (String(p.gameTime || '').match(/\d{1,2}:\d{2}\s*[ap]m/i) || [''])[0], rows: [] })).rows.push(r);
+                if (p.team) by[key].teams.add(p.team);
+                if (p.opponent) by[key].teams.add(p.opponent);
+            });
+            const games = Object.values(by).map(g => ({ ...g, teams: [...g.teams], label: [...g.teams].slice(0, 2).join(' vs ') + (g.timeLabel ? ' · ' + g.timeLabel : '') }));
+            games.sort((a, b) => (a.startMin ?? 1e9) - (b.startMin ?? 1e9));
+            return games;
+        };
+        // Greedy + jittered lineup construction. Returns up to `count` unique
+        // rosters that satisfy the position slots and salary cap, biased toward
+        // high projected FP and Prime plays. `pool` items: {row, id, pos, sal,
+        // proj, prime}. Read-only — no engine state touched.
+        const fbBuildLineups = (pool, roster, opts) => {
+            const o = opts || {};
+            const count = Math.max(1, Math.min(150, o.count || 20));
+            const showdown = !!o.showdown;
+            const slots = showdown
+                ? [{ n: 'CPT', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }]
+                : roster.slots;
+            const cap = roster.cap, softMin = Math.round(cap * (roster.minPct || 0.85));
+            const usable = pool.filter(x => x.sal > 0 && x.proj > 0);
+            const eligibleFor = (slot, x) => slot.e == null || slot.e.includes(x.pos);
+            const effSal = (slot, x) => (showdown && slot.n === 'CPT') ? Math.round(x.sal * 1.5) : x.sal;
+            // cheapest priced player per position group, for the "reserve enough
+            // for the slots still to fill" feasibility guard.
+            const cheapByPos = {};
+            usable.forEach(x => { if (cheapByPos[x.pos] == null || x.sal < cheapByPos[x.pos]) cheapByPos[x.pos] = x.sal; });
+            const slotMin = (slot) => {
+                const pgs = slot.e == null ? Object.keys(cheapByPos) : slot.e;
+                let m = Infinity; pgs.forEach(pg => { if (cheapByPos[pg] != null) m = Math.min(m, cheapByPos[pg]); });
+                return m;
+            };
+            const suffixMin = slots.map(() => 0);
+            for (let i = slots.length - 1; i >= 0; i--) suffixMin[i] = (i + 1 < slots.length ? suffixMin[i + 1] : 0) + slotMin(slots[i]);
+            if (!isFinite(suffixMin[0])) return { lineups: [], cap, minSal: softMin, poolSize: usable.length };
+
+            const seen = new Set(), out = [];
+            let attempts = 0, maxAttempts = count * 80 + 600;
+            while (out.length < count && attempts < maxAttempts) {
+                attempts++;
+                const jitter = 0.5 + (out.length / count) * 1.1; // widen as we go for diversity
+                const ranked = usable.map(x => ({ x, w: (x.proj * (x.prime ? 1.12 : 1)) * (1 + (Math.random() - 0.5) * jitter) }))
+                    .sort((a, b) => b.w - a.w).map(r => r.x);
+                const picked = [], usedIds = new Set();
+                let sal = 0, ok = true;
+                for (let si = 0; si < slots.length; si++) {
+                    const slot = slots[si];
+                    const reserve = si + 1 < slots.length ? suffixMin[si + 1] : 0;
+                    const cand = ranked.find(x => !usedIds.has(x.id) && eligibleFor(slot, x) && sal + effSal(slot, x) + reserve <= cap);
+                    if (!cand) { ok = false; break; }
+                    usedIds.add(cand.id);
+                    const es = effSal(slot, cand);
+                    picked.push({ slot: slot.n, ...cand, sal: es, proj: (showdown && slot.n === 'CPT') ? Math.round(cand.proj * 1.5 * 100) / 100 : cand.proj, cpt: showdown && slot.n === 'CPT', baseSal: cand.sal });
+                    sal += es;
+                }
+                if (!ok) continue;
+                // upgrade pass: spend down toward the cap for a higher projection —
+                // swap the weakest picks for costlier unused eligible players.
+                let guard = 0;
+                while (sal < Math.round(cap * 0.97) && guard++ < 14) {
+                    let best = null;
+                    for (let j = 0; j < picked.length; j++) {
+                        const cur = picked[j], slot = slots[j];
+                        const room = cap - sal + cur.sal;
+                        for (const x of usable) {
+                            if (usedIds.has(x.id)) continue;
+                            if (!eligibleFor(slot, x)) continue;
+                            const es = effSal(slot, x);
+                            if (es > room || es <= cur.sal) continue;
+                            const np = (showdown && slot.n === 'CPT') ? x.proj * 1.5 : x.proj;
+                            const gain = np - cur.proj;
+                            if (gain > 0 && (!best || gain > best.gain)) best = { j, x, es, np, gain };
+                        }
+                    }
+                    if (!best) break;
+                    const slot = slots[best.j], old = picked[best.j];
+                    usedIds.delete(old.id); usedIds.add(best.x.id);
+                    picked[best.j] = { slot: slot.n, ...best.x, sal: best.es, proj: Math.round(best.np * 100) / 100, cpt: showdown && slot.n === 'CPT', baseSal: best.x.sal };
+                    sal += best.es - old.sal;
+                }
+                const sig = picked.map(p => p.id).sort().join('|');
+                if (seen.has(sig)) continue;
+                seen.add(sig);
+                out.push({
+                    players: picked, salary: sal,
+                    proj: Math.round(picked.reduce((s, p) => s + p.proj, 0) * 100) / 100,
+                    prime: picked.filter(p => p.prime).length
+                });
+            }
+            out.sort((a, b) => b.proj - a.proj);
+            return { lineups: out, cap, minSal: softMin, poolSize: usable.length };
         };
 
         // Per-game fantasy points from the player's OWN game logs, aligned by
@@ -7041,9 +7175,12 @@
             const [ownText, setOwnText] = useState(() => { try { return localStorage.getItem('beatsedge_fb_own_' + sport) || ''; } catch (e) { return ''; } });
             const [sortKey, setSortKey] = useState('value');
             const [fbDetailId, setFbDetailId] = useState(null); // player id of the open fantasy detail card
+            const [slateKey, setSlateKey] = useState('all');    // 'all' | 'early' | 'late' | game key
+            const [buildN, setBuildN] = useState(20);            // lineups to build (1–150)
+            const [lineups, setLineups] = useState(null);        // { lineups:[...], cap, minSal, poolSize }
             useEffect(() => {
                 try { setSalText(localStorage.getItem('beatsedge_fb_sal_' + sport) || ''); setOwnText(localStorage.getItem('beatsedge_fb_own_' + sport) || ''); } catch (e) { }
-                setFbDetailId(null);
+                setFbDetailId(null); setSlateKey('all'); setLineups(null);
             }, [sport]);
             useEffect(() => {
                 if (fbDetailId == null) return;
@@ -7182,6 +7319,104 @@
                 return pick(b) - pick(a);
             }) : [];
 
+            // ── Lineup builder wiring (research-only) ─────────────────────
+            const slateGames = React.useMemo(() => analysis ? fbSlateGames(analysis.rows) : [], [analysis]);
+            const selectedGame = slateGames.find(gm => gm.key === slateKey);
+            const earliestMin = slateGames.length && slateGames[0].startMin != null ? slateGames[0].startMin : null;
+            const buildRows = !analysis ? []
+                : slateKey === 'all' ? analysis.rows
+                : slateKey === 'early' ? analysis.rows.filter(r => { const gm = slateGames.find(x => x.rows.includes(r)); return gm && gm.startMin != null && earliestMin != null && gm.startMin <= earliestMin + 90; })
+                : slateKey === 'late' ? analysis.rows.filter(r => { const gm = slateGames.find(x => x.rows.includes(r)); return gm && (gm.startMin == null || earliestMin == null || gm.startMin > earliestMin + 90); })
+                : selectedGame ? selectedGame.rows
+                : analysis.rows;
+            const roster = FB_ROSTER[sport] || null;
+            const showdown = !!selectedGame;
+            const buildPool = buildRows
+                .filter(r => r.sal != null && r.projFp > 0)
+                .map(r => ({ id: r.p.id, row: r, pos: fbPosGroup(sport, r.p.position), sal: r.sal, proj: r.projFp, prime: !!r.prime }));
+            const rosterSize = showdown ? 6 : (roster ? roster.slots.length : 8);
+            const runBuild = () => { if (roster) setLineups(fbBuildLineups(buildPool, roster, { count: buildN, showdown })); };
+            const topAlerts = analysis && (
+                <React.Fragment>
+                    <div className="fb-sec-title">⬆ Next Man Up impact <span className="fb-note-inline">(reads the existing injury / role system — shown first)</span></div>
+                    {analysis.rows.some(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length)
+                        ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                            <thead><tr><th>Player</th><th>Covers for (sidelined)</th><th>Trigger</th><th>Est. minutes Δ</th><th>Est. usage Δ</th><th>Est. FP Δ</th></tr></thead>
+                            <tbody>{analysis.rows.filter(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length).map(r => {
+                                const outCt = r.opportunity.covers.filter(c => /out/i.test(c.status)).length;
+                                const minD = sport === 'nba' ? (outCt ? '+4 to +8' : '+2 to +5') : (outCt ? 'more snaps/touches' : 'slight bump');
+                                const usgD = outCt ? '+3–6%' : '+1–3%';
+                                const fpD = r.projFp ? '+' + Math.round(r.projFp * (outCt ? 0.12 : 0.06)) + ' to +' + Math.round(r.projFp * (outCt ? 0.22 : 0.10)) : '—';
+                                return <tr key={r.p.id}>{nameCell(r)}
+                                    <td>{r.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')}</td>
+                                    <td>{r.opportunity.trigger || '—'}</td><td>{minD}</td><td>{usgD}</td><td>{fpD}</td></tr>;
+                            })}</tbody>
+                        </table></div>
+                        : <div className="fb-note">No active Next-Man-Up chains on this slate.</div>}
+                    <div className="fb-note">Δ estimates are heuristics scaled off the projection — the model does not produce a role-change delta. The trigger + sidelined list come straight from the existing Next-Man-Up system.</div>
+
+                    <div className="fb-sec-title">🏥 Injury / role-change watch</div>
+                    {analysis.rows.some(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down')
+                        ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                            <thead><tr><th>Player</th><th>Status</th><th>Trend</th><th>Detail</th><th>Proj FP (as-is)</th></tr></thead>
+                            <tbody>{analysis.rows.filter(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down').map(r => (
+                                <tr key={r.p.id}>{nameCell(r)}
+                                    <td>{r.status}</td><td>{r.statusTrend === 'down' ? `▼ was ${r.prevStatus || '?'}` : '—'}</td>
+                                    <td>{r.injuryDetail || r.injury || '—'}</td><td>{r1(r.projFp)}</td></tr>
+                            ))}</tbody>
+                        </table></div>
+                        : <div className="fb-note">No injury or status-downgrade flags on this slate.</div>}
+                </React.Fragment>
+            );
+            const builderPanel = analysis && (
+                <React.Fragment>
+                    <div className="fb-sec-title">🧱 Lineup builder <span className="fb-note-inline">(research — maximises projected FP under the DK salary cap; up to 150 lineups)</span></div>
+                    <div className="fb-build-bar">
+                        <label className="fb-inp-label" style={{ margin: 0 }}>Slate&nbsp;
+                            <select className="fb-input" style={{ width: 'auto', display: 'inline-block' }} value={slateKey} onChange={e => { setSlateKey(e.target.value); setLineups(null); }}>
+                                <option value="all">Full slate — all {slateGames.length} game{slateGames.length === 1 ? '' : 's'}</option>
+                                {slateGames.some(gm => gm.startMin != null) && <option value="early">Early games only</option>}
+                                {slateGames.some(gm => gm.startMin != null) && <option value="late">Late games only</option>}
+                                {slateGames.map(gm => <option key={gm.key} value={gm.key}>Single game · {gm.label}</option>)}
+                            </select>
+                        </label>
+                        <label className="fb-inp-label" style={{ margin: 0 }}>Lineups&nbsp;
+                            <input type="number" className="fb-input" style={{ width: 70, display: 'inline-block' }} min={1} max={150}
+                                value={buildN} onChange={e => setBuildN(Math.max(1, Math.min(150, parseInt(e.target.value) || 1)))} />
+                        </label>
+                        <button className="fb-sortbtn active" style={{ fontWeight: 800 }} onClick={runBuild} disabled={!roster || buildPool.length < rosterSize}>
+                            Build {buildN} lineup{buildN === 1 ? '' : 's'}
+                        </button>
+                        <span className="fb-note" style={{ margin: 0 }}>
+                            {showdown ? 'Showdown: 1 CPT (1.5× pts & salary) + 5 FLEX. ' : (roster ? roster.label + '. ' : '')}
+                            Pool with salary: <strong>{buildPool.length}</strong>{buildPool.length < rosterSize ? ` — need ≥ ${rosterSize}, paste more salaries` : ''}
+                        </span>
+                    </div>
+                    {!roster && <div className="fb-note">{insuff} — no roster template for {SPORT_LABELS[sport]}.</div>}
+                    {lineups && (lineups.lineups.length === 0
+                        ? <div className="fb-note">No valid lineup fit the cap with this pool. Paste more salaries (especially cheaper players) or widen the slate.</div>
+                        : <React.Fragment>
+                            <div className="fb-note">Built <strong>{lineups.lineups.length}</strong> unique lineup{lineups.lineups.length === 1 ? '' : 's'} from {lineups.poolSize} priced players · cap ${lineups.cap.toLocaleString()} · min spend ${lineups.minSal.toLocaleString()}{lineups.lineups.length < buildN ? ` (pool only supports ${lineups.lineups.length})` : ''}.</div>
+                            <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                <thead><tr><th>#</th><th>Roster</th><th>Salary</th><th>Proj FP</th><th>Prime</th></tr></thead>
+                                <tbody>{lineups.lineups.map((L, i) => (
+                                    <tr key={i}>
+                                        <td>{i + 1}</td>
+                                        <td style={{ whiteSpace: 'normal' }}>{L.players.map((pl, j) => (
+                                            <span key={j} className="fb-lu-chip" title={pl.slot}>
+                                                <span className="fb-lu-slot">{pl.slot}{pl.cpt ? '★' : ''}</span> {pl.row.p.name} <span className="fb-lu-sal">${(pl.sal / 1000).toFixed(1)}k</span>
+                                            </span>
+                                        ))}</td>
+                                        <td>${L.salary.toLocaleString()}</td>
+                                        <td><strong>{r1(L.proj)}</strong></td>
+                                        <td>{L.prime || '—'}</td>
+                                    </tr>
+                                ))}</tbody>
+                            </table></div>
+                        </React.Fragment>)}
+                </React.Fragment>
+            );
+
             return (
                 <div className="fb-view">
                     <h1 className="top-picks-heading">🔬 Fantasy Research Builder <span className="fb-private">PRIVATE</span> · {SPORT_LABELS[sport]}</h1>
@@ -7194,6 +7429,8 @@
                     {!analysis && (
                         <div className="fb-note">No {SPORT_LABELS[sport]} players with props are loaded — open the {SPORT_LABELS[sport]} tab to build the slate first, then come back.</div>
                     )}
+
+                    {topAlerts}
 
                     {analysis && (<React.Fragment>
                         <div className="fb-inputs">
@@ -7210,6 +7447,8 @@
                                     placeholder={"Nikola Jokic, 32\nLuka Doncic, 28"} />
                             </div>
                         </div>
+
+                        {builderPanel}
 
                         {/* 1-6: projections */}
                         <div className="fb-sec-title">Fantasy projections · floor / median / projection / ceiling · value</div>
@@ -7274,35 +7513,7 @@
                             </table></div>
                             : <div className="fb-note">No Prime designations on this slate.</div>}
 
-                        {/* 8-9: next man up + injury/role */}
-                        <div className="fb-sec-title">Next Man Up impact <span className="fb-note-inline">(reads the existing injury / role system)</span></div>
-                        {analysis.rows.some(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length)
-                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
-                                <thead><tr><th>Player</th><th>Covers for (sidelined)</th><th>Trigger</th><th>Est. minutes Δ</th><th>Est. usage Δ</th><th>Est. FP Δ</th></tr></thead>
-                                <tbody>{analysis.rows.filter(r => r.opportunity && r.opportunity.covers && r.opportunity.covers.length).map(r => {
-                                    const outCt = r.opportunity.covers.filter(c => /out/i.test(c.status)).length;
-                                    const minD = sport === 'nba' ? (outCt ? '+4 to +8' : '+2 to +5') : (outCt ? 'more snaps/touches' : 'slight bump');
-                                    const usgD = outCt ? '+3–6%' : '+1–3%';
-                                    const fpD = r.projFp ? '+' + Math.round(r.projFp * (outCt ? 0.12 : 0.06)) + ' to +' + Math.round(r.projFp * (outCt ? 0.22 : 0.10)) : '—';
-                                    return <tr key={r.p.id}>{nameCell(r)}
-                                        <td>{r.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')}</td>
-                                        <td>{r.opportunity.trigger || '—'}</td><td>{minD}</td><td>{usgD}</td><td>{fpD}</td></tr>;
-                                })}</tbody>
-                            </table></div>
-                            : <div className="fb-note">No active Next-Man-Up chains on this slate.</div>}
-                        <div className="fb-note">Δ estimates are heuristics scaled off the projection — the model does not produce a role-change delta. The trigger + sidelined list come straight from the existing Next-Man-Up system.</div>
-
-                        <div className="fb-sec-title">Injury / role-change watch</div>
-                        {analysis.rows.some(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down')
-                            ? <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
-                                <thead><tr><th>Player</th><th>Status</th><th>Trend</th><th>Detail</th><th>Proj FP (as-is)</th></tr></thead>
-                                <tbody>{analysis.rows.filter(r => (r.status && r.status !== 'ACTIVE') || r.statusTrend === 'down').map(r => (
-                                    <tr key={r.p.id}>{nameCell(r)}
-                                        <td>{r.status}</td><td>{r.statusTrend === 'down' ? `▼ was ${r.prevStatus || '?'}` : '—'}</td>
-                                        <td>{r.injuryDetail || r.injury || '—'}</td><td>{r1(r.projFp)}</td></tr>
-                                ))}</tbody>
-                            </table></div>
-                            : <div className="fb-note">No injury or status-downgrade flags on this slate.</div>}
+                        {/* Next Man Up + Injury watch now render at the top of the view (topAlerts). */}
 
                         {/* 10-11: rookie/young + foul trouble */}
                         <div className="fb-sec-title">Rookie / young-player opportunity</div>
