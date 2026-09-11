@@ -2686,6 +2686,14 @@
         .fb-tbl .fb-neg { color: var(--danger-red); font-weight: 700; }
         tr.fb-pos td:first-child { border-left: 2px solid var(--success-green, #4caf50); }
         tr.fb-neg td:first-child { border-left: 2px solid var(--danger-red); }
+        .fb-dt-strip { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.25rem 0 1rem; }
+        .fb-dt-stat { flex: 1 1 92px; min-width: 92px; max-width: 170px; background: var(--bg-raised, rgba(255,255,255,0.04));
+            border: 1px solid var(--border-hairline, rgba(255,255,255,0.1)); border-radius: 8px; padding: 0.5rem 0.6rem;
+            display: flex; flex-direction: column; gap: 0.15rem; }
+        .fb-dt-k { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+        .fb-dt-v { font-size: 1.05rem; font-weight: 800; color: var(--text-primary); }
+        .fb-dt-link { color: var(--accent-red); font-weight: 700; cursor: pointer; }
+        .fb-dt-link:hover { text-decoration: underline; }
 
         /* ── Free → Pro soft gate ───────────────────────────────────── */
         .view-pro-gate { max-width: 640px; }
@@ -4051,6 +4059,30 @@
             return sxy / Math.sqrt(sxx * syy);
         };
         const fbCorrLabel = (r) => r == null ? '—' : (r >= 0.35 ? 'positive' : r <= -0.35 ? 'negative' : 'weak');
+
+        // Best-effort date parse for game-log rows — logs mix 'YYYY-MM-DD',
+        // 'M/D/YY', 'M/D' (current year assumed). Returns a sortable number;
+        // unparseable dates fall to the front so real dates win the tail.
+        const fbParseDate = (s) => {
+            if (!s) return 0;
+            const str = String(s).trim();
+            let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+            if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+            m = str.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+            if (m) { let y = m[3] ? +m[3] : new Date().getUTCFullYear(); if (y < 100) y += 2000; return Date.UTC(y, +m[1] - 1, +m[2]); }
+            const t = Date.parse(str); return isFinite(t) ? t : 0;
+        };
+        // L5 / L10 / L20 / season splits of per-game fantasy points, chronological.
+        const fbRecentSplits = (games) => {
+            const g = [...(games || [])].sort((a, b) => fbParseDate(a.date) - fbParseDate(b.date));
+            const fps = g.map(x => x.fp);
+            const split = (n) => {
+                const s = n ? fps.slice(-n) : fps;
+                if (!s.length) return { n: 0, avg: null, min: null, max: null };
+                return { n: s.length, avg: Math.round(fbMean(s) * 10) / 10, min: Math.round(Math.min(...s) * 10) / 10, max: Math.round(Math.max(...s) * 10) / 10 };
+            };
+            return { ordered: g, l5: split(5), l10: split(10), l20: split(20), season: split(0) };
+        };
 
         // Per-game fantasy points from the player's OWN game logs, aligned by
         // date across the component stats. Returns { games:[{date,fp,parts}],
@@ -7008,9 +7040,17 @@
             const [salText, setSalText] = useState(() => { try { return localStorage.getItem('beatsedge_fb_sal_' + sport) || ''; } catch (e) { return ''; } });
             const [ownText, setOwnText] = useState(() => { try { return localStorage.getItem('beatsedge_fb_own_' + sport) || ''; } catch (e) { return ''; } });
             const [sortKey, setSortKey] = useState('value');
+            const [fbDetailId, setFbDetailId] = useState(null); // player id of the open fantasy detail card
             useEffect(() => {
                 try { setSalText(localStorage.getItem('beatsedge_fb_sal_' + sport) || ''); setOwnText(localStorage.getItem('beatsedge_fb_own_' + sport) || ''); } catch (e) { }
+                setFbDetailId(null);
             }, [sport]);
+            useEffect(() => {
+                if (fbDetailId == null) return;
+                const onKey = (e) => { if (e.key === 'Escape') setFbDetailId(null); };
+                window.addEventListener('keydown', onKey);
+                return () => window.removeEventListener('keydown', onKey);
+            }, [fbDetailId]);
             const persist = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { } };
 
             const normName = (n) => String(n || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -7133,7 +7173,7 @@
                 </span>
             );
             const nameCell = (r) => (
-                <td className="fb-name" onClick={() => onOpenPlayer && onOpenPlayer(r.p)}>
+                <td className="fb-name" onClick={() => setFbDetailId(r.p.id)} title="Fantasy detail — recent FP, projection, matchup">
                     <span className="fb-namecell"><FbAv p={r.p} /><span className="fb-nametext">{r.p.name}</span></span>
                 </td>
             );
@@ -7327,6 +7367,109 @@
                             Fantasy layer only. Nothing here changes BeatsEdge model calculations, the locked NBA/MLB/NFL calibration, the Prime designation, or Next-Man-Up. All historical stats are this player's own prior games (no future-game leakage).
                         </div>
                     </React.Fragment>)}
+
+                    {fbDetailId != null && analysis && (() => {
+                        const r = analysis.rows.find(x => x.p.id === fbDetailId);
+                        if (!r) return null;
+                        const p = r.p;
+                        const sp = fbRecentSplits(r._hist.games);
+                        const tier = (analysis.tiers.find(t => r.sal != null && r.sal >= t.lo && r.sal <= t.hi) || {}).label || null;
+                        const corr = analysis.pairs.filter(pr => pr.a === p.name || pr.b === p.name);
+                        const sc = FB_SCORING[sport] || {};
+                        const comps = FB_COMPONENTS[sport] || [];
+                        const logCols = comps.slice(0, 4);
+                        const compRows = Object.keys(r.proj.parts || {})
+                            .filter(k => sc[k])
+                            .map(k => ({ k, v: r.proj.parts[k], fp: (r.proj.parts[k] || 0) * (sc[k] || 0) }))
+                            .sort((a, b) => Math.abs(b.fp) - Math.abs(a.fp));
+                        const last = sp.ordered.slice(-12).reverse();
+                        return (
+                            <div className="modal-overlay" onClick={() => setFbDetailId(null)}>
+                              <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
+                                <div className="modal-header">
+                                  <div className="modal-title">
+                                    {p.headshot && <img className="modal-title-photo" src={p.headshot} alt="" loading="lazy" onError={e => { e.target.style.display = 'none'; }} />}
+                                    {p.name}{p.position ? <span className="pos-chip">{p.position}</span> : null}
+                                    {r.prime && <span className="fb-prime-chip" style={{ marginLeft: '0.5rem' }}>⭐ PRIME</span>}
+                                    <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}> · {p.team} vs {p.opponent}{p.gameTime ? ' · ' + p.gameTime : ''}</span>
+                                  </div>
+                                  <button className="close-btn" onClick={() => setFbDetailId(null)}>×</button>
+                                </div>
+                                <div className="modal-body">
+                                  <div className="fb-dt-strip">
+                                    {[['Proj FP', r1(r.projFp)], ['Floor', r.floor == null ? '—' : r1(r.floor)], ['Median', r.median == null ? '—' : r1(r.median)],
+                                      ['Ceiling', r.ceiling == null ? '—' : r1(r.ceiling)], ['Salary', r.sal == null ? '—' : '$' + r.sal.toLocaleString()],
+                                      ['Value /$1K', r.value == null ? '—' : r.value.toFixed(2)], ['Tier', tier || '—'], ['Grade', r.grade || '—']].map(([k, v]) => (
+                                        <div className="fb-dt-stat" key={k}><span className="fb-dt-k">{k}</span><span className="fb-dt-v">{v}</span></div>
+                                    ))}
+                                  </div>
+
+                                  <div className="fb-sec-title">Recent fantasy performance <span className="fb-note-inline">(DK-classic FP · this player's own games)</span></div>
+                                  {r._hist.n === 0
+                                    ? <div className="fb-note">{insuff} — no multi-stat game logs for {p.name} on this slate. A live slate with a PropLine key + backend carries the full per-game history.</div>
+                                    : <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                        <thead><tr><th>Split</th><th>Avg FP</th><th>Low</th><th>High</th><th>Games</th></tr></thead>
+                                        <tbody>{[['Last 5', sp.l5], ['Last 10', sp.l10], ['Last 20', sp.l20], ['Season', sp.season]].map(([lab, s]) => (
+                                            <tr key={lab}><td>{lab}</td><td><strong>{s.n ? s.avg : '—'}</strong></td><td>{s.n ? s.min : '—'}</td><td>{s.n ? s.max : '—'}</td><td>{s.n || 0}</td></tr>
+                                        ))}</tbody>
+                                      </table></div>}
+
+                                  {last.length > 0 && <React.Fragment>
+                                    <div className="fb-sec-title">Game-by-game fantasy points <span className="fb-note-inline">(most recent first)</span></div>
+                                    <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                      <thead><tr><th>Date</th><th>Opp</th><th>FP</th>{logCols.map(k => <th key={k}>{k}</th>)}</tr></thead>
+                                      <tbody>{last.map((gm, i) => (
+                                        <tr key={i}><td>{gm.date}</td><td>{gm.opp || '—'}</td><td><strong>{r1(gm.fp)}</strong></td>
+                                          {logCols.map(k => <td key={k}>{gm.parts && gm.parts[k] != null ? gm.parts[k] : '—'}</td>)}</tr>
+                                      ))}</tbody>
+                                    </table></div>
+                                  </React.Fragment>}
+
+                                  {compRows.length > 0 && <React.Fragment>
+                                    <div className="fb-sec-title">Where tonight's projection comes from <span className="fb-note-inline">(per-stat projection × DK weight)</span></div>
+                                    <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                      <thead><tr><th>Stat</th><th>Projected</th><th>× weight</th><th>FP</th></tr></thead>
+                                      <tbody>{compRows.map(x => (
+                                        <tr key={x.k}><td>{x.k}</td><td>{x.v}</td><td>{sc[x.k]}</td><td>{r1(x.fp)}</td></tr>
+                                      ))}</tbody>
+                                    </table></div>
+                                    <div className="fb-note">{r.proj.modelled} of {r.proj.componentsSeen} components used the engine's matchup/pace-adjusted projection; the rest used the season average.</div>
+                                  </React.Fragment>}
+
+                                  <div className="fb-sec-title">Matchup &amp; situation</div>
+                                  <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl"><tbody>
+                                    <tr><td>FP allowed to {p.position || 'pos'}</td><td>{r.fpa ? `${r.fpa.fpAllowed} (${r.fpa.source})` : insuff}</td>
+                                        <td>DvP rank</td><td>{r.fpa && r.fpa.rank ? `#${r.fpa.rank}` : '—'}</td></tr>
+                                    <tr><td>Pace</td><td>{r.pace || '—'}</td>
+                                        <td>Avg FP vs {p.opponent}</td><td>{r.vsOppN >= 3 ? `${r.vsOppFp} (${r.vsOppN}g)` : insuff}</td></tr>
+                                    <tr><td>Status</td><td>{r.status || 'ACTIVE'}{r.statusTrend === 'down' ? ` ▼ was ${r.prevStatus || '?'}` : ''}</td>
+                                        <td>Proj minutes (NBA)</td><td>{r.minutes != null ? r.minutes : '—'}</td></tr>
+                                    {r.opportunity && r.opportunity.covers && r.opportunity.covers.length > 0 &&
+                                      <tr><td>Next Man Up</td><td colSpan={3}>{r.opportunity.trigger || 'role open'} — covering {r.opportunity.covers.map(c => `${c.name} (${c.status})`).join(', ')}</td></tr>}
+                                  </tbody></table></div>
+                                  {r.paceDetail && <div className="fb-note">{r.paceDetail}</div>}
+
+                                  {corr.length > 0 && <React.Fragment>
+                                    <div className="fb-sec-title">Correlation with teammates on this slate</div>
+                                    <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                                      <thead><tr><th>Teammate</th><th>r</th><th>Direction</th><th>Shared games</th></tr></thead>
+                                      <tbody>{corr.map((pr, i) => { const mate = pr.a === p.name ? pr.b : pr.a; return (
+                                        <tr key={i} className={pr.label === 'positive' ? 'fb-pos' : pr.label === 'negative' ? 'fb-neg' : ''}>
+                                          <td>{mate}</td><td>{pr.r == null ? '—' : pr.r.toFixed(2)}</td>
+                                          <td>{pr.label === 'Insufficient sample' ? insuff : pr.label}</td><td>{pr.n}g</td></tr>
+                                      ); })}</tbody>
+                                    </table></div>
+                                  </React.Fragment>}
+
+                                  <div className="fb-note" style={{ marginTop: '1rem' }}>
+                                    <span className="fb-dt-link" onClick={() => { setFbDetailId(null); onOpenPlayer && onOpenPlayer(p); }}>Open the full BeatsEdge prop breakdown →</span>
+                                    <span style={{ opacity: 0.6 }}> · prop lines, per-factor edge, confluence dots</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                        );
+                    })()}
                 </div>
             );
         }
