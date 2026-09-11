@@ -2701,6 +2701,9 @@
             font-size: 0.76rem; white-space: nowrap; }
         .fb-lu-slot { font-weight: 800; color: var(--accent-red); font-size: 0.68rem; }
         .fb-lu-sal { color: var(--text-muted); font-size: 0.7rem; }
+        .fb-lu-total { font-size: 0.8rem; background: var(--bg-raised, rgba(255,255,255,0.05));
+            border: 1px solid var(--border-hairline, rgba(255,255,255,0.1)); border-radius: 6px; padding: 0.25rem 0.55rem; white-space: nowrap; }
+        .fb-tbl tfoot td { border-top: 2px solid var(--border-color); }
 
         /* ── Free → Pro soft gate ───────────────────────────────────── */
         .view-pro-gate { max-width: 640px; }
@@ -7178,9 +7181,10 @@
             const [slateKey, setSlateKey] = useState('all');    // 'all' | 'early' | 'late' | game key
             const [buildN, setBuildN] = useState(20);            // lineups to build (1–150)
             const [lineups, setLineups] = useState(null);        // { lineups:[...], cap, minSal, poolSize }
+            const [manualPick, setManualPick] = useState({});    // { [slotIndex]: playerId } — the hand-built lineup
             useEffect(() => {
                 try { setSalText(localStorage.getItem('beatsedge_fb_sal_' + sport) || ''); setOwnText(localStorage.getItem('beatsedge_fb_own_' + sport) || ''); } catch (e) { }
-                setFbDetailId(null); setSlateKey('all'); setLineups(null);
+                setFbDetailId(null); setSlateKey('all'); setLineups(null); setManualPick({});
             }, [sport]);
             useEffect(() => {
                 if (fbDetailId == null) return;
@@ -7336,6 +7340,106 @@
                 .map(r => ({ id: r.p.id, row: r, pos: fbPosGroup(sport, r.p.position), sal: r.sal, proj: r.projFp, prime: !!r.prime }));
             const rosterSize = showdown ? 6 : (roster ? roster.slots.length : 8);
             const runBuild = () => { if (roster) setLineups(fbBuildLineups(buildPool, roster, { count: buildN, showdown })); };
+
+            // ── Manual "build your own lineup" wiring ─────────────────────
+            const manualSlots = showdown
+                ? [{ n: 'CPT', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }, { n: 'FLEX', e: null }]
+                : (roster ? roster.slots : []);
+            const manualCap = roster ? roster.cap : 50000;
+            const mRowById = {}; buildRows.forEach(r => { mRowById[r.p.id] = r; });
+            const mEligible = (slot, r) => slot.e == null || slot.e.includes(fbPosGroup(sport, r.p.position));
+            const mChosenIds = new Set(Object.values(manualPick).filter(Boolean));
+            const mEff = (slotIdx, r) => {
+                const isCpt = showdown && manualSlots[slotIdx].n === 'CPT';
+                const sal = r.sal != null ? (isCpt ? Math.round(r.sal * 1.5) : r.sal) : null;
+                const proj = isCpt ? Math.round((r.projFp || 0) * 1.5 * 100) / 100 : (r.projFp || 0);
+                return { sal, proj, isCpt };
+            };
+            const mFilled = manualSlots.map((_, i) => mRowById[manualPick[i]]).filter(Boolean);
+            const mSalary = manualSlots.reduce((s, _, i) => { const r = mRowById[manualPick[i]]; return s + (r && mEff(i, r).sal != null ? mEff(i, r).sal : 0); }, 0);
+            const mAllPriced = manualSlots.every((_, i) => { const r = mRowById[manualPick[i]]; return !r || r.sal != null; });
+            const mProj = Math.round(manualSlots.reduce((s, _, i) => { const r = mRowById[manualPick[i]]; return s + (r ? mEff(i, r).proj : 0); }, 0) * 100) / 100;
+            const mPrime = mFilled.filter(r => r.prime).length;
+            const mComplete = mFilled.length === manualSlots.length;
+            const mOverCap = mAllPriced && mSalary > manualCap;
+            const mRemainSlots = manualSlots.length - mFilled.length;
+            const manualAutofill = () => {
+                if (!roster) return;
+                const next = { ...manualPick };
+                const used = new Set(Object.values(next).filter(Boolean));
+                // cheapest priced player per position group, to reserve for later empty slots
+                const cheap = {}; buildRows.forEach(r => { if (r.sal == null) return; const g = fbPosGroup(sport, r.p.position); if (cheap[g] == null || r.sal < cheap[g]) cheap[g] = r.sal; });
+                const emptyIdx = manualSlots.map((_, i) => i).filter(i => !next[i]);
+                let spent = mSalary;
+                emptyIdx.forEach((slotIdx, k) => {
+                    const slot = manualSlots[slotIdx];
+                    const laterReserve = emptyIdx.slice(k + 1).reduce((s, si) => {
+                        const pgs = manualSlots[si].e == null ? Object.keys(cheap) : manualSlots[si].e;
+                        let m = Infinity; pgs.forEach(g => { if (cheap[g] != null) m = Math.min(m, cheap[g]); });
+                        return s + (isFinite(m) ? m : 0);
+                    }, 0);
+                    const cand = buildRows
+                        .filter(r => !used.has(r.p.id) && r.sal != null && (r.projFp || 0) > 0 && mEligible(slot, r))
+                        .map(r => ({ r, e: mEff(slotIdx, r) }))
+                        .filter(x => spent + x.e.sal + laterReserve <= manualCap)
+                        .sort((a, b) => b.e.proj - a.e.proj)[0];
+                    if (cand) { next[slotIdx] = cand.r.p.id; used.add(cand.r.p.id); spent += cand.e.sal; }
+                });
+                setManualPick(next);
+            };
+            const manualPanel = analysis && roster && (
+                <React.Fragment>
+                    <div className="fb-sec-title">✍️ Build your own lineup <span className="fb-note-inline">({showdown ? 'showdown — CPT is 1.5× salary & points' : roster.label} · cap ${manualCap.toLocaleString()})</span></div>
+                    <div className="fb-build-bar">
+                        <span className={`fb-lu-total ${mOverCap ? 'fb-neg' : ''}`}>Salary ${mSalary.toLocaleString()} / ${manualCap.toLocaleString()}{mAllPriced ? ` · $${(manualCap - mSalary).toLocaleString()} left` : ' · some picks unpriced'}{mRemainSlots > 0 && mAllPriced && !mOverCap ? ` · $${Math.floor((manualCap - mSalary) / mRemainSlots).toLocaleString()}/slot avg` : ''}</span>
+                        <span className="fb-lu-total">Proj FP <strong>{r1(mProj)}</strong></span>
+                        <span className="fb-lu-total">{mFilled.length}/{manualSlots.length} filled</span>
+                        {mPrime > 0 && <span className="fb-lu-total">⭐ {mPrime}</span>}
+                        <button className="fb-sortbtn" onClick={manualAutofill} disabled={mRemainSlots === 0 || buildPool.length === 0}>Autofill empty (best value)</button>
+                        <button className="fb-sortbtn" onClick={() => setManualPick({})} disabled={mFilled.length === 0}>Clear</button>
+                        {mOverCap && <span className="fb-neg" style={{ fontWeight: 700 }}>Over the cap by ${(mSalary - manualCap).toLocaleString()}</span>}
+                        {mComplete && !mOverCap && <span className="fb-pos" style={{ fontWeight: 700 }}>✓ Valid lineup</span>}
+                    </div>
+                    <div style={{ overflowX: 'auto' }}><table className="backtest-calib-tbl fb-tbl">
+                        <thead><tr><th>Slot</th><th>Player</th><th>Pos</th><th>Opp</th><th>Salary</th><th>Proj FP</th><th>Value</th></tr></thead>
+                        <tbody>{manualSlots.map((slot, i) => {
+                            const r = mRowById[manualPick[i]];
+                            const eff = r ? mEff(i, r) : null;
+                            const opts = buildRows
+                                .filter(x => mEligible(slot, x) && (!mChosenIds.has(x.p.id) || manualPick[i] === x.p.id))
+                                .sort((a, b) => (b.projFp || 0) - (a.projFp || 0));
+                            return (
+                                <tr key={i}>
+                                    <td><span className="fb-lu-slot">{slot.n}</span></td>
+                                    <td>
+                                        <select className="fb-input" style={{ maxWidth: 240 }} value={manualPick[i] || ''}
+                                            onChange={e => setManualPick(pp => ({ ...pp, [i]: e.target.value || undefined }))}>
+                                            <option value="">— pick —</option>
+                                            {opts.map(x => (
+                                                <option key={x.p.id} value={x.p.id}>
+                                                    {x.p.name} · {x.sal != null ? '$' + x.sal.toLocaleString() : 'no salary'} · {r1(x.projFp)} FP{x.prime ? ' ⭐' : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </td>
+                                    <td>{r ? (r.p.position || '—') : '—'}</td>
+                                    <td>{r ? (r.p.opponent || '—') : '—'}</td>
+                                    <td>{eff && eff.sal != null ? '$' + eff.sal.toLocaleString() + (eff.isCpt ? ' (1.5×)' : '') : '—'}</td>
+                                    <td>{eff ? <strong>{r1(eff.proj)}</strong> : '—'}</td>
+                                    <td>{eff && eff.sal ? (eff.proj / (eff.sal / 1000)).toFixed(2) : '—'}</td>
+                                </tr>
+                            );
+                        })}</tbody>
+                        <tfoot><tr>
+                            <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total</td>
+                            <td className={mOverCap ? 'fb-neg' : ''} style={{ fontWeight: 700 }}>${mSalary.toLocaleString()}</td>
+                            <td style={{ fontWeight: 700 }}>{r1(mProj)}</td>
+                            <td>{mSalary ? (mProj / (mSalary / 1000)).toFixed(2) : '—'}</td>
+                        </tr></tfoot>
+                    </table></div>
+                    <div className="fb-note">Player lists are filtered to the slots each position can fill and to the selected slate. Salary/value need a pasted salary; projection is the same fantasy-layer number as the tables above. Nothing here is submitted anywhere.</div>
+                </React.Fragment>
+            );
             const topAlerts = analysis && (
                 <React.Fragment>
                     <div className="fb-sec-title">⬆ Next Man Up impact <span className="fb-note-inline">(reads the existing injury / role system — shown first)</span></div>
@@ -7373,7 +7477,7 @@
                     <div className="fb-sec-title">🧱 Lineup builder <span className="fb-note-inline">(research — maximises projected FP under the DK salary cap; up to 150 lineups)</span></div>
                     <div className="fb-build-bar">
                         <label className="fb-inp-label" style={{ margin: 0 }}>Slate&nbsp;
-                            <select className="fb-input" style={{ width: 'auto', display: 'inline-block' }} value={slateKey} onChange={e => { setSlateKey(e.target.value); setLineups(null); }}>
+                            <select className="fb-input" style={{ width: 'auto', display: 'inline-block' }} value={slateKey} onChange={e => { setSlateKey(e.target.value); setLineups(null); setManualPick({}); }}>
                                 <option value="all">Full slate — all {slateGames.length} game{slateGames.length === 1 ? '' : 's'}</option>
                                 {slateGames.some(gm => gm.startMin != null) && <option value="early">Early games only</option>}
                                 {slateGames.some(gm => gm.startMin != null) && <option value="late">Late games only</option>}
@@ -7414,6 +7518,8 @@
                                 ))}</tbody>
                             </table></div>
                         </React.Fragment>)}
+
+                    {manualPanel}
                 </React.Fragment>
             );
 
