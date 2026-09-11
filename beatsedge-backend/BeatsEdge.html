@@ -5253,7 +5253,13 @@
             player_walks: 'batterWalks', player_batter_walks: 'batterWalks', player_bat_walks: 'batterWalks',
             player_hitter_strikeouts: 'batterStrikeouts',
             player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts',
-            player_earned_runs: 'earnedRuns', player_hits_allowed: 'hitsAllowed', player_pitching_outs: 'pitcherOuts'
+            player_earned_runs: 'earnedRuns', player_hits_allowed: 'hitsAllowed', player_pitching_outs: 'pitcherOuts',
+            // PrizePicks "Hitter Fantasy Score" — PropLine's own MLB odds feed
+            // carries no fantasy-score market at all (confirmed against its
+            // live market-discovery endpoint), but ParlayAPI does, real and
+            // PrizePicks-sourced (goblin/standard/demon, same as every other
+            // DFS stat). No pitcher-side equivalent exists in either feed.
+            player_hitter_fantasy_score: 'fantasy'
         };
         const PARLAY_FB_MKT = {
             player_pass_yds: 'passYds', player_passing_yards: 'passYds', player_pass_yards: 'passYds',
@@ -9632,9 +9638,14 @@
                 });
 
                 // computed projections (fantasy score, pitcher walks) alongside
-                // the live lines — PropLine carries no market for these
+                // the live lines — PropLine carries no market for these, but a
+                // gap-fill source (ParlayAPI) sometimes does. If a real line
+                // already got pushed above for this stat+book, it wins outright
+                // — never add a second, synthetic "Hitter Fantasy Score" pill
+                // next to the real one.
                 const g = mlbGamesField(seasonStat, isPitcher);
                 MLB_PROJECTION_KEYS[isPitcher ? 'pitcher' : 'batter'].forEach(k => {
+                    if (allLines[k] && allLines[k][book] && allLines[k][book].length) return;
                     const pdef = MLB_PROP_DEFS[k];
                     pushPair(k, pdef, mlbSampleLine(k, g > 0 ? pdef.get(seasonStat) / g : 0), { isProjection: true });
                 });
@@ -9968,12 +9979,20 @@
             //   { normName: { statKey: { book: [ {line,over,under,juice,setAt,ppType,_src} ] } } }
             // Returns null when disabled / unreachable. Gap-fill only — the
             // caller adds a book's array ONLY where it doesn't already have one.
-            const fetchParlayProps = async (parlaySportKey, mktMap) => {
+            const fetchParlayProps = async (parlaySportKey, mktMap, marketsFilter) => {
                 if (!parlayApiKey || !backendUrl) return null;
                 let rows;
                 try {
+                    // ParlayAPI's /props endpoint returns the WHOLE day unfiltered
+                    // when no `markets` param is given — for a full MLB slate that's
+                    // far more rows than any sane `limit`, so an unscoped call
+                    // silently truncates before reaching most players (verified:
+                    // limit=1000 unfiltered carried zero William Contreras rows for
+                    // ANY market). Passing `markets` lets the server filter first,
+                    // so `limit` only has to cover what we actually asked for.
+                    const marketsQS = marketsFilter ? `&markets=${encodeURIComponent(marketsFilter)}` : '';
                     const url = `${backendUrl}/api/parlayapi/v1/sports/${parlaySportKey}/props`
-                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${PARLAY_DFS_BOOKS}&limit=1000`;
+                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${PARLAY_DFS_BOOKS}${marketsQS}&limit=1000`;
                     const r = await fetch(url);
                     if (!r.ok) throw new Error('ParlayAPI HTTP ' + r.status);
                     rows = await r.json();
@@ -10150,8 +10169,26 @@
                 if (parlayApiKey) {
                     const slateNorm = {};
                     players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
+                    const keyFor = nn => slateNorm[nn] || null;
+                    // General gap-fill: best-effort pull across every mapped
+                    // market, for the rare case PropLine's own call missed a
+                    // stat it normally carries.
                     const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT);
-                    const added = mergeParlay(allLinesByPid, pa, nn => slateNorm[nn] || null);
+                    let added = mergeParlay(allLinesByPid, pa, keyFor);
+                    // Hitter Fantasy Score has NO PropLine market at all
+                    // (MLB_PROP_DEFS.fantasy.market is null, by design — PropLine's
+                    // MLB odds feed genuinely carries no fantasy-score market on
+                    // any book) — so ParlayAPI is this stat's ONLY possible real
+                    // line, for every player, every day. The unfiltered pull above
+                    // spans every market across a full slate and truncates at
+                    // `limit` long before reaching most players (verified live:
+                    // 0 William Contreras rows at limit=1000 unfiltered). A
+                    // dedicated call scoped to just this market stays far under
+                    // the row limit (~800 rows for a full MLB slate) and reliably
+                    // covers every player, so it always gets a real chance here
+                    // instead of silently falling back to a modeled estimate.
+                    const paFantasy = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, 'player_hitter_fantasy_score');
+                    added += mergeParlay(allLinesByPid, paFantasy, keyFor);
                     setParlayCount(added);
                 } else { setParlaySource('off'); }
 
