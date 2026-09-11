@@ -2621,6 +2621,8 @@
             color: var(--text-primary); font-size: 0.68rem; font-weight: 700;
             letter-spacing: 0.02em; vertical-align: middle; white-space: nowrap;
         }
+        .prime-book.prime-book-unconfirmed { color: var(--text-muted); font-weight: 600; border-style: dashed; }
+        .prime-book .prime-book-est { font-weight: 400; opacity: 0.8; }
         .prime-card-stats { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
         .prime-stat { display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
         .prime-stat-v { font-weight: 800; color: var(--text-primary); font-size: 0.95rem; }
@@ -5573,7 +5575,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -5615,11 +5617,24 @@
                                 <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                 <div className="prime-card-prop">
                                     {p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}
-                                    {bookLabel(p.prop.book) && (
-                                        <span className="prime-book" title={p.prop.lineSource || bookLabel(p.prop.book)}>
-                                            {p.prop.crossBook ? `${bookLabel(p.prop.book)} · cross-book` : bookLabel(p.prop.book)}
-                                        </span>
-                                    )}
+                                    {(() => {
+                                        // Every Prime pick shows a sportsbook, on every sport. If this
+                                        // prop wasn't matched to a specific live book line (a sample/
+                                        // offseason slate, or a computed line PropLine has no market
+                                        // for), fall back to the platform tab you're viewing — same
+                                        // book scope the rest of the app already uses — and say so.
+                                        const confirmed = bookLabel(p.prop.book);
+                                        const label = confirmed || platformName || 'DFS';
+                                        const title = confirmed
+                                            ? (p.prop.lineSource || confirmed)
+                                            : `Estimated — no confirmed live ${label} line for this prop`;
+                                        return (
+                                            <span className={`prime-book ${confirmed ? '' : 'prime-book-unconfirmed'}`} title={title}>
+                                                {p.prop.crossBook ? `${label} · cross-book` : label}
+                                                {!confirmed && <span className="prime-book-est"> (est.)</span>}
+                                            </span>
+                                        );
+                                    })()}
                                 </div>
                             </div>
                             <div className="prime-card-stats">
@@ -16186,6 +16201,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 isPro={isPro}
                                 onUnlock={onUnlock}
                                 dataUpdatedAt={dataUpdatedAt}
+                                platformName={(platforms.find(p => p.id === selectedPlatform) || {}).name || 'DFS'}
                                 onSwitchSport={(sport, view) => { setSelectedSport(sport); setCurrentView(view); }}
                                 onOpenPick={(pl, propIdx) => { setCurrentView('browse'); setStatFilter('all'); setPlayerSearch(isPro ? pl.name : ''); openDetail(pl.id, propIdx); }}
                             />
