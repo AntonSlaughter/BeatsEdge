@@ -5177,6 +5177,55 @@
             return BOOK_LABEL[k] || String(b).replace(/\b\w/g, c => c.toUpperCase());
         };
 
+        // ── Line-movement ledger ───────────────────────────────────────────
+        // Per (sport, slate date) — so a line is never diffed against a STALE
+        // game from a previous day. Unlike a bare last-poll-vs-now snapshot,
+        // this remembers the day's TRUE opening line plus every move since,
+        // so "where did it start, where's it been, where is it now" survives
+        // across visits and reloads, not just the last hop. Read once per
+        // fetch, mutated in memory while props are built, saved once.
+        const LINE_HIST_PREFIX = 'beatsedge_line_hist_v1:';
+        const plLedgerKey = (sport, date) => LINE_HIST_PREFIX + sport + '|' + date;
+        const plLoadLedger = (sport, date) => {
+            try { return JSON.parse(localStorage.getItem(plLedgerKey(sport, date)) || '{}'); } catch (e) { return {}; }
+        };
+        const plSaveLedger = (sport, date, ledger) => {
+            try {
+                localStorage.setItem(plLedgerKey(sport, date), JSON.stringify(ledger));
+                // Sweep old slates' ledgers (keep today + yesterday) so this
+                // doesn't grow forever across days.
+                const keep = new Set([plLedgerKey(sport, date)]);
+                for (let i = 1; i <= 1; i++) {
+                    const d = new Date(date + 'T12:00:00'); d.setDate(d.getDate() - i);
+                    keep.add(plLedgerKey(sport, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`));
+                }
+                Object.keys(localStorage).forEach(k => { if (k.startsWith(LINE_HIST_PREFIX + sport + '|') && !keep.has(k)) localStorage.removeItem(k); });
+            } catch (e) { /* full/blocked — fine, freshness just resets */ }
+        };
+        // Diff one prop's live line/odds against the ledger, update the
+        // ledger in place, and return a `.move` descriptor (or null the
+        // first time an id is seen, or when nothing changed).
+        const plTrackLine = (ledger, id, line, odds, ts) => {
+            const rec = ledger[id];
+            if (!rec) { ledger[id] = { open: line, openTs: ts, cur: line, curOdds: odds, ts, n: 1 }; return null; }
+            let move = null;
+            if (rec.cur !== line) {
+                move = {
+                    from: rec.cur, to: line, delta: Math.round((line - rec.cur) * 10) / 10, sinceTs: rec.ts,
+                    open: rec.open, openTs: rec.openTs, openDelta: Math.round((line - rec.open) * 10) / 10, moveCount: rec.n
+                };
+                rec.cur = line; rec.ts = ts; rec.n = (rec.n || 1) + 1;
+            } else if (rec.curOdds !== odds) {
+                move = {
+                    from: rec.cur, to: line, delta: 0, priceOnly: true, sinceTs: rec.ts,
+                    open: rec.open, openTs: rec.openTs, openDelta: Math.round((line - rec.open) * 10) / 10, moveCount: rec.n
+                };
+                rec.ts = ts;
+            }
+            rec.curOdds = odds;
+            return move;
+        };
+
         // ── ParlayAPI (parlay-api.com) — optional SECOND DFS line source ─────
         // Fills the DFS books PropLine is thin on (Sleeper especially). Merged
         // as gap-fill only — PropLine stays primary where both have a line, and
@@ -8130,6 +8179,25 @@
                 });
             }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey, parlayApiKey]);
 
+            // Odds move throughout the day — a tab left open must not just sit
+            // on whatever it fetched at load. Every ~90s (only while the tab is
+            // actually visible, and only for a sport with a real slate), quietly
+            // re-pull the same data in the background so lines, injuries and the
+            // scoreboard stay current without a page reload or a loading flash.
+            // The existing loadSeqRef staleness token still guards against a
+            // slow refresh landing after the user has since switched sport/date.
+            const loadingRef = React.useRef(loading);
+            useEffect(() => { loadingRef.current = loading; }, [loading]);
+            useEffect(() => {
+                if (SPORT_STATUS[selectedSport] !== 'ready') return;
+                const iv = setInterval(() => {
+                    if (document.hidden || loadingRef.current) return;
+                    const mySeq = ++loadSeqRef.current;
+                    fetchData(mySeq, true).catch(() => { });
+                }, 90000);
+                return () => clearInterval(iv);
+            }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey, parlayApiKey]);
+
             // Ping the backend's health endpoint so its status shows live/down
             // for EVERY sport — not just basketball (which was the only path
             // that ever set it, leaving MLB/NFL stuck on "checking").
@@ -8225,12 +8293,16 @@
                 }
             }, [playersData, selectedSport, selectedDate, backendUrl]);
 
-            const fetchData = async (mySeq) => {
+            const fetchData = async (mySeq, silent) => {
                 // True once the user has navigated to a different sport/date (or
                 // the effect otherwise re-ran) while this call was awaiting.
                 const stale = () => mySeq != null && loadSeqRef.current !== mySeq;
                 try {
-                    setLoading(true);
+                    // `silent` = a background auto-refresh (odds/lines/injuries
+                    // move throughout the day even while the tab just sits open)
+                    // — keep showing the current cards instead of flashing the
+                    // full-page loading state over them.
+                    if (!silent) setLoading(true);
 
                     // 1. Load the base player/prop dataset first so we know which
                     //    teams are actually in play. For MLB this is now the REAL
@@ -10065,30 +10137,23 @@
                         });
                     }));
 
-                // ---- Line movement (client-side): diff each book's PRIMARY
-                // line against the snapshot from your last visit. PropLine's own
-                // history is a paid tier, so this answers "did it move since I
-                // last looked?" for free.
-                const SNAP_KEY = 'beatsedge_lines_v3'; // v3: after line-consolidation fix
-                let snap = {};
-                try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { snap = {}; }
+                // ---- Line movement (client-side): diff each book's PRIMARY line
+                // against the day's ledger — the true opening line plus every
+                // move since, not just the last visit. PropLine's own history is
+                // a paid tier, so this answers "where did it start, where's it
+                // been, where is it now?" for free.
+                const _mlbLedger = plLoadLedger('mlb', selectedDate);
                 const now = Date.now();
-                const nextSnap = {};
                 Object.entries(allLinesByPid).forEach(([pid, byKey]) =>
                     Object.entries(byKey).forEach(([k, byBook]) =>
                         Object.entries(byBook).forEach(([b, arr]) => {
                             const primary = arr.find(e => e.primary) || arr[0];
                             if (!primary) return;
                             const id = `${pid}:${k}:${b}`;
-                            nextSnap[id] = { line: primary.line, o: primary.over, ts: now };
-                            const prev = snap[id];
-                            if (prev && typeof prev.line === 'number' && prev.line !== primary.line) {
-                                primary.move = { from: prev.line, to: primary.line, delta: Math.round((primary.line - prev.line) * 10) / 10, sinceTs: prev.ts };
-                            } else if (prev && prev.o !== primary.over && prev.line === primary.line) {
-                                primary.move = { from: prev.line, to: primary.line, delta: 0, priceOnly: true, sinceTs: prev.ts };
-                            }
+                            const move = plTrackLine(_mlbLedger, id, primary.line, primary.over, now);
+                            if (move) primary.move = move;
                         })));
-                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { /* full/blocked — fine */ }
+                plSaveLedger('mlb', selectedDate, _mlbLedger);
 
                 if (gone()) return;
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
@@ -10600,9 +10665,8 @@
 
                 const glMap = await nflGamelogs(matchedNames.map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
-                const SNAP_KEY = 'beatsedge_nfl_lines_v1';
-                let snap = {}; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { }
-                const nextSnap = {}, now = Date.now();
+                const _nflLedger = plLoadLedger('nfl', selectedDate);
+                const now = Date.now();
 
                 const built = [];
                 matchedNames.forEach(nm => {
@@ -10616,17 +10680,15 @@
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (pr) lineFor[k] = pr.line;
                     });
-                    // line-movement vs last visit (primary line per stat, this book)
+                    // line movement — the day's opening line + every move since,
+                    // not just the last visit (primary line per stat, this book)
                     Object.keys(linesByName[nm]).forEach(k => {
                         const arr = (linesByName[nm][k][wantBook]) || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
                         const id = `${slot.id}:${k}:${wantBook}`;
-                        nextSnap[id] = { line: pr.line, ts: now };
-                        const prev = snap[id];
-                        if (prev && typeof prev.line === 'number' && prev.line !== pr.line) {
-                            pr.move = { from: prev.line, to: pr.line, delta: Math.round((pr.line - prev.line) * 10) / 10, sinceTs: prev.ts };
-                        }
+                        const move = plTrackLine(_nflLedger, id, pr.line, pr.over, now);
+                        if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
                         ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent)
@@ -10654,7 +10716,7 @@
                     player._noLiveLines = !props.some(pr => pr.lineSource);
                     built.push(player);
                 });
-                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
+                plSaveLedger('nfl', selectedDate, _nflLedger);
                 if (gone()) return [];
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
@@ -10896,9 +10958,8 @@
 
                 const glMap = await cfbGamelogs(matched.map(x => x.slot.id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
-                const SNAP_KEY = 'beatsedge_cfb_lines_v1';
-                let snap = {}; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { }
-                const nextSnap = {}, now = Date.now();
+                const _cfbLedger = plLoadLedger('ncaaf', selectedDate);
+                const now = Date.now();
 
                 const built = [];
                 const seenPlayer = new Set();
@@ -10920,11 +10981,8 @@
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
                         const id = `${slot.id}:${k}:${wantBook}`;
-                        nextSnap[id] = { line: pr.line, ts: now };
-                        const prev = snap[id];
-                        if (prev && typeof prev.line === 'number' && prev.line !== pr.line) {
-                            pr.move = { from: prev.line, to: pr.line, delta: Math.round((pr.line - prev.line) * 10) / 10, sinceTs: prev.ts };
-                        }
+                        const move = plTrackLine(_cfbLedger, id, pr.line, pr.over, now);
+                        if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
                         ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent)
@@ -10948,7 +11006,7 @@
                     player._noLiveLines = !props.some(pr => pr.lineSource);
                     built.push(player);
                 });
-                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
+                plSaveLedger('ncaaf', selectedDate, _cfbLedger);
                 if (gone()) return [];
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
@@ -11475,9 +11533,8 @@
 
                 const glMap = await nbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
-                const SNAP_KEY = 'beatsedge_nba_lines_v1';
-                let snap = {}; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); } catch (e) { }
-                const nextSnap = {}, now = Date.now();
+                const _nbaLedger = plLoadLedger('nba', selectedDate);
+                const now = Date.now();
 
                 const built = [];
                 matchedNames.forEach(nm => {
@@ -11496,11 +11553,8 @@
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
                         const id = `${slot.id}:${k}:${wantBook}`;
-                        nextSnap[id] = { line: pr.line, ts: now };
-                        const prev = snap[id];
-                        if (prev && typeof prev.line === 'number' && prev.line !== pr.line) {
-                            pr.move = { from: prev.line, to: pr.line, delta: Math.round((pr.line - prev.line) * 10) / 10, sinceTs: prev.ts };
-                        }
+                        const move = plTrackLine(_nbaLedger, id, pr.line, pr.over, now);
+                        if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
                         ? nbaComputeWindows(glRows, lineFor, slot.opponent, nbaCache.current.oppRankByAbbr)
@@ -11529,7 +11583,7 @@
                     player._noLiveLines = !props.some(pr => pr.lineSource);
                     built.push(player);
                 });
-                try { localStorage.setItem(SNAP_KEY, JSON.stringify(nextSnap)); } catch (e) { }
+                plSaveLedger('nba', selectedDate, _nbaLedger);
                 if (gone()) return [];
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
@@ -14269,7 +14323,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
                                                     {prop.lineSource && <span title={prop.lineSource} style={{ fontSize: '0.6rem', color: 'var(--success-green)', marginLeft: '0.3rem' }}>●</span>}
                                                     {prop.move && prop.move.delta !== 0 && (
-                                                        <span className={`prop-move ${prop.move.delta > 0 ? 'up' : 'down'}`} title={`Line was ${prop.move.from} last time you checked`}>
+                                                        <span className={`prop-move ${prop.move.delta > 0 ? 'up' : 'down'}`}
+                                                            title={`Opened at ${prop.move.open} today${prop.move.moveCount > 1 ? ` · ${prop.move.moveCount} moves` : ''} · now ${prop.move.to} (${prop.move.openDelta > 0 ? '+' : ''}${prop.move.openDelta} from open)`}>
                                                             {prop.move.delta > 0 ? '▲' : '▼'}{Math.abs(prop.move.delta)}
                                                         </span>
                                                     )}
@@ -14393,8 +14448,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {activeProp.move && (
                                                             <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: 'var(--warning-yellow)', fontWeight: 600 }}>
                                                                 {activeProp.move.priceOnly
-                                                                    ? `⚡ Odds moved since your last visit — line held at ${activeProp.move.to}`
-                                                                    : `⚡ Line moved ${activeProp.move.from} → ${activeProp.move.to} (${activeProp.move.delta > 0 ? '+' : ''}${activeProp.move.delta}) since your last visit`}
+                                                                    ? `⚡ Odds moved (line held at ${activeProp.move.to})`
+                                                                    : `⚡ Line moved ${activeProp.move.from} → ${activeProp.move.to} (${activeProp.move.delta > 0 ? '+' : ''}${activeProp.move.delta})`}
+                                                                {' · '}{agoLabel(new Date(activeProp.move.sinceTs).toISOString())}
+                                                            </div>
+                                                        )}
+                                                        {activeProp.move && activeProp.move.open != null && activeProp.move.open !== activeProp.move.to && (
+                                                            <div className="edge-prop-line" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                                📈 Opened today at <strong style={{ color: 'var(--text-secondary)' }}>{activeProp.move.open}</strong>
+                                                                {activeProp.move.moveCount > 1 ? ` · ${activeProp.move.moveCount} moves so far` : ''}
+                                                                {' · '}{activeProp.move.openDelta > 0 ? '+' : ''}{activeProp.move.openDelta} from open to now
                                                             </div>
                                                         )}
                                                         {!activeProp.move && activeProp.setAt && (Date.now() - Date.parse(activeProp.setAt) < 5400000) && (
