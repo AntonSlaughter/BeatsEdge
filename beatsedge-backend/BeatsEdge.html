@@ -1005,6 +1005,13 @@
             gap: 0.25rem;
         }
 
+        .prop-pill-modelline {
+            font-size: 0.55rem; font-weight: 800; letter-spacing: 0.04em;
+            padding: 0.05em 0.35em; border-radius: 3px;
+            background: rgba(245,166,35,0.16); color: var(--warning-yellow, #f5a623);
+            border: 1px solid rgba(245,166,35,0.4); order: -1;
+        }
+
         .hit-indicator {
             width: 8px;
             height: 8px;
@@ -5665,7 +5672,8 @@
                             <div className="prime-card-id">
                                 <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                 <div className="prime-card-prop">
-                                    {p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}
+                                    {p.prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — BeatsEdge estimate, not a real market line">MODEL</span>}
+                                    {' '}{p.prop.type} {p.prop.direction === 'under' ? 'Under' : 'Over'} {p.prop.line}
                                     {(() => {
                                         // Every Prime pick shows a sportsbook, on every sport. If this
                                         // prop wasn't matched to a specific live book line (a sample/
@@ -5727,8 +5735,9 @@
                                 <div>
                                     <div className="top-pick-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                     <div className="top-pick-prop">
-                                        {p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
-                                        {p.prop.lineSource ? <span className="top-pick-real" title={p.prop.lineSource}> ●</span> : (p.prop.isProjection ? <span className="top-pick-proj"> proj</span> : '')}
+                                        {p.prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — BeatsEdge estimate, not a real market line">MODEL</span>}
+                                        {' '}{p.prop.type} {p.prop.direction === 'under' ? 'U' : 'O'}{p.prop.line}
+                                        {p.prop.lineSource && <span className="top-pick-real" title={p.prop.lineSource}> ●</span>}
                                     </div>
                                 </div>
                             </div>
@@ -7956,8 +7965,19 @@
             });
             const [loading, setLoading] = useState(false);
             const [playersData, setPlayersData] = useState([]);
-            const [detailModal, setDetailModal] = useState(null); // { playerId, propIdx } — opens the full-breakdown popup
-            const openDetail = (playerId, propIdx = 0) => setDetailModal({ playerId, propIdx });
+            const [detailModal, setDetailModal] = useState(null); // { playerId, propIdx, propId } — opens the full-breakdown popup
+            // propIdx is only ever used to resolve an initial propId HERE, at
+            // click time, from the player's props as they exist right now —
+            // everything downstream (PlayerCard, the prop <select>, closing
+            // and reopening) tracks the prop by that stable id from then on,
+            // never by index, so a background re-sort can't swap the prop out
+            // from under the user.
+            const openDetail = (playerId, propIdx = 0) => {
+                const player = playersData.find(p => p.id === playerId);
+                const props = (player && Array.isArray(player.props)) ? player.props : [];
+                const target = props[propIdx] || props[0] || null;
+                setDetailModal({ playerId, propIdx, propId: target ? target.id : null });
+            };
             // Private Fantasy Research Builder — reachable only via #fantasy
             // (not in the nav). The view itself gates on an access phrase.
             useEffect(() => {
@@ -9614,9 +9634,31 @@
                 return props;
             };
 
+            // Stable identity for a prop — content-derived, NOT the array
+            // index. Background enrichment re-sorts a player's props (grades
+            // shift as real data streams in), which moves array positions;
+            // without this, "which prop is open in the modal" or "which prop
+            // was the deep-link target" (both originally tracked by index)
+            // would silently start pointing at a DIFFERENT prop after a
+            // re-sort. Distinguishes standard vs goblin/demon/alt variants of
+            // the same stat+line and which book it's from, so a real prop
+            // never gets confused with another one that happens to land at
+            // the same position. Idempotent — a prop that already has an id
+            // (re-processed object) is left alone.
+            const assignPropIds = (props) => {
+                const seen = {};
+                (props || []).forEach(pr => {
+                    if (pr.id) return;
+                    const base = `${pr.statKey}|${pr.direction}|${pr.line}|${pr.ppKind || 'std'}|${pr.book || pr.lineSource || 'x'}`;
+                    const n = (seen[base] = (seen[base] || 0) + 1);
+                    pr.id = n > 1 ? `${base}|${n}` : base;
+                });
+                return props;
+            };
             // Order props best-first — the standard line most likely to cash on
             // top; Goblins / Demons / alt lines sort after the standard board.
             const sortPropsByEdge = (playerLike, props) => {
+                assignPropIds(props);
                 return props
                     .map(pr => { const e = calculateEdgeScore(playerLike, pr); return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK[e.grade], g: e.gradeScore }; })
                     .sort((a, b) => a.alt - b.alt || a.r - b.r || b.g - a.g)
@@ -14072,7 +14114,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const props = Array.isArray(p.props)
                         ? p.props.filter(pr => !headKey || pr.statKey === headKey)
                         : p.props;
-                    return { ...p, _mock: true, props: props && props.length ? props : p.props };
+                    const finalProps = props && props.length ? props : p.props;
+                    if (Array.isArray(finalProps)) assignPropIds(finalProps);
+                    return { ...p, _mock: true, props: finalProps };
                 });
             };
 
@@ -14128,7 +14172,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const [pillDir, setPillDir] = useState('all'); // 'all' | 'over' | 'under'
                 const [pillAlts, setPillAlts] = useState(false); // goblins/demons (DFS) or alt lines (books) — off by default so the board stays the standard lines
                 const [selectedPropTab, setSelectedPropTab] = useState('last10');
-                const [selectedEdgePropIdx, setSelectedEdgePropIdx] = useState(0);
+                // The open prop is tracked by its STABLE id (see assignPropIds),
+                // not array position — background enrichment re-sorts a
+                // player's props as real data streams in, which moves array
+                // indices around. Tracking by index would silently swap the
+                // displayed prop for a different one mid-view.
+                const [selectedPropId, setSelectedPropId] = useState(null);
 
                 const getHitRateClass = (rate) => {
                     if (rate >= 80) return 'high';
@@ -14161,24 +14210,37 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     };
                 }, [activeInModal]);
 
-                // When THIS card's details modal opens (or the clicked prop
-                // changes): sync the selected prop, reset the window tab, and
-                // lazy-load the game log.
+                // When THIS card's details modal opens (or the deep-linked prop
+                // changes): resolve detailModal's target to a stable prop id —
+                // preferring the id it already carries, falling back to
+                // whatever sits at its index only for the very first resolve
+                // (e.g. a fresh deep-link) — then sync the selected prop id,
+                // reset the window tab, and lazy-load the game log.
                 useEffect(() => {
                     if (!activeInModal) return;
-                    setSelectedEdgePropIdx(detailModal.propIdx || 0);
+                    const cp = Array.isArray(player.props) ? player.props : [];
+                    const wantId = detailModal.propId;
+                    const resolved = (wantId != null && cp.some(p => p.id === wantId))
+                        ? wantId
+                        : (cp[detailModal.propIdx || 0] ? cp[detailModal.propIdx || 0].id : null);
+                    setSelectedPropId(resolved);
                     setSelectedPropTab('last10');
                     if (player.sport === 'mlb' && !player._detailLoaded) fetchMlbPlayerDetail(player);
                     if (player.sport === 'nfl' && !player._detailLoaded) fetchNflPlayerDetail(player);
                     if (player.sport === 'ncaaf' && !player._detailLoaded) fetchCfbPlayerDetail(player);
                     if (player.sport === 'nba' && !player._detailLoaded) fetchNbaPlayerDetail(player);
-                }, [activeInModal, detailModal && detailModal.propIdx]);
+                }, [activeInModal, detailModal && detailModal.propId, detailModal && detailModal.propIdx]);
 
                 const cardProps = Array.isArray(player.props) ? player.props : [];
                 // With a stat-category chip active, deep-links open the first
                 // prop of that category rather than prop 0.
                 const firstCatIdx = statFilter === 'all' ? 0 : Math.max(0, cardProps.findIndex(p => p.type === statFilter));
-                const cardIdx = cardProps.length ? Math.min(selectedEdgePropIdx, cardProps.length - 1) : 0;
+                // Re-locate the selected prop BY ID every render — if a
+                // background refresh re-sorted cardProps since we last
+                // resolved, this still finds the exact same prop rather than
+                // drifting to whatever now sits at some remembered index.
+                const cardIdxById = selectedPropId != null ? cardProps.findIndex(p => p.id === selectedPropId) : -1;
+                const cardIdx = cardIdxById >= 0 ? cardIdxById : (cardProps.length ? Math.min(firstCatIdx, cardProps.length - 1) : 0);
                 const cardProp = cardProps[cardIdx];
                 const cStats = (cardProp && player.statsByKey && player.statsByKey[cardProp.statKey]) || player.stats || {};
                 const cLog = (cardProp && player.gameLogByKey && player.gameLogByKey[cardProp.statKey]) || player.gameLog || [];
@@ -14311,10 +14373,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         .filter(({ prop }) => (pillDir === 'all' || prop.direction === pillDir) && (pillAlts || !prop.altLine) && (statFilter === 'all' || prop.type === statFilter))
                                         .map(({ prop, idx }) => {
                                             const edge = calculateEdgeScore(player, prop);
-                                            const isActive = activeInModal && detailModal.propIdx === idx;
+                                            const isActive = activeInModal && (prop.id != null ? detailModal.propId === prop.id : detailModal.propIdx === idx);
                                             return (
                                             <div
-                                                key={idx}
+                                                key={prop.id || idx}
                                                 className={`prop-pill ${isPropSelected(player, prop) ? 'selected' : ''}`}
                                                 onClick={() => openDetail(player.id, idx)}
                                                 style={{ cursor: 'pointer', outline: isActive ? '2px solid var(--accent-red)' : 'none', outlineOffset: '1px' }}
@@ -14328,6 +14390,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {prop.altLine && !prop.ppKind && <span className="prop-pill-alt">ALT</span>}
                                                 </div>
                                                 <div className="prop-pill-value">
+                                                    {/* isProjection = no book/DFS platform posts this stat — the number
+                                                        is BeatsEdge's own computed line, never a real PrizePicks/
+                                                        sportsbook quote. Marked distinctly so it can never be mistaken
+                                                        for one — the line belongs to the source, the estimate is ours. */}
+                                                    {prop.isProjection && <span className="prop-pill-modelline" title="No live book posts this stat — this number is BeatsEdge's own estimate, not a real PrizePicks/sportsbook line">MODEL</span>}
                                                     {prop.line}
                                                     {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
                                                     {prop.lineSource && <span title={prop.lineSource} style={{ fontSize: '0.6rem', color: 'var(--success-green)', marginLeft: '0.3rem' }}>●</span>}
@@ -14381,8 +14448,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     </div>
                                 )}
                                 {player.props && player.props.length > 0 && (() => {
-                                    const safeIdx = Math.min(selectedEdgePropIdx, player.props.length - 1);
-                                    const activeProp = player.props[safeIdx];
+                                    // Reuse the SAME id-resolved prop the summary card above is
+                                    // showing — never a separately-recomputed index into
+                                    // player.props, which is exactly the drift this whole
+                                    // component's prop-identity fix exists to prevent.
+                                    const activeProp = cardProp || player.props[0];
                                     const edge = calculateEdgeScore(player, activeProp);
                                     const verdictClass = edge.matchupLabel === 'GREEN MATCHUP' ? 'green' : (edge.matchupLabel === 'RED MATCHUP' ? 'red' : 'mixed');
                                     const verdictEmoji = verdictClass === 'green' ? '🟢' : (verdictClass === 'red' ? '🔴' : '🟡');
@@ -14395,8 +14465,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 </div>
                                                 <select
                                                     className="edge-prop-select"
-                                                    value={safeIdx}
-                                                    onChange={(e) => setSelectedEdgePropIdx(parseInt(e.target.value))}
+                                                    value={activeProp.id || cardIdx}
+                                                    onChange={(e) => setSelectedPropId(e.target.value)}
                                                 >
                                                     {['over', 'under'].map(dir => {
                                                         const opts = player.props.map((p, idx) => ({ p, idx })).filter(x => x.p.direction === dir);
@@ -14404,7 +14474,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         return (
                                                             <optgroup key={dir} label={dir === 'over' ? 'OVER' : 'UNDER'}>
                                                                 {opts.map(({ p, idx }) => (
-                                                                    <option key={idx} value={idx}>
+                                                                    <option key={p.id || idx} value={p.id || idx}>
                                                                         {p.direction === 'under' ? 'U' : 'O'} {p.type} {p.line}{p.ppKind === 'goblin' ? ' (Goblin)' : p.ppKind === 'demon' ? ' (Demon)' : p.crossBook ? ' (not on ' + p.book + ')' : p.altLine ? ' (alt)' : ''}
                                                                     </option>
                                                                 ))}
@@ -14422,7 +14492,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <div>
                                                         <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
                                                         <div className="edge-prop-line">
-                                                            Line: {activeProp.line}
+                                                            {activeProp.isProjection ? 'Model Line (no live book posts this stat): ' : 'Line: '}{activeProp.line}
                                                             {activeProp.direction === 'over' ? ' O' : ' U'}
                                                             {typeof activeProp.odds === 'number' ? ` (${activeProp.odds > 0 ? '+' : ''}${activeProp.odds})` : ''}
                                                             {' • '}{player.position} vs {player.opponent}
@@ -14577,7 +14647,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         <div className="projection-value">{edge.projection}</div>
                                                     </div>
                                                     <div className="projection-item">
-                                                        <div className="projection-label">Line</div>
+                                                        <div className="projection-label" title={activeProp.isProjection ? 'No live book posts this stat — BeatsEdge estimate, not a real market line' : 'The real posted line from the source book'}>{activeProp.isProjection ? 'Line (Model)' : 'Line'}</div>
                                                         <div className="projection-value">{activeProp.line}</div>
                                                     </div>
                                                     <div className="projection-item">
@@ -15849,29 +15919,31 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             }, [basePlayers, statFilter, gradeVersion, norm]);
 
             // CHEAP part — filter by the debounced query + sort by precomputed grade.
-            // The grid order is FROZEN only for the two re-renders that must NOT
-            // visibly reshuffle: a detail modal open (its own data pull nudges
-            // that player's grade — a resort would slide a different player's
-            // card under the modal), and the ~90s silent background auto-
-            // refresh (isSilentRef, set by the fetch effects below) — a card
-            // must not jump out from under someone mid-browse just because a
-            // grade nudged in the background. Every OTHER update — the normal
-            // foreground load progressively upgrading from season-only data to
-            // real L5/L10/matchup/PropLine numbers, or an explicit sort/search/
-            // filter/sport/date change — still sorts fresh each time, so Prime
-            // and A-grade picks correctly settle to the top once the real data
-            // is in, instead of getting stuck wherever the first, thinnest pass
-            // happened to land them.
+            // The grid order is FROZEN for anything that isn't an EXPLICIT user
+            // action (sort/search/filter change, or a sport/date switch) — a
+            // detail modal open (its own data pull nudges that player's
+            // grade), the render right after that modal CLOSES (closing must
+            // return to the same list the user was viewing, not trigger a
+            // fresh broad resort), and the ~90s silent background auto-refresh
+            // (isSilentRefreshRef, set by the fetch effects below) all keep
+            // every already-seen player pinned to their existing slot. Only
+            // the normal foreground load's OWN progressive enrichment —
+            // upgrading from season-only data to real L5/L10/matchup/PropLine
+            // numbers while no modal is open and nothing was silent — still
+            // sorts fresh each time, so Prime and A-grade picks correctly
+            // settle to the top once the real data is in.
             const orderRef = React.useRef([]);
-            // isSilentRefreshRef is a ref (not state), so it can lag a render
-            // behind a state-driven freeze/unfreeze — fine for the silent-
-            // refresh case (a few ms doesn't matter), but NOT fine for "the
-            // user just changed sort/search/filter, un-freeze THIS render" —
-            // that has to be synchronous or the new sort silently no-ops for
-            // one tick. So that specific unfreeze is detected right here by
-            // comparing against the previous render's own key, independent of
-            // React's effect timing.
+            // isSilentRefreshRef/modalWasOpenRef are refs (not state), so they
+            // can lag a render behind a state-driven freeze/unfreeze — fine
+            // for freezing (a stale "true" for one extra tick just keeps the
+            // freeze a beat longer, harmless), but NOT fine for UNfreezing on
+            // an explicit sort/search/filter change — that has to be
+            // synchronous or the new sort silently no-ops for one tick. So
+            // that specific unfreeze is detected right here by comparing
+            // against the previous render's own key, independent of React's
+            // effect timing.
             const explicitKeyRef = React.useRef(null);
+            const modalWasOpenRef = React.useRef(false);
             const filteredPlayers = React.useMemo(() => {
                 const q = norm(playerSearchDebounced.trim());
                 const rows = q
@@ -15889,8 +15961,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const explicitKey = `${sortBy}|${playerSearchDebounced}|${statFilter}`;
                 const explicitlyChanged = explicitKey !== explicitKeyRef.current;
                 explicitKeyRef.current = explicitKey;
+                const modalOpenOrJustClosed = !!detailModal || modalWasOpenRef.current;
+                modalWasOpenRef.current = !!detailModal;
                 let sortedRows;
-                if (!explicitlyChanged && (detailModal || isSilentRefreshRef.current) && orderRef.current.length) {
+                if (!explicitlyChanged && (modalOpenOrJustClosed || isSilentRefreshRef.current) && orderRef.current.length) {
                     const pos = new Map(orderRef.current.map((id, i) => [id, i]));
                     sortedRows = rows.slice().sort((a, b) => {
                         const ai = pos.has(a.p.id) ? pos.get(a.p.id) : Infinity;
