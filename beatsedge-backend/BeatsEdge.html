@@ -3274,7 +3274,7 @@
                             key: 'oppdef',
                             name: `${player.opponent} defense`,
                             supports: direction === 'over' ? leaky : stingy,
-                            detail: `#${r} of 32 fewest points allowed (${player.oppDef.paPerGame}/game) — ${leaky ? 'one of the leakiest' : 'one of the stingiest'}`
+                            detail: `allows ${player.oppDef.paPerGame} pts/game — #${r} of 32 in points allowed (${leaky ? 'one of the leakiest' : 'one of the stingiest'})`
                         });
                     }
                 }
@@ -9900,7 +9900,18 @@
             const sortPropsByEdge = (playerLike, props) => {
                 assignPropIds(props);
                 return props
-                    .map(pr => { const e = calculateEdgeScore(playerLike, pr); return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK[e.grade], g: e.gradeScore }; })
+                    .map(pr => {
+                        const e = calculateEdgeScore(playerLike, pr);
+                        // Stash the computed edge on the prop so attachPlusEV (which
+                        // always runs right after this) can reuse it instead of
+                        // running the whole factor/probability engine a second time
+                        // per prop — calculateEdgeScore is the most expensive call
+                        // in the build path, and doubling it across a full MLB/NFL
+                        // slate on every load AND every ~90s silent refresh was
+                        // real, visible main-thread jank, not a fix to the model.
+                        pr.__edge = e;
+                        return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK[e.grade], g: e.gradeScore };
+                    })
                     .sort((a, b) => a.alt - b.alt || a.r - b.r || b.g - a.g)
                     .map(x => x.pr);
             };
@@ -10012,11 +10023,15 @@
             // only adds fields, never reorders).
             const attachPlusEV = (player, props) => {
                 return props.map(pr => {
+                    // Reuse the edge sortPropsByEdge already computed for this exact
+                    // prop (same player, same line) instead of running the engine
+                    // again — same value either way, just without paying for it twice.
+                    const { __edge, ...prClean } = pr;
                     const byBook = player._allLines && player._allLines[pr.statKey];
-                    const edge = calculateEdgeScore(player, pr);
+                    const edge = __edge || calculateEdgeScore(player, pr);
                     const result = computePlusEVForProp(pr, byBook, edge.projection, edge.thinData);
-                    if (!result) return pr;
-                    return result.isAltLine ? { ...pr, altLineValue: result } : { ...pr, plusEV: result };
+                    if (!result) return prClean;
+                    return result.isAltLine ? { ...prClean, altLineValue: result } : { ...prClean, plusEV: result };
                 });
             };
 
