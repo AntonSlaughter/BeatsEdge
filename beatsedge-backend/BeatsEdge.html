@@ -5300,20 +5300,33 @@
         // ParlayAPI market_key → BeatsEdge statKey. Only the clean, gradeable
         // ones; its DFS-oddity markets ("halves with 25+ rec yds") are skipped.
         const PARLAY_MLB_MKT = {
-            player_hits: 'hits', player_total_bases: 'totalBases', player_home_runs: 'homeRuns',
-            player_rbis: 'rbis', player_runs: 'runs', player_singles: 'singles', player_doubles: 'doubles',
-            player_triples: 'triples', player_stolen_bases: 'stolenBases',
+            player_hits: 'hits', player_hits_alt: 'hits',
+            player_total_bases: 'totalBases', player_total_bases_alt: 'totalBases',
+            player_home_runs: 'homeRuns', player_home_runs_alt: 'homeRuns',
+            player_rbis: 'rbis', player_runs: 'runs', player_runs_alt: 'runs',
+            player_singles: 'singles', player_doubles: 'doubles', player_triples: 'triples',
+            player_stolen_bases: 'stolenBases', player_stolen_bases_alt: 'stolenBases',
             player_hits_runs_rbis: 'hitsRunsRbis', player_hits__runs__rbis: 'hitsRunsRbis',
             player_walks: 'batterWalks', player_batter_walks: 'batterWalks', player_bat_walks: 'batterWalks',
             player_hitter_strikeouts: 'batterStrikeouts',
-            player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts',
-            player_earned_runs: 'earnedRuns', player_hits_allowed: 'hitsAllowed', player_pitching_outs: 'pitcherOuts',
-            // PrizePicks "Hitter Fantasy Score" — PropLine's own MLB odds feed
-            // carries no fantasy-score market at all (confirmed against its
-            // live market-discovery endpoint), but ParlayAPI does, real and
-            // PrizePicks-sourced (goblin/standard/demon, same as every other
-            // DFS stat). No pitcher-side equivalent exists in either feed.
-            player_hitter_fantasy_score: 'fantasy'
+            player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts', player_strike_outs: 'strikeouts', player_strikeouts_alt: 'strikeouts',
+            player_earned_runs: 'earnedRuns', player_earned_runs_allowed: 'earnedRuns',
+            player_hits_allowed: 'hitsAllowed',
+            player_pitching_outs: 'pitcherOuts', player_outs: 'pitcherOuts',
+            // These two have NO PropLine market at all (confirmed against its
+            // live market-discovery endpoint) — ParlayAPI was believed to be the
+            // ONLY possible real-line source for player_hitter_fantasy_score,
+            // and pitcherFantasy/pitcherWalks were believed to have no real
+            // source anywhere. Re-checked against ParlayAPI's actual live NFL/
+            // MLB feed while switching this app off PropLine entirely: it DOES
+            // carry a pitcher-side fantasy-score market and a walks-allowed
+            // market too — both real, PrizePicks-sourced, just never mapped
+            // here before, so Pitcher Fantasy Score and Walks Allowed have
+            // silently shown "Line unavailable" this whole time even when a
+            // real line existed.
+            player_hitter_fantasy_score: 'fantasy',
+            player_pitcher_fantasy_score: 'pitcherFantasy',
+            player_walks_allowed: 'pitcherWalks'
         };
         const PARLAY_FB_MKT = {
             player_pass_yds: 'passYds', player_passing_yards: 'passYds', player_pass_yards: 'passYds',
@@ -8179,16 +8192,10 @@
             const [scoreboardSource, setScoreboardSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [statsDataSource, setStatsDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [mlbSlateSource, setMlbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real MLB full-slate from statsapi.mlb.com
-            const [nflSlateSource, setNflSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NFL slate from ESPN + PropLine
-            const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real CFB slate from ESPN + PropLine
-            const [nbaSlateSource, setNbaSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NBA slate from ESPN + PropLine
+            const [nflSlateSource, setNflSlateSource] = useState('checking'); // 'live' | 'sample' | 'checking' — real NFL slate from ESPN, lines from ParlayAPI
+            const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // same, for CFB
+            const [nbaSlateSource, setNbaSlateSource] = useState('checking'); // same, for NBA
             const [wnbaSlateSource, setWnbaSlateSource] = useState('checking'); // same, for WNBA
-            // True when WNBA's CURRENT props actually came from PropLine;
-            // false when PropLine was unavailable (no key, rate-limited) and
-            // the ESPN-scoreboard + ParlayAPI fallback carried the slate
-            // instead — read by the source pill so it never claims
-            // "PropLine" for lines PropLine had no part in.
-            const [wnbaUsedProLine, setWnbaUsedProLine] = useState(true);
             const [backtest, setBacktest] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_backtest_v1') || 'null'); } catch (e) { return null; }
             });
@@ -10411,182 +10418,40 @@
                 setParlaySource('live');
                 return { byNorm, n };
             };
-            // Merge ParlayAPI's byNorm into a PropLine target map, keyed by
-            // whatever the caller uses (pid or normName). `keyFor(normName)`
-            // returns the target key (or null to skip). Gap-fill: only sets a
-            // [statKey][book] array when the target has none there.
-            const mergeParlay = (target, parlay, keyFor) => {
-                if (!parlay || !parlay.byNorm) return 0;
-                let added = 0;
-                Object.entries(parlay.byNorm).forEach(([nn, byStat]) => {
-                    const key = keyFor(nn);
-                    if (key == null) return;
-                    const tByStat = target[key] || (target[key] = {});
-                    Object.entries(byStat).forEach(([sk, byBook]) => {
-                        const tByBook = tByStat[sk] || (tByStat[sk] = {});
-                        Object.entries(byBook).forEach(([book, arr]) => {
-                            if (tByBook[book] && tByBook[book].length) return; // PropLine wins
-                            const rows = arr.map(e => ({ ...e, primary: e.ppType === 'standard' }));
-                            // ParlayAPI's feed can rarely tag MORE than one line
-                            // "standard" for the same book+stat (seen live: WNBA
-                            // Points returned both a real 20.5 full-game standard
-                            // AND an erroneous 5.5 — almost certainly a partial-
-                            // game/segment market mis-tagged under the same
-                            // market_key). That's ambiguous source data, not a
-                            // real multi-primary board — letting the sort below
-                            // arbitrarily pick between tied primaries risks
-                            // showing the wrong one as THE line. Keep only the
-                            // highest-line "standard" entry primary (a genuine
-                            // full-game counting-stat line is never smaller than
-                            // a same-tagged duplicate) and demote the rest to
-                            // alt lines instead of guessing.
-                            const stdIdx = rows.reduce((best, e, i) => (e.primary && (best < 0 || e.line > rows[best].line)) ? i : best, -1);
-                            rows.forEach((e, i) => { if (e.primary && i !== stdIdx) e.primary = false; });
-                            tByBook[book] = rows;
-                            added += arr.length;
-                        });
-                    });
-                });
-                return added;
-            };
 
+            // Same switch as football (see fetchNflPropLines) — ParlayAPI only,
+            // one call for the whole slate. PropLine's daily quota is shared
+            // account-wide across every sport this app fetches, so MLB testing
+            // was starving NFL/CFB (and vice versa) — dropping it here removes
+            // MLB from that shared blast radius entirely.
             const fetchMlbPropLines = async (players, isStale) => {
-                // isStale() → the user switched sport/date mid-flight; skip every
-                // pill/roster write so we don't stomp the new selection.
                 const gone = () => typeof isStale === 'function' && isStale();
                 if (gone()) return;
-                if (!backendUrl) {
-                    setPropLineSource('sample');
-                    setProplineError('PropLine has no CORS — set "Your Backend" URL too so it can be proxied.');
-                    return;
-                }
-                const plFetch = async (path) => {
-                    // path like "/v1/sports/baseball_mlb/events" -> proxied
-                    const [p, q] = path.replace(/^\//, '').split('?');
-                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
-                    const r = await fetch(url);
-                    if (r.status === 401 || r.status === 403) throw new Error(`PropLine key rejected (HTTP ${r.status})`);
-                    if (r.status === 429) throw new Error('PropLine rate limit hit — try again later');
-                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
-                    return r.json();
-                };
+                if (!parlayApiKey) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — MLB lines come from ParlayAPI only.'); return; }
 
-                // 1. PropLine events -> match to our slate games by MLB team-id pair
-                //    (PropLine uses "mlb:145" = the same statsapi team id).
-                const events = await plFetch('/v1/sports/baseball_mlb/events');
-                // PropLine returns a ROLLING multi-day window (today + the next
-                // ~2 weeks), so most matchups appear several times — today's
-                // game plus the next days' rematches. Keying by team-pair with
-                // no date filter collapses to whichever appears LAST (a future
-                // game with no lines posted → "PropLine had none for this
-                // slate"). Fix: keep only events that start inside THIS slate's
-                // day, then pick the earliest remaining event per matchup.
-                // Window: selectedDate 08:00Z → +28h (next day 12:00Z) covers a
-                // full US day of first pitches incl. late West-coast starts and
-                // excludes tomorrow's slate (earliest ~15:00Z / afternoon ET).
+                const slateNorm = {};
+                players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
+
+                // ParlayAPI's /props feed is a rolling multi-week window — same
+                // slate-day guard PropLine's own event matching used to need
+                // (selectedDate 08:00Z → +28h covers a full US day of first
+                // pitches incl. late West-coast starts, short of tomorrow's slate).
                 const _slateStartMs = Date.parse(selectedDate + 'T08:00:00Z');
-                const _slateEndMs = _slateStartMs + 28 * 3600 * 1000;
-                const evByPair = {};
-                (Array.isArray(events) ? events : []).forEach(ev => {
-                    const ct = Date.parse(ev.commence_time || '');
-                    if (!Number.isFinite(ct) || ct < _slateStartMs || ct > _slateEndMs) return;
-                    const h = String(ev.home_team_id || '').replace('mlb:', '');
-                    const a = String(ev.away_team_id || '').replace('mlb:', '');
-                    if (!h || !a) return;
-                    [h + '-' + a, a + '-' + h].forEach(key => {
-                        const cur = evByPair[key];
-                        if (!cur || ct < cur.ct) evByPair[key] = { id: ev.id, ct };
-                    });
-                });
-
-                const wantEventIds = new Set();
-                const seenGames = new Set();
-                players.forEach(p => {
-                    if (seenGames.has(p.gamePk)) return;
-                    seenGames.add(p.gamePk);
-                    // live lines only — skip games that have already finished
-                    if (/final|completed|game over/i.test(p.gameTime || '')) return;
-                    const ev = evByPair[String(p.teamId) + '-' + String(p.oppTeamId)];
-                    if (ev) wantEventIds.add(ev.id);
+                const commenceWindow = { lo: _slateStartMs, hi: _slateStartMs + 28 * 3600 * 1000 };
+                const markets = Object.keys(PARLAY_MLB_MKT).join(',');
+                const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, markets, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
                 });
                 if (gone()) return;
-                if (!wantEventIds.size) { setPropLineSource('sample'); setProplineError('No upcoming/live games on this slate for PropLine.'); return; }
+                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
 
-                // 2. One odds call per game — ALL supported markets, ALL books.
-                //    Keep EVERY line each book offers (PrizePicks etc. post
-                //    alternate lines) so the platform tabs can stay separate
-                //    and PrizePicks shows all of its lines.
-                const books = PROPLINE_BOOK_PRIORITY.join(',');
-                const markets = Object.values(MLB_PROP_DEFS).map(d => d.market).filter(Boolean).join(',');
                 // pid -> statKey -> bookKey -> [ {line, over, under, juice, setAt, primary, move} ]
                 const allLinesByPid = {};
-                await Promise.all([...wantEventIds].map(async eid => {
-                    try {
-                        const data = await plFetch(`/v1/sports/baseball_mlb/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
-                        (data.bookmakers || []).forEach(bm => {
-                            (bm.markets || []).forEach(m => {
-                                const statKey = MLB_MARKET_TO_KEY[m.key];
-                                if (!statKey) return;
-                                if (m.suspended_at) return; // live lines only — skip suspended markets
-                                (m.outcomes || []).forEach(o => {
-                                    const pid = String(o.player_id || '').replace('mlb:', '');
-                                    if (!pid || o.price == null) return;
-                                    if (o.suspended_at) return;
-                                    // PropLine tags every PrizePicks/Underdog line:
-                                    // 'standard' (over+under both pickable), 'goblin'
-                                    // (easier, over only), 'demon' (harder, over only).
-                                    const ppType = o.dfs_odds_type || null;
-                                    let line = null, side = null;
-                                    if (/^over$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'over'; }
-                                    else if (/^under$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'under'; }
-                                    // "N+ Strikeouts" ladders: sportsbooks only. DFS
-                                    // apps don't post these; treating them as lines
-                                    // manufactures picks that aren't really offered.
-                                    else if (!DFS_PLATFORMS.has(bm.key)) { const mm = /^(\d+)\s*\+/.exec(o.name || ''); if (mm) { line = parseInt(mm[1], 10) - 0.5; side = 'over'; } }
-                                    if (line == null || side == null) return;
-                                    const t2 = (allLinesByPid[pid] || (allLinesByPid[pid] = {}));
-                                    const t3 = (t2[statKey] || (t2[statKey] = {}));
-                                    const arr = (t3[bm.key] || (t3[bm.key] = []));
-                                    // key by line + ppType so a standard and a demon
-                                    // at the same number stay distinct.
-                                    const kk = ppType ? `${line}|${ppType}` : `${line}`;
-                                    let e = arr.find(x => x._kk === kk);
-                                    if (!e) { e = { _kk: kk, line, over: null, under: null, juice: 9999, setAt: null, ppType }; arr.push(e); }
-                                    e[side] = o.price;
-                                    const jz = Math.abs(o.price || 0);
-                                    if (jz < e.juice) e.juice = jz;
-                                    e.setAt = m.last_update || o.last_change_at || e.setAt;
-                                });
-                            });
-                        });
-                    } catch (e) { /* this game keeps its sample props */ }
-                }));
-
-                // ---- ParlayAPI gap-fill (optional 2nd DFS source) -----------
-                if (parlayApiKey) {
-                    const slateNorm = {};
-                    players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
-                    const keyFor = nn => slateNorm[nn] || null;
-                    // ONE call, scoped to just Hitter Fantasy Score — the only
-                    // stat in this map with NO PropLine market at all
-                    // (MLB_PROP_DEFS.fantasy.market is null, by design), so
-                    // ParlayAPI is its ONLY possible real-line source, for every
-                    // player, every day. An unfiltered pull across every mapped
-                    // market spans the whole day's slate and truncates at
-                    // `limit` long before reaching most players (verified live:
-                    // 0 William Contreras rows at limit=1000 unfiltered) — worse,
-                    // it's pure waste for every OTHER mapped stat, since PropLine
-                    // already carries those directly and ParlayAPI's gap-fill for
-                    // them is a rare edge case. Every ParlayAPI call spends real
-                    // metered credits (confirmed live: the account hit its
-                    // billing-period credit limit during testing), so this stays
-                    // a single scoped call — same call count as before this
-                    // stat existed, not double — rather than one unfiltered call
-                    // plus one scoped call.
-                    const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, 'player_hitter_fantasy_score');
-                    const added = mergeParlay(allLinesByPid, pa, keyFor);
-                    setParlayCount(added);
-                } else { setParlaySource('off'); }
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    const pid = slateNorm[nn];
+                    if (pid) allLinesByPid[pid] = byStat;
+                });
+                setParlayCount(pa.n);
 
                 // ---- Consolidate lines per (pid, statKey) --------------------
                 // DFS books: PropLine tags every line standard/goblin/demon, so
@@ -10616,8 +10481,20 @@
                             if (!DFS_PLATFORMS.has(bk)) return;
                             let arr = byBook[bk];
                             if (!arr || !arr.length) return;
-                            // primary = the standard line (fallback: closest to sharp market, else first)
-                            const std = arr.find(e => e.ppType === 'standard');
+                            // primary = the standard line (fallback: closest to sharp market, else first).
+                            // A source can (rarely) tag MORE than one line "standard"
+                            // for the same book+stat — seen live on this exact codepath
+                            // (WNBA Points once returned both a real 20.5 full-game
+                            // standard AND an erroneous 5.5 for the same player). A
+                            // plain `.find()` would silently grab whichever sorts
+                            // first. When more than one is tagged standard, prefer
+                            // whichever sits closest to the sharp-market consensus,
+                            // else the highest line (a genuine full-game counting-stat
+                            // number is never smaller than a same-tagged duplicate).
+                            const stds = arr.filter(e => e.ppType === 'standard');
+                            const std = stds.length <= 1 ? stds[0] : (marketLine != null
+                                ? stds.slice().sort((a, b) => Math.abs(a.line - marketLine) - Math.abs(b.line - marketLine))[0]
+                                : stds.reduce((a, b) => b.line > a.line ? b : a));
                             const anchor = marketLine != null ? marketLine : medianOf(arr.map(e => e.line));
                             const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
                             // bad data guard: a STANDARD line >2.5 (or >60%) off the sharp market
@@ -10672,8 +10549,8 @@
                 setPropLineSource(matched > 0 ? 'live' : 'sample');
                 const bookName = (platforms.find(x => x.id === selectedPlatform) || {}).name || selectedPlatform;
                 setProplineError(matched === 0
-                    ? 'PropLine reached, but no lines matched tonight\'s slate (games may already be final).'
-                    : (bookMatched === 0 ? `PropLine is live, but ${bookName} hasn't posted MLB lines for this slate yet — try another book tab.` : null));
+                    ? 'ParlayAPI reached, but no lines matched tonight\'s slate (games may already be final).'
+                    : (bookMatched === 0 ? `ParlayAPI is live, but ${bookName} hasn't posted MLB lines for this slate yet — try another book tab.` : null));
             };
 
             // On card-expand: pull the real per-game series ONCE and compute
@@ -11445,6 +11322,41 @@
             const NBA_YR_PREV = MLB_SEASON;      // 2025-26
             const nbaCache = React.useRef({ byNorm: {}, teamMeta: {}, games: [] });
 
+            // Real slate discovery, independent of PropLine entirely (mirrors
+            // wnbaFetchGamesFromEspn below — NBA/WNBA share the exact same ESPN
+            // scoreboard shape). Searches forward day-by-day for the next real
+            // slate — same "find the next games" behavior PropLine's own event
+            // list used to provide, just sourced from ESPN's keyless scoreboard.
+            const nbaFetchGamesFromEspn = async (date) => {
+                for (let i = 0; i < 14; i++) {
+                    const d = new Date(Date.parse(String(date) + 'T12:00:00Z') + i * 86400000);
+                    const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+                    let sb;
+                    try { sb = await nflFetch(`${NBA_ESPN}/scoreboard?dates=${ymd}`); } catch (e) { continue; }
+                    const evs = (sb && sb.events) || [];
+                    if (!evs.length) continue;
+                    const games = [];
+                    evs.forEach(ev => {
+                        const c = ev.competitions && ev.competitions[0];
+                        if (!c) return;
+                        const home = (c.competitors || []).find(x => x.homeAway === 'home');
+                        const away = (c.competitors || []).find(x => x.homeAway === 'away');
+                        if (!home || !away || !home.team || !away.team) return;
+                        const iso = ev.date || c.date;
+                        const kickoffMs = Date.parse(iso);
+                        if (!Number.isFinite(kickoffMs)) return;
+                        const when = new Date(kickoffMs);
+                        games.push({
+                            gameId: `espn:${ev.id}`, homeId: String(home.team.id), awayId: String(away.team.id),
+                            iso, kickoffMs, state: 'pre', status: 'Scheduled',
+                            gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                        });
+                    });
+                    if (games.length) return games;
+                }
+                return [];
+            };
+
             // Static ESPN team directory — the bare `/teams` list endpoint is
             // not CORS-open (unlike scoreboard / roster / gamelog), and the 30
             // NBA franchises don't move. `id` is the ESPN team id used for
@@ -11461,22 +11373,6 @@
                 ['22', 'POR', 'Trail Blazers'], ['23', 'SAC', 'Kings'], ['24', 'SA', 'Spurs'], ['28', 'TOR', 'Raptors'],
                 ['26', 'UTAH', 'Jazz'], ['27', 'WSH', 'Wizards']
             ];
-            const NBA_NICK_TO_TEAM = {};
-            NBA_TEAMS.forEach(([id, abbr, nick]) => {
-                const t = { id, abbreviation: abbr, displayName: nick };
-                const k = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-                NBA_NICK_TO_TEAM[k(nick)] = t;
-                NBA_NICK_TO_TEAM[k(abbr)] = t;
-            });
-            NBA_NICK_TO_TEAM['sixers'] = NBA_NICK_TO_TEAM['76ers'];
-            NBA_NICK_TO_TEAM['blazers'] = NBA_NICK_TO_TEAM['trailblazers'];
-            NBA_NICK_TO_TEAM['wolves'] = NBA_NICK_TO_TEAM['timberwolves'];
-            const nbaResolveTeam = (str) => {
-                const raw = String(str || '');
-                const k = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const noAbbr = raw.replace(/^[A-Za-z]{2,4}\s+/, '');
-                return NBA_NICK_TO_TEAM[k(noAbbr)] || NBA_NICK_TO_TEAM[k(raw)] || NBA_NICK_TO_TEAM[k(raw).replace(/^[a-z]{2,4}/, '')] || null;
-            };
 
             // The ESPN gamelog row is `names` (camelCase) zipped onto per-game
             // `stats` — same convention NFL uses. The threes field is a
@@ -11762,51 +11658,16 @@
                 return props;
             };
 
+            // Slate discovery is pure ESPN now (see fetchNflSlate's comment for
+            // why: dropping PropLine here removes NBA from its shared daily-
+            // quota blast radius, same reasoning as NFL/CFB/MLB). `gameId` is
+            // `espn:`-prefixed since there's no PropLine event behind it — the
+            // exact shape WNBA's own ESPN fallback already produced.
             const fetchNbaSlate = async (date) => {
-                if (!backendUrl || !proplineKey) return { slots: [], games: [] };
-                const plFetch = async (path) => {
-                    const [p, q] = path.replace(/^\//, '').split('?');
-                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
-                    const r = await fetch(url);
-                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
-                    return r.json();
-                };
-                const resolveTeam = nbaResolveTeam;
-
-                let events;
-                try { events = await plFetch('/v1/sports/basketball_nba/events'); } catch (e) { return { slots: [], games: [] }; }
-                const evs = (Array.isArray(events) ? events : []).filter(e => e && e.commence_time)
-                    .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
-                if (!evs.length) return { slots: [], games: [] };
-                // Prefer games on the selected date; if none (offseason / nothing
-                // today) fall back to the earliest 72h cluster with posted lines.
-                const dayLo = Date.parse(String(date) + 'T00:00:00Z');
-                const dayHi = dayLo + 30 * 3600 * 1000;
-                let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
-                if (!window.length) {
-                    const t0 = Date.parse(evs[0].commence_time);
-                    window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
-                }
-                const byPair = {};
-                window.forEach(ev => {
-                    const home = resolveTeam(ev.home_team), away = resolveTeam(ev.away_team);
-                    if (!home || !away || home.id === away.id) return;
-                    const key = [home.id, away.id].sort().join('-');
-                    const ct = Date.parse(ev.commence_time);
-                    if (!byPair[key] || ct < byPair[key].ct) byPair[key] = { evId: ev.id, ct, home, away, iso: ev.commence_time };
-                });
-                const teamMeta = {}, games = [];
-                Object.values(byPair).forEach(g => {
-                    teamMeta[g.home.id] = { abbr: g.home.abbreviation, name: g.home.displayName };
-                    teamMeta[g.away.id] = { abbr: g.away.abbreviation, name: g.away.displayName };
-                    const when = new Date(g.iso);
-                    games.push({
-                        gameId: g.evId, homeId: g.home.id, awayId: g.away.id,
-                        iso: g.iso, kickoffMs: g.ct, state: 'pre', status: 'Scheduled',
-                        gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-                    });
-                });
+                const games = await nbaFetchGamesFromEspn(date);
                 if (!games.length) return { slots: [], games: [] };
+                const teamMeta = {};
+                NBA_TEAMS.forEach(([id, abbr, nick]) => { teamMeta[id] = { abbr, name: nick }; });
 
                 const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
                 const gameByTeam = {};
@@ -11858,68 +11719,33 @@
                 return { slots, games };
             };
 
+            // Same switch as the other three sports — ParlayAPI only, one call
+            // for the whole slate, no PropLine dependency or shared quota.
             const fetchNbaPropLines = async (slate, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 const { games } = slate;
                 if (gone()) return [];
-                if (!backendUrl || !proplineKey) { setPropLineSource('sample'); return []; }
-                const plFetch = async (path) => {
-                    const [p, q] = path.replace(/^\//, '').split('?');
-                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
-                    const r = await fetch(url);
-                    if (r.status === 401 || r.status === 403) throw new Error(`PropLine key rejected (HTTP ${r.status})`);
-                    if (r.status === 429) throw new Error('PropLine rate limit hit — try again later');
-                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
-                    return r.json();
-                };
-                // Each slate game already carries its PropLine event id as gameId
-                // (the slate is built from PropLine's own event list).
-                const wantEventIds = [...new Set(games.map(g => g.gameId))];
-                if (!wantEventIds.length) { setPropLineSource('sample'); setProplineError('No NBA games on this slate matched PropLine.'); return []; }
+                if (!parlayApiKey) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — NBA lines come from ParlayAPI only.'); return []; }
 
-                const markets = [...new Set(Object.values(NBA_PROP_DEFS).map(d => d.market))].join(',');
-                const books = PROPLINE_BOOK_PRIORITY.join(',');
-                const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
-                await Promise.all(wantEventIds.map(async eid => {
-                    try {
-                        const data = await plFetch(`/v1/sports/basketball_nba/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
-                        (data.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => {
-                            const statKey = NBA_MARKET_TO_KEY[m.key];
-                            if (!statKey || m.suspended_at) return;
-                            (m.outcomes || []).forEach(o => {
-                                if (o.price == null || o.suspended_at) return;
-                                const nm = nflNormName(o.description || o.name);
-                                if (!nm) return;
-                                const ppType = o.dfs_odds_type || null;
-                                let line = null, side = null;
-                                if (/^over$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'over'; }
-                                else if (/^under$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'under'; }
-                                else if (!DFS_PLATFORMS.has(bm.key)) { const mm = /^(\d+)\s*\+/.exec(o.name || ''); if (mm) { line = parseInt(mm[1], 10) - 0.5; side = 'over'; } }
-                                if (line == null || side == null) return;
-                                const t2 = (linesByName[nm] || (linesByName[nm] = {}));
-                                const t3 = (t2[statKey] || (t2[statKey] = {}));
-                                const arr = (t3[bm.key] || (t3[bm.key] = []));
-                                const kk = ppType ? `${line}|${ppType}` : `${line}`;
-                                let e = arr.find(x => x._kk === kk);
-                                if (!e) { e = { _kk: kk, line, over: null, under: null, juice: 9999, setAt: null, ppType }; arr.push(e); }
-                                e[side] = o.price;
-                                const jz = Math.abs(o.price || 0); if (jz < e.juice) e.juice = jz;
-                                e.setAt = m.last_update || e.setAt;
-                            });
-                        }));
-                    } catch (e) { /* one game keeps nothing */ }
-                }));
+                const _kMs = games.map(g => g.kickoffMs).filter(Number.isFinite);
+                const commenceWindow = _kMs.length
+                    ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
+                    : { lo: -Infinity, hi: Infinity };
+                const markets = Object.keys(PARLAY_BB_MKT).join(',');
+                const pa = await fetchParlayProps('basketball_nba', PARLAY_BB_MKT, markets, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
+                });
                 if (gone()) return [];
+                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
                 const bySlot = nbaCache.current.byNorm || {};
-                if (parlayApiKey) {
-                    const pa = await fetchParlayProps('basketball_nba', PARLAY_BB_MKT);
-                    setParlayCount(mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null));
-                } else { setParlaySource('off'); }
+                const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (bySlot[nn]) linesByName[nn] = byStat; });
+                setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
-                if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('PropLine returned NBA lines but none matched the roster scan (name join).'); return []; }
+                if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no NBA lines matched this slate\'s roster scan (name join).'); return []; }
 
                 const glMap = await nbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
@@ -11978,7 +11804,7 @@
                 if (gone()) return [];
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
-                setProplineError(built.length ? null : 'PropLine reached but produced no NBA props for this slate.');
+                setProplineError(built.length ? null : 'ParlayAPI reached but produced no NBA props for this slate.');
                 return built;
             };
 
@@ -12023,32 +11849,6 @@
                 ['129689', 'GS', 'Valkyries'], ['17', 'LV', 'Aces'], ['3', 'DAL', 'Wings'], ['132052', 'POR', 'Fire'],
                 ['6', 'LA', 'Sparks'], ['11', 'PHX', 'Mercury'], ['14', 'SEA', 'Storm']
             ];
-            const wnbaK = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const WNBA_NICK_TO_TEAM = {};
-            const WNBA_NICK_LIST = []; // [normalizedNick, team] — for the suffix match below
-            WNBA_TEAMS.forEach(([id, abbr, nick]) => {
-                const t = { id, abbreviation: abbr, displayName: nick };
-                WNBA_NICK_TO_TEAM[wnbaK(nick)] = t;
-                WNBA_NICK_TO_TEAM[wnbaK(abbr)] = t;
-                WNBA_NICK_LIST.push([wnbaK(nick), t]);
-            });
-            // PropLine's WNBA event feed uses "City Nickname" ("Atlanta Dream",
-            // "Golden State Valkyries") — unlike NBA's "ABBR Nickname" ("DET
-            // Pistons") the nbaResolveTeam prefix-strip expects. City names
-            // vary in length (one word to three), so rather than hardcode every
-            // city, resolve by checking whether the normalized string ENDS WITH
-            // a known nickname — robust to any city-name length, and still
-            // falls back to a leading-abbreviation strip for any other format.
-            const wnbaResolveTeam = (str) => {
-                const raw = String(str || '');
-                const norm = wnbaK(raw);
-                if (WNBA_NICK_TO_TEAM[norm]) return WNBA_NICK_TO_TEAM[norm];
-                const noAbbr = raw.replace(/^[A-Za-z]{2,4}\s+/, '');
-                if (WNBA_NICK_TO_TEAM[wnbaK(noAbbr)]) return WNBA_NICK_TO_TEAM[wnbaK(noAbbr)];
-                const bySuffix = WNBA_NICK_LIST.find(([nick]) => nick.length > 2 && norm.endsWith(nick));
-                return bySuffix ? bySuffix[1] : null;
-            };
-
             const wnbaFetchGamelog = async (id) => {
                 const [cur, prev] = await Promise.all([
                     nflFetch(`${WNBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${WNBA_YR_CUR}`).catch(() => null),
@@ -12201,53 +12001,13 @@
                 return [];
             };
 
+            // Slate discovery is pure ESPN now — same switch as NBA above, same
+            // reasoning (drop PropLine, drop the shared-quota exposure). This
+            // used to be a fallback for when PropLine's own event list came up
+            // empty; now it's simply the only path, so the fallback framing is
+            // gone along with the PropLine branch it used to fall back FROM.
             const fetchWnbaSlate = async (date) => {
-                if (!backendUrl) return { slots: [], games: [] };
-                const plFetch = async (path) => {
-                    const [p, q] = path.replace(/^\//, '').split('?');
-                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
-                    const r = await fetch(url);
-                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
-                    return r.json();
-                };
-                const resolveTeam = wnbaResolveTeam;
-
-                let games = [];
-                if (proplineKey) {
-                    let events = null;
-                    try { events = await plFetch('/v1/sports/basketball_wnba/events'); } catch (e) { /* fall to ESPN below */ }
-                    const evs = (Array.isArray(events) ? events : []).filter(e => e && e.commence_time)
-                        .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
-                    if (evs.length) {
-                        const dayLo = Date.parse(String(date) + 'T00:00:00Z');
-                        const dayHi = dayLo + 30 * 3600 * 1000;
-                        let window = evs.filter(e => { const t = Date.parse(e.commence_time); return t >= dayLo && t <= dayHi; });
-                        if (!window.length) {
-                            const t0 = Date.parse(evs[0].commence_time);
-                            window = evs.filter(e => Date.parse(e.commence_time) <= t0 + 72 * 3600 * 1000);
-                        }
-                        const byPair = {};
-                        window.forEach(ev => {
-                            const home = resolveTeam(ev.home_team), away = resolveTeam(ev.away_team);
-                            if (!home || !away || home.id === away.id) return;
-                            const key = [home.id, away.id].sort().join('-');
-                            const ct = Date.parse(ev.commence_time);
-                            if (!byPair[key] || ct < byPair[key].ct) byPair[key] = { evId: ev.id, ct, home, away, iso: ev.commence_time };
-                        });
-                        Object.values(byPair).forEach(g => {
-                            const when = new Date(g.iso);
-                            games.push({
-                                gameId: g.evId, homeId: g.home.id, awayId: g.away.id,
-                                iso: g.iso, kickoffMs: g.ct, state: 'pre', status: 'Scheduled',
-                                gameTime: when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-                            });
-                        });
-                    }
-                }
-                // PropLine gave us nothing (no key, rate-limited, or genuinely
-                // no posted events) — ESPN's own scoreboard still knows what
-                // games are being played, independent of PropLine entirely.
-                if (!games.length) games = await wnbaFetchGamesFromEspn(date).catch(() => []);
+                const games = await wnbaFetchGamesFromEspn(date).catch(() => []);
                 if (!games.length) return { slots: [], games: [] };
                 const teamMeta = {};
                 WNBA_TEAMS.forEach(([id, abbr, nick]) => { teamMeta[id] = { abbr, name: nick }; });
@@ -12300,84 +12060,34 @@
                 return { slots, games };
             };
 
+            // Same switch as NBA/NFL/CFB/MLB — ParlayAPI only.
             const fetchWnbaPropLines = async (slate, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 const { games } = slate;
                 if (gone()) return [];
-                if (!backendUrl) { setPropLineSource('sample'); return []; }
-                const plFetch = async (path) => {
-                    const [p, q] = path.replace(/^\//, '').split('?');
-                    const url = `${backendUrl}/api/propline/${p}?apiKey=${encodeURIComponent(proplineKey)}${q ? '&' + q : ''}`;
-                    const r = await fetch(url);
-                    if (r.status === 401 || r.status === 403) throw new Error(`PropLine key rejected (HTTP ${r.status})`);
-                    if (r.status === 429) throw new Error('PropLine rate limit hit — try again later');
-                    if (!r.ok) throw new Error('PropLine HTTP ' + r.status);
-                    return r.json();
-                };
-                const wantEventIds = [...new Set(games.map(g => g.gameId))];
-                if (!wantEventIds.length) { setPropLineSource('sample'); setProplineError('No WNBA games on this slate matched PropLine.'); return []; }
+                if (!parlayApiKey) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — WNBA lines come from ParlayAPI only.'); return []; }
 
-                const markets = [...new Set(Object.values(NBA_PROP_DEFS).map(d => d.market))].join(',');
-                const books = PROPLINE_BOOK_PRIORITY.join(',');
-                const linesByName = {};
-                // Skip PropLine's odds call entirely when there's no key, or
-                // when the slate came from the ESPN-scoreboard fallback above
-                // (`espn:`-prefixed game ids PropLine has never heard of) — no
-                // point spending a PropLine request on an id it can't match.
-                const usingProLineSlate = wantEventIds.length && !String(wantEventIds[0]).startsWith('espn:');
-                const canUseProLine = !!proplineKey && usingProLineSlate;
-                if (canUseProLine) await Promise.all(wantEventIds.map(async eid => {
-                    try {
-                        const data = await plFetch(`/v1/sports/basketball_wnba/events/${eid}/odds?markets=${markets}&bookmakers=${books}`);
-                        (data.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => {
-                            const statKey = NBA_MARKET_TO_KEY[m.key];
-                            if (!statKey || m.suspended_at) return;
-                            (m.outcomes || []).forEach(o => {
-                                if (o.price == null || o.suspended_at) return;
-                                const nm = nflNormName(o.description || o.name);
-                                if (!nm) return;
-                                const ppType = o.dfs_odds_type || null;
-                                let line = null, side = null;
-                                if (/^over$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'over'; }
-                                else if (/^under$/i.test(o.name || '') && o.point != null) { line = o.point; side = 'under'; }
-                                else if (!DFS_PLATFORMS.has(bm.key)) { const mm = /^(\d+)\s*\+/.exec(o.name || ''); if (mm) { line = parseInt(mm[1], 10) - 0.5; side = 'over'; } }
-                                if (line == null || side == null) return;
-                                const t2 = (linesByName[nm] || (linesByName[nm] = {}));
-                                const t3 = (t2[statKey] || (t2[statKey] = {}));
-                                const arr = (t3[bm.key] || (t3[bm.key] = []));
-                                const kk = ppType ? `${line}|${ppType}` : `${line}`;
-                                let e = arr.find(x => x._kk === kk);
-                                if (!e) { e = { _kk: kk, line, over: null, under: null, juice: 9999, setAt: null, ppType }; arr.push(e); }
-                                e[side] = o.price;
-                                const jz = Math.abs(o.price || 0); if (jz < e.juice) e.juice = jz;
-                                e.setAt = m.last_update || e.setAt;
-                            });
-                        }));
-                    } catch (e) { /* one game keeps nothing */ }
-                }));
+                const _kMs = games.map(g => g.kickoffMs).filter(Number.isFinite);
+                const commenceWindow = _kMs.length
+                    ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
+                    : { lo: -Infinity, hi: Infinity };
+                const markets = Object.keys(PARLAY_BB_MKT).join(',');
+                const pa = await fetchParlayProps('basketball_wnba', PARLAY_BB_MKT, markets, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
+                });
                 if (gone()) return [];
+                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
                 const bySlot = wnbaCache.current.byNorm || {};
-                const hadRealProLineLines = Object.keys(linesByName).some(nm => bySlot[nm]);
-                let parlayAdded = 0;
-                if (parlayApiKey) {
-                    const pa = await fetchParlayProps('basketball_wnba', PARLAY_BB_MKT);
-                    parlayAdded = mergeParlay(linesByName, pa, nn => bySlot[nn] ? nn : null);
-                    setParlayCount(parlayAdded);
-                } else { setParlaySource('off'); }
+                const linesByName = {};
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (bySlot[nn]) linesByName[nn] = byStat; });
+                setParlayCount(pa.n);
                 nflConsolidate(linesByName);
-                // True once this slate has ANY prop actually sourced from
-                // PropLine — read by the pill below so it never claims
-                // "PropLine" when every line here actually came from the
-                // ESPN+ParlayAPI fallback path.
-                setWnbaUsedProLine(hadRealProLineLines);
 
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
                 if (!matchedNames.length) {
                     setPropLineSource('sample');
-                    setProplineError(canUseProLine
-                        ? 'PropLine returned WNBA lines but none matched the roster scan (name join).'
-                        : (parlayApiKey ? 'PropLine unavailable for WNBA (no key, or rate-limited) — ParlayAPI fallback had no matching props either.' : 'PropLine unavailable for WNBA (no key, or rate-limited), and no ParlayAPI key set for a fallback.'));
+                    setProplineError('ParlayAPI reached, but no WNBA lines matched this slate\'s roster scan (name join).');
                     return [];
                 }
 
@@ -17129,12 +16839,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             )}
                             {selectedSport === 'nba' && (
                                 <span className={`source-pill ${nbaSlateSource}`}>
-                                    {nbaSlateSource === 'live' ? '🟢 LIVE' : (nbaSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — NBA Slate (ESPN players/stats + PropLine lines)
+                                    {nbaSlateSource === 'live' ? '🟢 LIVE' : (nbaSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — NBA Slate (ESPN players/stats + ParlayAPI lines)
                                 </span>
                             )}
                             {selectedSport === 'wnba' && (
                                 <span className={`source-pill ${wnbaSlateSource}`}>
-                                    {wnbaSlateSource === 'live' ? '🟢 LIVE' : (wnbaSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — WNBA Slate (ESPN players/stats + PropLine lines)
+                                    {wnbaSlateSource === 'live' ? '🟢 LIVE' : (wnbaSlateSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — WNBA Slate (ESPN players/stats + ParlayAPI lines)
                                 </span>
                             )}
                             <span className={`source-pill ${injuryDataSource}`}>
@@ -17144,32 +16854,21 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 {scoreboardSource === 'live' ? '🟢 LIVE' : (scoreboardSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Scoreboard
                             </span>
                             {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba' || selectedSport === 'wnba') ? (
+                                // Every one of these five now sources its lines from
+                                // ParlayAPI exclusively (PropLine is fully retired from
+                                // this app — its shared daily quota kept taking every
+                                // sport down together whenever any one of them spent it).
                                 <span className={`source-pill ${propLineSource === 'live' ? 'live' : (propLineSource === 'sample' ? 'sample' : 'checking')}`}>
-                                    {(selectedSport === 'nfl' || selectedSport === 'ncaaf')
-                                        ? (propLineSource === 'live'
-                                            ? `🟢 LIVE — Prop Lines (ParlayAPI, ${parlayCount} lines)`
-                                            : (propLineSource === 'sample'
-                                                ? (!parlayApiKey ? '🟡 SAMPLE — Prop Lines (add a ParlayAPI key in Data Sources)'
-                                                    : '🟡 SAMPLE — Prop Lines (ParlayAPI had none for this slate)')
-                                                : '⏳ CHECKING — Prop Lines'))
-                                        : (propLineSource === 'live'
-                                            ? (selectedSport === 'wnba' && !wnbaUsedProLine
-                                                ? '🟢 LIVE — Prop Lines (ESPN slate + ParlayAPI — PropLine unavailable)'
-                                                : '🟢 LIVE — Prop Lines (PropLine)')
-                                            : (propLineSource === 'sample'
-                                                ? (!proplineKey ? '🟡 SAMPLE — Prop Lines (add a PropLine key in Data Sources)'
-                                                    : (!backendUrl ? '🟡 SAMPLE — Prop Lines (PropLine needs "Your Backend" URL set too)'
-                                                        : '🟡 SAMPLE — Prop Lines (PropLine had none for this slate)'))
-                                                : '⏳ CHECKING — Prop Lines'))}
+                                    {propLineSource === 'live'
+                                        ? `🟢 LIVE — Prop Lines (ParlayAPI, ${parlayCount} lines)`
+                                        : (propLineSource === 'sample'
+                                            ? (!parlayApiKey ? '🟡 SAMPLE — Prop Lines (add a ParlayAPI key in Data Sources)'
+                                                : '🟡 SAMPLE — Prop Lines (ParlayAPI had none for this slate)')
+                                            : '⏳ CHECKING — Prop Lines')}
                                 </span>
                             ) : (
                                 <span className="source-pill sample">
                                     🟡 SAMPLE — Prop Lines (no free source publishes these)
-                                </span>
-                            )}
-                            {parlayApiKey && (selectedSport === 'mlb' || selectedSport === 'nba' || selectedSport === 'wnba') && (
-                                <span className={`source-pill ${parlaySource === 'live' ? 'live' : (parlaySource === 'error' ? 'sample' : 'checking')}`}>
-                                    {parlaySource === 'live' ? `🟢 +ParlayAPI (${parlayCount} DFS lines)` : (parlaySource === 'error' ? '🟡 ParlayAPI error' : '⏳ ParlayAPI')}
                                 </span>
                             )}
                             <LiveTimestamp ts={dataUpdatedAt} className="data-source-ts" />
