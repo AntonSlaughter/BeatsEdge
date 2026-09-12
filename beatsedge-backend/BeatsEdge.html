@@ -5362,7 +5362,7 @@
             player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts', player_strike_outs: 'strikeouts', player_strikeouts_alt: 'strikeouts',
             player_earned_runs: 'earnedRuns', player_earned_runs_allowed: 'earnedRuns',
             player_hits_allowed: 'hitsAllowed',
-            player_pitching_outs: 'pitcherOuts', player_outs: 'pitcherOuts',
+            player_pitching_outs: 'pitcherOuts', player_outs: 'pitcherOuts', player_pitcher_outs: 'pitcherOuts',
             // These two have NO PropLine market at all (confirmed against its
             // live market-discovery endpoint) — ParlayAPI was believed to be the
             // ONLY possible real-line source for player_hitter_fantasy_score,
@@ -8716,10 +8716,16 @@
                         if (stale()) return;
 
                         // 1c. Replace the season-anchored SAMPLE prop lines with
-                        //     real book lines from PropLine, when a key is set.
-                        if (proplineKey) {
+                        //     real book lines. MLB sources these from ParlayAPI
+                        //     only (fetchMlbPropLines never touches PropLine —
+                        //     see that function's header comment); this gate
+                        //     was still checking the old PropLine key from
+                        //     before that migration, so a ParlayAPI-only user
+                        //     (the normal MLB config now) never got real lines
+                        //     at all — same class of bug already fixed for NFL.
+                        if (parlayApiKey) {
                             await fetchMlbPropLines(players, stale).catch(e => {
-                                console.warn('PropLine fetch failed, keeping sample lines:', e.message);
+                                console.warn('ParlayAPI fetch failed, keeping sample lines:', e.message);
                                 if (stale()) return;
                                 setPropLineSource('sample');
                                 setProplineError(e.message);
@@ -9667,9 +9673,6 @@
             // MLB_STAT_FAMILY / MLB_FAMILY_ORDER / MLB_FAMILY_LABEL are defined at
             // module scope (near FAMILY_CALIB) so mlbBacktestSeries and
             // TopPicksView can see them — diagnostic only, nothing feeds the model.
-            // Computed projections (no book line) shown alongside the live
-            // lines. `market: null` in MLB_PROP_DEFS marks these.
-            const MLB_PROJECTION_KEYS = { batter: ['fantasy'], pitcher: ['pitcherFantasy', 'pitcherWalks'] };
             // Order for the PrizePicks-style category filter bar.
             const STAT_CAT_ORDER = ['Pitcher Strikeouts', 'Total Bases', 'Hits+Runs+RBIs', 'Hitter Fantasy Score', 'Pitcher Fantasy Score', 'Pitching Outs', 'Hits Allowed', 'Hits', 'Runs', 'RBIs', 'Home Runs', 'Walks', 'Stolen Bases', 'Earned Runs Allowed', 'Walks Allowed', 'Hitter Strikeouts', 'Singles', 'Doubles', 'Triples'];
             // Placeholder set shown before PropLine runs (buildMlbPlayer).
@@ -9875,8 +9878,13 @@
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
-                    if (hasO && hasU) { pushPair(k, def, e.line, extra); return; }
-                    // one-way sportsbook rung (N+ ladder)
+                    // Both priced (a normal two-sided line) OR neither priced
+                    // (an untagged flat-payout row with no traditional odds at
+                    // all) both mean a real two-sided PrizePicks projection —
+                    // never guess "under" just because nothing was priced.
+                    // Only a genuinely one-sided sportsbook alt-ladder rung
+                    // (exactly one of over/under populated) gets pushOne.
+                    if (hasO === hasU) { pushPair(k, def, e.line, extra); return; }
                     pushOne(k, def, e.line, hasO ? 'over' : 'under', { ...extra, ppKind: null });
                 };
                 const props = [];
@@ -9909,18 +9917,20 @@
                     }));
                 });
 
-                // computed projections (fantasy score, pitcher walks) alongside
-                // the live lines — PropLine carries no market for these, but a
-                // gap-fill source (ParlayAPI) sometimes does. If a real line
-                // already got pushed above for this stat+book, it wins outright
-                // — never add a second, synthetic "Hitter Fantasy Score" pill
-                // next to the real one.
-                const g = mlbGamesField(seasonStat, isPitcher);
-                MLB_PROJECTION_KEYS[isPitcher ? 'pitcher' : 'batter'].forEach(k => {
-                    if (allLines[k] && allLines[k][book] && allLines[k][book].length) return;
-                    const pdef = MLB_PROP_DEFS[k];
-                    pushPair(k, pdef, mlbSampleLine(k, g > 0 ? pdef.get(seasonStat) / g : 0), { isProjection: true });
-                });
+                // NOTE: this used to also inject a synthetic "Hitter Fantasy
+                // Score" / "Pitcher Fantasy Score" / "Pitcher Walks" pair
+                // (mlbSampleLine + isProjection: true) here whenever the real
+                // line lookup above found nothing for that stat+book. That's
+                // the exact mechanism that produced "Line unavailable" for a
+                // player PrizePicks simply never posted that market for —
+                // a fabricated line standing in for a real one, which is
+                // never acceptable for a live (non-seed) build. Removed
+                // entirely: if a market has no real matched line here, no
+                // prop is created for it at all. The `isProjection` flag (and
+                // the "Line unavailable" JSX it drives) still exists and is
+                // still correct for the ONE legitimate case that uses it —
+                // the `seedMode` branch above, the brief pre-fetch placeholder
+                // shown before fetchMlbPropLines's first live fetch completes.
 
                 return props;
             };
@@ -10173,15 +10183,34 @@
             const fetchMlbSlate = async (date) => {
                 const cache = mlbCache.current;
                 cache.abbrById = {};
+                cache.abbrByFullName = {};
                 const sched = await mlbFetch(`/schedule?sportId=1&date=${date}&hydrate=probablePitcher,lineups,team`);
                 const games = (sched.dates && sched.dates[0] && sched.dates[0].games) || [];
                 if (!games.length) return [];
 
-                // Register team abbreviations for gamelog opponent resolution.
+                // Register team abbreviations for gamelog opponent resolution,
+                // and (abbrByFullName) for matching ParlayAPI's home_team/
+                // away_team — those come back as full names ("Boston Red
+                // Sox"), the exact same string MLB Stats API's own team.name
+                // already carries on this same response, confirmed live. Used
+                // by fetchMlbPropLines to corroborate a name-only player match
+                // against the actual team/game context instead of trusting the
+                // name alone.
                 games.forEach(gm => {
                     ['home', 'away'].forEach(side => {
                         const t = gm.teams[side].team;
                         if (t && t.id) cache.abbrById[t.id] = t.abbreviation || t.name;
+                        if (t && t.name && t.abbreviation) {
+                            cache.abbrByFullName[t.name] = t.abbreviation;
+                            // ParlayAPI still sends "Oakland Athletics" (its
+                            // pre-2025-relocation name) while MLB Stats API's
+                            // own team.name is now just "Athletics" — confirmed
+                            // live (every Athletics player was getting rejected
+                            // as a false "team mismatch" until this alias was
+                            // added). Same class of cross-source naming gap as
+                            // NFL's WSH/WAS mismatch found earlier this session.
+                            if (t.name === 'Athletics') cache.abbrByFullName['Oakland Athletics'] = t.abbreviation;
+                        }
                     });
                 });
 
@@ -10399,64 +10428,145 @@
             // this slate's actual span. Using the parsed timestamp (not the
             // `game_date` string) sidesteps any local-vs-UTC date-boundary
             // mismatch for late games.
+            // Deduped "unmapped market_key" warning, shared across every sport
+            // that calls fetchParlayProps — makes a real missing alias visible
+            // instead of a silent row drop (never guessed at; only ever logged
+            // once actually observed in a live response).
+            const _parlayUnmappedWarned = new Set();
+
             const fetchParlayProps = async (parlaySportKey, mktMap, marketsFilter, opts) => {
                 if (!parlayApiKey || !backendUrl) return null;
                 const books = (opts && opts.books) || PARLAY_DFS_BOOKS;
                 const allowBooks = new Set(books.split(','));
-                const limit = (opts && opts.limit) || 1000;
+                const pageLimit = (opts && opts.limit) || 1000;
+                // Safety cap on pages, not rows — ParlayAPI's own internal
+                // per-source cap (~10k rows, confirmed live via
+                // x-result-truncated) means an unbounded loop could otherwise
+                // spin forever against a board that's permanently truncated
+                // upstream. 25 pages * pageLimit is comfortably past that cap.
+                const maxPages = (opts && opts.maxPages) || 25;
                 const commenceWindow = opts && opts.commenceWindow;
-                let rows;
-                try {
-                    // ParlayAPI's /props endpoint returns the WHOLE day unfiltered
-                    // when no `markets` param is given — for a full MLB slate that's
-                    // far more rows than any sane `limit`, so an unscoped call
-                    // silently truncates before reaching most players (verified:
-                    // limit=1000 unfiltered carried zero William Contreras rows for
-                    // ANY market). Passing `markets` lets the server filter first,
-                    // so `limit` only has to cover what we actually asked for.
+                const byNorm = {};
+                let n = 0, pagesFetched = 0, rowsReceived = 0;
+                const rejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
+                let truncated = false, truncatedHint = null, offset = 0, partialFailure = false;
+
+                while (true) {
                     const marketsQS = marketsFilter ? `&markets=${encodeURIComponent(marketsFilter)}` : '';
                     const url = `${backendUrl}/api/parlayapi/v1/sports/${parlaySportKey}/props`
-                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${books}${marketsQS}&limit=${limit}`;
-                    const r = await fetch(url);
-                    if (!r.ok) throw new Error('ParlayAPI HTTP ' + r.status);
-                    rows = await r.json();
-                } catch (e) {
-                    console.warn('ParlayAPI fetch failed:', e.message);
-                    setParlaySource('error');
-                    return null;
-                }
-                if (!Array.isArray(rows)) { setParlaySource('error'); return null; }
-                const byNorm = {};
-                let n = 0;
-                rows.forEach(row => {
-                    if (commenceWindow) {
-                        const ct = Date.parse(row.commence_time || '');
-                        if (Number.isFinite(ct) && (ct < commenceWindow.lo || ct > commenceWindow.hi)) return;
+                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${books}${marketsQS}&limit=${pageLimit}&offset=${offset}`;
+                    // Retry transient upstream failures (seen live: a 503 when
+                    // several markets are requested concurrently, despite this
+                    // being an "unlimited" rate-limit tier — reads as a
+                    // simultaneous-connections limit, not a per-second one). A
+                    // single 503 must not silently wipe out an entire market's
+                    // worth of real PrizePicks lines.
+                    let r, lastErr;
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        try {
+                            r = await fetch(url);
+                            if (r.ok) { lastErr = null; break; }
+                            lastErr = new Error('ParlayAPI HTTP ' + r.status);
+                        } catch (fe) { lastErr = fe; }
+                        if (attempt < 2) await new Promise(res => setTimeout(res, 200 * (attempt + 1)));
                     }
-                    const sk = mktMap[row.market_key];
-                    if (!sk) return;
-                    const nn = nflNormName(row.player);
-                    if (!nn || row.line == null) return;
-                    const book = row.bookmaker;
-                    if (!allowBooks.has(book)) return;
-                    const ppType = /demon/i.test(row.odds_type || row.projection_type || '') ? 'demon'
-                        : /goblin/i.test(row.odds_type || row.projection_type || '') ? 'goblin'
-                            : (row.is_dfs_flat_payout ? 'standard' : null);
-                    const t2 = byNorm[nn] || (byNorm[nn] = {});
-                    const t3 = t2[sk] || (t2[sk] = {});
-                    const arr = t3[book] || (t3[book] = []);
-                    const kk = ppType ? `${row.line}|${ppType}` : `${row.line}`;
-                    if (arr.some(e => e._kk === kk)) return;
-                    const o = row.over_price, u = row.under_price;
-                    arr.push({
-                        _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
-                        juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
-                        setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi'
+                    if (lastErr) {
+                        // A page failed even after retries. If this is the FIRST
+                        // page, this market has no data at all this refresh — same
+                        // as before, return null so the caller doesn't treat an
+                        // empty result as "confirmed no real props". If it's a
+                        // LATER page, every row already fetched from prior pages
+                        // is real and must NOT be thrown away — a transient failure
+                        // three pages in must never silently erase pages 1-2's
+                        // worth of real PrizePicks lines. Keep what was fetched,
+                        // flag it, and stop paginating this market.
+                        if (pagesFetched === 0) {
+                            console.warn('ParlayAPI fetch failed:', lastErr.message);
+                            setParlaySource('error');
+                            return null;
+                        }
+                        console.warn(`[ParlayAPI] ${parlaySportKey}: page ${pagesFetched + 1} failed after retries (${lastErr.message}) — keeping the ${rowsReceived} rows already fetched from earlier pages, stopping here.`);
+                        partialFailure = true;
+                        truncated = true;
+                        break;
+                    }
+                    // A malformed response body (e.g. bad JSON) gets the same
+                    // partial-preservation treatment as a failed page above —
+                    // never let one bad page erase prior real pages.
+                    let rows;
+                    try {
+                        rows = await r.json();
+                        if (!Array.isArray(rows)) throw new Error('non-array response body');
+                    } catch (pe) {
+                        if (pagesFetched === 0) { console.warn('ParlayAPI fetch failed:', pe.message); setParlaySource('error'); return null; }
+                        console.warn(`[ParlayAPI] ${parlaySportKey}: page ${pagesFetched + 1} unreadable (${pe.message}) — keeping the ${rowsReceived} rows already fetched.`);
+                        partialFailure = true; truncated = true;
+                        break;
+                    }
+                    pagesFetched++;
+                    rowsReceived += rows.length;
+
+                    rows.forEach(row => {
+                        if (commenceWindow) {
+                            const ct = Date.parse(row.commence_time || '');
+                            if (Number.isFinite(ct) && (ct < commenceWindow.lo || ct > commenceWindow.hi)) { rejected.commenceWindow++; return; }
+                        }
+                        const sk = mktMap[row.market_key];
+                        if (!sk) {
+                            rejected.unmappedMarket++;
+                            if (!_parlayUnmappedWarned.has(row.market_key)) {
+                                _parlayUnmappedWarned.add(row.market_key);
+                                console.warn(`[ParlayAPI] Unmapped market_key "${row.market_key}" (sport ${parlaySportKey}) — row dropped, no statKey mapping exists for it.`);
+                            }
+                            return;
+                        }
+                        const nn = nflNormName(row.player);
+                        if (!nn || row.line == null) { rejected.noNameOrLine++; return; }
+                        const book = row.bookmaker;
+                        if (!allowBooks.has(book)) { rejected.disallowedBook++; return; }
+                        const ppType = /demon/i.test(row.odds_type || row.projection_type || '') ? 'demon'
+                            : /goblin/i.test(row.odds_type || row.projection_type || '') ? 'goblin'
+                                : (row.is_dfs_flat_payout ? 'standard' : null);
+                        const t2 = byNorm[nn] || (byNorm[nn] = {});
+                        const t3 = t2[sk] || (t2[sk] = {});
+                        const arr = t3[book] || (t3[book] = []);
+                        const kk = ppType ? `${row.line}|${ppType}` : `${row.line}`;
+                        if (arr.some(e => e._kk === kk)) { rejected.duplicate++; return; }
+                        const o = row.over_price, u = row.under_price;
+                        arr.push({
+                            _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
+                            juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
+                            setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi',
+                            homeTeam: row.home_team || null, awayTeam: row.away_team || null
+                        });
+                        n++;
                     });
-                    n++;
-                });
+
+                    if (r.headers.get('x-result-truncated') === 'true') {
+                        truncated = true;
+                        truncatedHint = r.headers.get('x-result-truncated-hint') || null;
+                    }
+                    const hasMoreHeader = r.headers.get('x-result-has-more');
+                    // Fall back to a row-count heuristic when the header is
+                    // absent (e.g. an older proxy build) — a full page means
+                    // there may be more; a short page means we're done.
+                    const hasMore = hasMoreHeader != null ? hasMoreHeader === 'true' : rows.length >= pageLimit;
+                    if (!hasMore || !rows.length || pagesFetched >= maxPages) {
+                        if (hasMore && pagesFetched >= maxPages) {
+                            console.warn(`[ParlayAPI] ${parlaySportKey}: stopped at safety cap (${maxPages} pages, ${rowsReceived} rows received) — more pages may exist.`);
+                            truncated = true;
+                        }
+                        break;
+                    }
+                    const nextOffsetHeader = r.headers.get('x-next-offset');
+                    offset = nextOffsetHeader != null ? parseInt(nextOffsetHeader, 10) : offset + rows.length;
+                }
+
+                if (truncated) {
+                    console.warn(`[ParlayAPI] ${parlaySportKey}: response truncated upstream (per-source cap) — markets="${marketsFilter}" books="${books}". ${truncatedHint || ''}`);
+                }
                 setParlaySource('live');
-                return { byNorm, n };
+                return { byNorm, n, pagesFetched, rowsReceived, rejected, truncated, partialFailure };
             };
 
             // Same switch as football (see fetchNflPropLines) — ParlayAPI only,
@@ -10464,13 +10574,43 @@
             // account-wide across every sport this app fetches, so MLB testing
             // was starving NFL/CFB (and vice versa) — dropping it here removes
             // MLB from that shared blast radius entirely.
+            //
+            // Fetches per MARKET (not one 32-market request) — confirmed live
+            // that ParlayAPI has an internal per-source row cap (~10k) that
+            // pagination alone cannot recover from once hit, and its own
+            // guidance is to narrow scope with `markets=`/`bookmakers=` in
+            // addition to paginating. A handful of individual-market requests
+            // run concurrently, each fully paginated by fetchParlayProps.
+            const mergeParlayByNorm = (acc, byNorm) => {
+                Object.entries(byNorm).forEach(([nn, byStat]) => {
+                    const accStat = acc[nn] || (acc[nn] = {});
+                    Object.entries(byStat).forEach(([sk, byBook]) => {
+                        const accBook = accStat[sk] || (accStat[sk] = {});
+                        Object.entries(byBook).forEach(([bk, arr]) => {
+                            const accArr = accBook[bk] || (accBook[bk] = []);
+                            arr.forEach(e => { if (!accArr.some(x => x._kk === e._kk)) accArr.push(e); });
+                        });
+                    });
+                });
+            };
+
             const fetchMlbPropLines = async (players, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 if (gone()) return;
                 if (!parlayApiKey) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — MLB lines come from ParlayAPI only.'); return; }
 
+                // slateNorm: normalized name -> ALL slate candidates sharing
+                // that name (never last-write-wins — a collision here used to
+                // silently let one player steal another's real line). `team`
+                // is the real MLB abbreviation (buildMlbPlayer's slot.teamAbbr),
+                // used below to corroborate a name match against the actual
+                // game ParlayAPI's row belongs to.
                 const slateNorm = {};
-                players.forEach(p => { if (p.sport === 'mlb') slateNorm[nflNormName(p.name)] = String(p.id); });
+                players.forEach(p => {
+                    if (p.sport !== 'mlb') return;
+                    const nn = nflNormName(p.name);
+                    (slateNorm[nn] = slateNorm[nn] || []).push({ id: String(p.id), team: p.team });
+                });
 
                 // ParlayAPI's /props feed is a rolling multi-week window — same
                 // slate-day guard PropLine's own event matching used to need
@@ -10478,20 +10618,102 @@
                 // pitches incl. late West-coast starts, short of tomorrow's slate).
                 const _slateStartMs = Date.parse(selectedDate + 'T08:00:00Z');
                 const commenceWindow = { lo: _slateStartMs, hi: _slateStartMs + 28 * 3600 * 1000 };
-                const markets = Object.keys(PARLAY_MLB_MKT).join(',');
-                const pa = await fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, markets, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
-                });
+                const marketKeys = Object.keys(PARLAY_MLB_MKT);
+                const FETCH_CONCURRENCY = 16;
+                const combinedByNorm = {};
+                let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
+                const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
+                const fetchMarketBatch = async (keys) => {
+                    const emptyMarkets = [];
+                    for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
+                        if (gone()) return emptyMarkets;
+                        const batch = keys.slice(i, i + FETCH_CONCURRENCY);
+                        const results = await Promise.all(batch.map(mk => fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, mk, {
+                            books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, commenceWindow
+                        })));
+                        results.forEach((pa, idx) => {
+                            // Only a market that returned NOTHING at all (null —
+                            // every page failed, even the first) is worth a
+                            // second attempt. A partialFailure market already
+                            // has real, usable rows from its earlier pages —
+                            // re-fetching it costs a full extra round trip for
+                            // marginal completeness, at the expense of the UI
+                            // feeling sluggish. Speed wins that tradeoff here.
+                            if (!pa) { emptyMarkets.push(batch[idx]); return; }
+                            anyReached = true;
+                            mergeParlayByNorm(combinedByNorm, pa.byNorm);
+                            totalN += pa.n; totalPages += pa.pagesFetched; totalRowsReceived += pa.rowsReceived;
+                            if (pa.truncated) anyTruncated = true;
+                            Object.keys(combinedRejected).forEach(k => combinedRejected[k] += (pa.rejected[k] || 0));
+                        });
+                    }
+                    return emptyMarkets;
+                };
+                const firstPassEmpty = await fetchMarketBatch(marketKeys);
                 if (gone()) return;
-                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
+                if (firstPassEmpty.length) {
+                    console.warn(`[MLB PropLine] Retrying ${firstPassEmpty.length} market(s) with zero data on first attempt: ${firstPassEmpty.join(', ')}`);
+                    const stillEmpty = await fetchMarketBatch(firstPassEmpty);
+                    if (stillEmpty.length) console.warn(`[MLB PropLine] Still no data after retry: ${stillEmpty.join(', ')} — this refresh may be missing real lines for these markets.`);
+                }
+                if (gone()) return;
+                if (!anyReached) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
+                if (anyTruncated) console.warn('[MLB PropLine] One or more per-market ParlayAPI requests were still truncated even after narrowing — some rows may be missing this refresh.');
 
-                // pid -> statKey -> bookKey -> [ {line, over, under, juice, setAt, primary, move} ]
+                // ---- Join: name + team/game corroboration (Bug D) -----------
+                // ParlayAPI carries no player ID for MLB at all (confirmed
+                // live) — team/game context is the strongest signal actually
+                // available, so every match (not just collisions) is checked
+                // against it, and an unresolvable ambiguity is REJECTED rather
+                // than guessed. fullNameToAbbr comes from fetchMlbSlate, built
+                // from the same MLB Stats API schedule response that already
+                // supplies team abbreviations — no new fetch.
+                const fullNameToAbbr = mlbCache.current.abbrByFullName || {};
                 const allLinesByPid = {};
-                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
-                    const pid = slateNorm[nn];
-                    if (pid) allLinesByPid[pid] = byStat;
+                const joinStats = { matched: 0, teamCorroborated: 0, nameOnlyNoTeamData: 0, teamMismatch: 0, collision: 0, unmatchedOnSlate: 0 };
+                Object.entries(combinedByNorm).forEach(([nn, byStat]) => {
+                    const candidates = slateNorm[nn] || [];
+                    if (!candidates.length) { joinStats.unmatchedOnSlate++; return; }
+
+                    // One representative row's home/away teams — every entry
+                    // for this normalized name should be the same real game.
+                    let repHome = null, repAway = null;
+                    Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => {
+                        if (e.homeTeam || e.awayTeam) { repHome = e.homeTeam; repAway = e.awayTeam; return true; }
+                        return false;
+                    })));
+                    const gameTeams = [repHome, repAway].map(n => fullNameToAbbr[n]).filter(Boolean);
+
+                    let chosen = null;
+                    if (candidates.length === 1) {
+                        const c = candidates[0];
+                        if (!gameTeams.length) {
+                            chosen = c; // no team context to check against — only real candidate, attach by name
+                            joinStats.nameOnlyNoTeamData++;
+                        } else if (gameTeams.includes(c.team)) {
+                            chosen = c;
+                            joinStats.teamCorroborated++;
+                        } else {
+                            joinStats.teamMismatch++;
+                            console.warn(`[MLB PropLine] SOURCE LINE ERROR — team mismatch for "${nn}": slate has them on ${c.team}, ParlayAPI's row is for ${repHome} vs ${repAway}. Rejected, not attached.`);
+                        }
+                    } else {
+                        const teamMatches = candidates.filter(c => gameTeams.includes(c.team));
+                        if (teamMatches.length === 1) {
+                            chosen = teamMatches[0];
+                            joinStats.teamCorroborated++;
+                        } else {
+                            joinStats.collision++;
+                            console.warn(`[MLB PropLine] SOURCE LINE ERROR — name collision for "${nn}": ${candidates.length} slate players (teams: ${candidates.map(c => c.team).join(', ')}) share this normalized name; game context (${repHome} vs ${repAway}) did not resolve it uniquely. No line attached to any of them.`);
+                        }
+                    }
+                    if (chosen) { allLinesByPid[chosen.id] = byStat; joinStats.matched++; }
                 });
-                setParlayCount(pa.n);
+                console.log('[MLB PropLine] Completeness report:', JSON.stringify({
+                    marketsQueried: marketKeys.length, pagesFetched: totalPages, rowsReceived: totalRowsReceived,
+                    rowsRetained: totalN, rowsRejected: combinedRejected, truncated: anyTruncated, ...joinStats
+                }));
+                setParlayCount(totalN);
 
                 // ---- Consolidate lines per (pid, statKey) --------------------
                 // DFS books: PropLine tags every line standard/goblin/demon, so
@@ -10537,9 +10759,16 @@
                                 : stds.reduce((a, b) => b.line > a.line ? b : a));
                             const anchor = marketLine != null ? marketLine : medianOf(arr.map(e => e.line));
                             const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
-                            // bad data guard: a STANDARD line >2.5 (or >60%) off the sharp market
+                            // bad data guard: a STANDARD line >2.5 (or >60%) off the
+                            // sharp market. This used to clear the whole array
+                            // (`byBook[bk] = []`), which destroyed a REAL source
+                            // line and made downstream code believe none was ever
+                            // fetched. A real PrizePicks line must never be erased
+                            // — flag it instead and keep it flowing through.
                             if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(2.5, marketLine * 0.6)) {
-                                byBook[bk] = []; return;
+                                const reason = `standard line ${std.line} vs sharp-market ${marketLine} (${bk})`;
+                                console.warn(`[MLB PropLine] Suspicious line flagged, not discarded — ${statKey}: ${reason}`);
+                                arr.forEach(e => { e._suspiciousLine = true; e._suspiciousReason = reason; });
                             }
                             arr.forEach(e => { e.primary = (e === primary); });
                             byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);

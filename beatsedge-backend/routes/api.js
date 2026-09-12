@@ -338,6 +338,13 @@ router.get('/propline/*', async (req, res) => {
 //   GET /api/parlayapi/v1/sports/baseball_mlb/props?apiKey=...&bookmakers=prizepicks,underdog
 //   GET /api/parlayapi/v1/sports?apiKey=...
 //
+// Pagination metadata ParlayAPI reports via response headers (offset-based:
+// x-next-offset to advance, x-result-has-more to know when to stop, and
+// x-result-truncated when its own internal per-source row cap was hit and
+// pagination can't recover the rest). The passthrough only forwarded
+// status/content-type before, silently dropping all of this — the caller
+// had no way to know a response was incomplete.
+const PARLAYAPI_PASSTHROUGH_HEADERS = ['x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count'];
 router.get('/parlayapi/*', async (req, res) => {
   const upstreamPath = req.params[0];
   if (!upstreamPath || upstreamPath.includes('..')) {
@@ -348,6 +355,10 @@ router.get('/parlayapi/*', async (req, res) => {
   try {
     const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
     const body = await upstream.text();
+    PARLAYAPI_PASSTHROUGH_HEADERS.forEach(h => {
+      const v = upstream.headers.get(h);
+      if (v != null) res.set(h, v);
+    });
     res.status(upstream.status)
       .type(upstream.headers.get('content-type') || 'application/json')
       .send(body);
