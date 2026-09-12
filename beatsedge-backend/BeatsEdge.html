@@ -15366,9 +15366,22 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         slot must never hold BeatsEdge's own estimate — that's a
                                                         SEPARATE field (Model Projection, shown in the detail modal),
                                                         never displayed here as if it were the source line. */}
-                                                    {prop.isProjection ? (
-                                                        <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection in the detail breakdown.">Line unavailable</span>
-                                                    ) : (
+                                                    {prop.isProjection ? (() => {
+                                                        // Fantasy Score (MLB) has NO PropLine market at all — ParlayAPI
+                                                        // is its ONLY possible real-line source. "Line unavailable" here
+                                                        // can mean two very different things: PrizePicks genuinely has
+                                                        // no line for this player right now, or ParlayAPI's own call
+                                                        // just failed/hit its credit limit this refresh (a different,
+                                                        // often-transient problem, not "this stat doesn't exist").
+                                                        // Say which one it actually is instead of one blanket message.
+                                                        const parlayOnly = prop.statKey === 'fantasy' || prop.statKey === 'pitcherFantasy';
+                                                        const msg = parlayOnly && !parlayApiKey
+                                                            ? 'No ParlayAPI key set in Data Sources — PropLine has no market for this stat at all, so ParlayAPI is the only possible source.'
+                                                            : parlayOnly && parlaySource === 'error'
+                                                                ? 'ParlayAPI (the only source for this stat) failed to load this refresh — will retry automatically. Not the same as "no line posted."'
+                                                                : 'No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection in the detail breakdown.';
+                                                        return <span className="prop-pill-unavail" title={msg}>Line unavailable</span>;
+                                                    })() : (
                                                         <>
                                                             {prop.line}
                                                             {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
@@ -15469,11 +15482,19 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <div>
                                                         <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
                                                         <div className="edge-prop-line">
-                                                            {activeProp.isProjection ? (
-                                                                <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection below.">
-                                                                    Line unavailable ({activeProp.direction === 'over' ? 'Over' : 'Under'} side)
-                                                                </span>
-                                                            ) : (
+                                                            {activeProp.isProjection ? (() => {
+                                                                const parlayOnly = activeProp.statKey === 'fantasy' || activeProp.statKey === 'pitcherFantasy';
+                                                                const msg = parlayOnly && !parlayApiKey
+                                                                    ? 'No ParlayAPI key set in Data Sources — PropLine has no market for this stat at all, so ParlayAPI is the only possible source.'
+                                                                    : parlayOnly && parlaySource === 'error'
+                                                                        ? 'ParlayAPI (the only source for this stat) failed to load this refresh — will retry automatically. Not the same as "no line posted."'
+                                                                        : 'No live book posts this stat — there is no real sportsbook/PrizePicks line to show. See Model Projection below.';
+                                                                return (
+                                                                    <span className="prop-pill-unavail" title={msg}>
+                                                                        Line unavailable ({activeProp.direction === 'over' ? 'Over' : 'Under'} side)
+                                                                    </span>
+                                                                );
+                                                            })() : (
                                                                 <>
                                                                     Line: {activeProp.line}
                                                                     {activeProp.direction === 'over' ? ' O' : ' U'}
