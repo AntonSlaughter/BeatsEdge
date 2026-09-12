@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
+const path = require('path');
+const { execFile } = require('child_process');
 const apiRoutes = require('./routes/api');
 const { runNightlyUpdate } = require('./cron/nightlyUpdate');
 const { runMlbNightlyUpdate } = require('./cron/mlbNightlyUpdate');
@@ -33,7 +35,7 @@ app.get('/', (req, res) => {
       'GET /api/defense/combined/:sport/:season/:team?window=season|last10|last20',
       'GET /api/player/situational/:playerName',
       'GET /api/team/advanced/:sport/:team?window=season|last10',
-      'GET /api/nfl/defense/by-position/:team?window=season|last8|last4',
+      'GET /api/nfl/defense/by-position/:team (returns all windows: L3/L5/L10/season/multiseason + defenseInterceptions)',
       'GET /api/mlb/pitcher/:playerId?window=season|last5starts',
       'GET /api/mlb/team-batting/:team?window=season|last15games',
       'GET /api/nhl/defense/by-position/:team?window=season|last10|last5',
@@ -80,6 +82,29 @@ cron.schedule('45 8 * * *', () => {
   runNbaHistoryRefresh().catch(err => console.error('[cron] NBA history refresh failed:', err));
 });
 
+// NFL ingest + DvP recompute — run as CHILD PROCESSES, not in-process like
+// the jobs above. Both scripts write through node:sqlite's DatabaseSync
+// rather than better-sqlite3 (see scripts/ingest-nflverse-stats.js's header
+// comment): the write volume involved reproducibly crashes better-sqlite3's
+// native binding on this box, so they must stay out of this process's own
+// heap/handles entirely, not just avoid the module import.
+function runNflPipeline(label) {
+  const ingest = path.join(__dirname, 'scripts', 'ingest-nflverse-stats.js');
+  const recompute = path.join(__dirname, 'scripts', 'recompute-nfl-dvp.js');
+  console.log(`[${label}] Running NFL ingest...`);
+  execFile('node', [ingest], (err, stdout, stderr) => {
+    if (stdout) console.log(`[${label}] NFL ingest output:`, stdout.trim());
+    if (err) { console.error(`[${label}] NFL ingest failed:`, stderr || err.message); return; }
+    console.log(`[${label}] Running NFL DvP recompute...`);
+    execFile('node', [recompute], (err2, stdout2, stderr2) => {
+      if (stdout2) console.log(`[${label}] NFL recompute output:`, stdout2.trim());
+      if (err2) console.error(`[${label}] NFL recompute failed:`, stderr2 || err2.message);
+    });
+  });
+}
+
+cron.schedule('0 6 * * *', () => runNflPipeline('cron'));
+
 // Run once shortly after boot too, so a fresh deploy doesn't wait a full
 // day for its first data refresh attempt. Set SKIP_STARTUP_JOBS=1 in dev to
 // keep the process from churning the DB right after start.
@@ -93,6 +118,9 @@ if (!process.env.SKIP_STARTUP_JOBS) {
 
     console.log('[startup] Running initial NHL update pass...');
     runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
+
+    console.log('[startup] Running initial NFL ingest + DvP recompute...');
+    runNflPipeline('startup');
   }, 10_000);
 
   // Slightly later + guarded: only pull the NBA history if it's missing or

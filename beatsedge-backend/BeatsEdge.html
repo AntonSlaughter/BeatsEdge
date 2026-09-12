@@ -2887,9 +2887,27 @@
         const STAT_TO_ALLOWED_KEY_BY_SPORT = {
             nba: { points: 'pointsAllowed', rebounds: 'reboundsAllowed', assists: 'assistsAllowed' },
             wnba: { points: 'pointsAllowed', rebounds: 'reboundsAllowed', assists: 'assistsAllowed' },
-            nfl: { passingYards: 'passingYardsAllowed', rushingYards: 'rushingYardsAllowed', receivingYards: 'receivingYardsAllowed', receptions: 'receptionsAllowed', tds: 'tdsAllowed' },
+            // Real NFL_PROP_DEFS statKeys (not the old mock data's made-up
+            // names) mapped to the real "allowed" fields nflDvpEngine.js
+            // actually computes. `interceptions` is deliberately NOT mapped
+            // here — it means the QB's OWN interceptions thrown, not
+            // something a defense "allows" in the DvP sense; that gets its
+            // own "QB INT Matchup" research display instead (real defensive
+            // INT data lives at player.opponentDefense.defenseInterceptions).
+            // passRushYds/longRush/longRec/rushRecYds/kickingPts/fgMade have
+            // no matching "allowed" aggregate — left unmapped rather than
+            // guessed; missing-mapping lookups are logged once (deduped),
+            // never silently defaulted to pointsAllowed.
+            nfl: {
+                passYds: 'passingYardsAllowed', passTds: 'passingTdsAllowed',
+                passAttempts: 'passAttemptsAllowed', passCompletions: 'completionsAllowed',
+                rushYds: 'rushingYardsAllowed', rushAttempts: 'rushAttemptsAllowed', rushTds: 'rushingTdsAllowed',
+                recYds: 'receivingYardsAllowed', receptions: 'receptionsAllowed', recTds: 'receivingTdsAllowed',
+                targets: 'targetsAllowed'
+            },
             nhl: { goals: 'goalsAllowed', assists: 'assistsAllowed', points: 'pointsAllowed', shotsOnGoal: 'shotsAllowed' }
         };
+        const _nflUnmappedWarned = new Set();
 
         const POSITIONS_BY_SPORT = {
             nba: ['G', 'F', 'C'],
@@ -2903,20 +2921,26 @@
         // are passing-focused, etc. NBA positions all show the same three.
         function getDefenseDisplayFields(sport, position) {
             if (sport === 'nfl') {
+                // Opportunity volume shown alongside efficiency — never
+                // collapsed into one generic number (Phase 5) — and defensive
+                // INTs on the QB card use real "generated" data, duplicated
+                // there from defenseInterceptions (see fetchNflPropLines).
                 if (position === 'QB') return [
-                    { key: 'passingYardsAllowed', label: 'Passing Yds Allowed' },
-                    { key: 'tdsAllowed', label: 'TDs Allowed' },
-                    { key: 'fantasyPointsAllowed', label: 'Fantasy Pts Allowed' }
+                    { key: 'passAttemptsAllowed', label: 'Pass Attempts Allowed' },
+                    { key: 'passingYardsAllowed', label: 'Pass Yards Allowed' },
+                    { key: 'passingTdsAllowed', label: 'Pass TDs Allowed' },
+                    { key: 'defenseInterceptionsPerGame', label: 'Defense INT/Game' }
                 ];
                 if (position === 'RB') return [
-                    { key: 'rushingYardsAllowed', label: 'Rushing Yds Allowed' },
-                    { key: 'receptionsAllowed', label: 'Receptions Allowed' },
-                    { key: 'fantasyPointsAllowed', label: 'Fantasy Pts Allowed' }
+                    { key: 'rushAttemptsAllowed', label: 'Rush Attempts Allowed' },
+                    { key: 'rushingYardsAllowed', label: 'Rush Yards Allowed' },
+                    { key: 'targetsAllowed', label: 'Targets Allowed' },
+                    { key: 'receivingYardsAllowed', label: 'Receiving Yds Allowed' }
                 ];
                 return [ // WR / TE
-                    { key: 'receivingYardsAllowed', label: 'Receiving Yds Allowed' },
+                    { key: 'targetsAllowed', label: 'Targets Allowed' },
                     { key: 'receptionsAllowed', label: 'Receptions Allowed' },
-                    { key: 'fantasyPointsAllowed', label: 'Fantasy Pts Allowed' }
+                    { key: 'receivingYardsAllowed', label: 'Receiving Yds Allowed' }
                 ];
             }
             if (sport === 'nhl') return [ // Forward or Defenseman — same fields, real numbers differ
@@ -3079,7 +3103,22 @@
             const direction = prop.direction || 'over';
             const line = prop.line;
             const sport = player.sport || 'nba';
-            const allowedKey = (STAT_TO_ALLOWED_KEY_BY_SPORT[sport] || {})[prop.statKey] || 'pointsAllowed';
+            let allowedKey = (STAT_TO_ALLOWED_KEY_BY_SPORT[sport] || {})[prop.statKey];
+            if (allowedKey == null) {
+                if (sport === 'nfl' || sport === 'ncaaf') {
+                    // Never silently fall back to pointsAllowed for football —
+                    // that field doesn't exist on an NFL defense object at
+                    // all, and would be meaningless if it did. Log once per
+                    // stat so an unmapped prop type is easy to notice.
+                    const warnKey = `${sport}:${prop.statKey}`;
+                    if (!_nflUnmappedWarned.has(warnKey)) {
+                        _nflUnmappedWarned.add(warnKey);
+                        console.warn(`[DvP] No STAT_TO_ALLOWED_KEY_BY_SPORT.${sport} mapping for statKey "${prop.statKey}" — defense factor skipped for this stat.`);
+                    }
+                } else {
+                    allowedKey = 'pointsAllowed';
+                }
+            }
             const posDefense = player.opponentDefense && player.opponentDefense.byPosition
                 ? player.opponentDefense.byPosition[player.position]
                 : null;
@@ -3249,7 +3288,14 @@
                         });
                     }
                 }
-            } else if (posDefense) {
+            } else if (posDefense && sport !== 'nfl' && sport !== 'ncaaf') {
+                // NFL/CFB explicitly excluded here: this is the generic,
+                // sport-agnostic DvP factor built for NBA/NHL/WNBA. Real NFL
+                // opponentDefense data is now populated (see fetchNflPropLines),
+                // but this pass only exposes it as research/UI data — it must
+                // not silently start voting on the model the moment the field
+                // stops being null. Any future NFL-specific numeric adjustment
+                // needs its own temporal holdout validation first.
                 const defRank = posDefense.rank;
                 const defSupports = defenseSupportsDirection(defRank, direction);
                 factors.push({
@@ -3471,7 +3517,11 @@
             const vsOppAvgS = shrinkToSeason(vsOppAvg, _voN, 10);
             let projection = (recentAvgS * 0.35) + (seasonAvg * 0.25) + (last10AvgS * 0.25) + (vsOppAvgS * 0.15);
 
-            if (posDefense && posDefense.rank !== undefined) {
+            if (posDefense && posDefense.rank !== undefined && sport !== 'nfl' && sport !== 'ncaaf') {
+                // Same NFL/CFB exclusion as the factor block above — expose
+                // opponentDefense data without letting this generic,
+                // pre-existing numeric nudge silently activate for a sport it
+                // was never validated on.
                 const defAdjustment = (posDefense.rank - 15.5) * 0.12; // weak D (high rank) nudges projection up
                 projection += defAdjustment;
             }
@@ -8556,9 +8606,15 @@
                             if (!slate.slots.length) {
                                 setNflSlateSource('sample');
                                 players = generateMockPlayerData('nfl');
-                            } else if (!proplineKey || !backendUrl) {
+                            } else if (!parlayApiKey || !backendUrl) {
+                                // NFL sources lines from ParlayAPI only (see
+                                // fetchNflPropLines's header comment) — this
+                                // gate was still checking the old PropLine key
+                                // from before that migration, so it silently
+                                // fell back to sample data any time ParlayAPI
+                                // WAS configured but PropLine wasn't.
                                 setNflSlateSource('sample');
-                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real NFL lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                setProplineError(!parlayApiKey ? 'Add a ParlayAPI key in Data Sources for real NFL lines.' : 'ParlayAPI needs "Your Backend" URL set too.');
                                 players = generateMockPlayerData('nfl');
                             } else {
                                 players = await fetchNflPropLines(slate, stale);
@@ -9259,50 +9315,13 @@
                     return;
                 }
 
-                // NFL: the only real source is your own backend (no NBA.com-style
-                // official league API attempted for NFL in this pass — see
-                // beatsedge-backend README). No backend configured = keep the
-                // sample data already on the mock players, clearly labeled as such.
-                if (selectedSport === 'nfl') {
-                    if (!backendUrl) return;
-                    const opponents = Array.from(new Set(players.map(p => p.opponent).filter(Boolean)));
-                    for (const teamAbbr of opponents) {
-                        try {
-                            const res = await fetch(`${backendUrl}/api/nfl/defense/by-position/${teamAbbr}?window=season`);
-                            if (!res.ok) continue;
-                            const data = await res.json();
-                            if (!data.byPosition || Object.keys(data.byPosition).length === 0) continue;
-
-                            setPlayersData(prev => prev.map(p => {
-                                if (p.opponent !== teamAbbr || !p.opponentDefense) return p;
-                                const mergedByPosition = { ...p.opponentDefense.byPosition };
-                                Object.entries(data.byPosition).forEach(([pos, stats]) => {
-                                    mergedByPosition[pos] = {
-                                        passingYardsAllowed: stats.passingYardsAllowed,
-                                        rushingYardsAllowed: stats.rushingYardsAllowed,
-                                        receivingYardsAllowed: stats.receivingYardsAllowed,
-                                        receptionsAllowed: stats.receptionsAllowed,
-                                        tdsAllowed: stats.tdsAllowed,
-                                        fantasyPointsAllowed: stats.fantasyPointsAllowed,
-                                        rank: stats.rank
-                                    };
-                                });
-                                return {
-                                    ...p,
-                                    opponentDefense: {
-                                        ...p.opponentDefense,
-                                        byPosition: mergedByPosition,
-                                        dataSource: 'Your backend (real nflverse data)',
-                                        isRealByPosition: true
-                                    }
-                                };
-                            }));
-                        } catch (e) {
-                            // This opponent keeps its sample defense numbers — no crash, no silent lie.
-                        }
-                    }
-                    return;
-                }
+                // NFL: opponentDefense is attached directly at slate-build time
+                // in fetchNflPropLines (one batch fetch per unique opponent,
+                // same as NHL/MLB's team-level matchup calls above) — real NFL
+                // players never carried a truthy p.opponentDefense for this
+                // merge-only-if-already-present branch to ever act on, so it
+                // was dead code. Nothing to do here now.
+                if (selectedSport === 'nfl') return;
 
                 // NBA carries its own real opponent defense — the season
                 // Defense-vs-Position grid (NBA_DVP_CSV, per-48, ranked 1-150)
@@ -9677,6 +9696,27 @@
             // pulled on card-expand. Not shown as authoritative anywhere the
             // real number would be.
             const estHitRate = (avg, line) => Math.max(15, Math.min(90, Math.round(50 + (avg - line) * 22)));
+
+            // Flattens one /api/nfl/defense/by-position entry — { windows:
+            // {L3,L5,L10,season,multiseason}, recommended: {window,games} } —
+            // into a shape simple consumers (the UI card, sport-guarded legacy
+            // factor code) can read directly: resolvedWindow/resolvedGames plus
+            // the resolved stat fields spread to the top level, alongside the
+            // full `windows` breakdown for the freshness-detail display. Sample
+            // sizes travel with every number — this never hides `windows`, it
+            // only adds a convenience layer on top per the eligibility-gate
+            // design (see MIN_GAMES_FOR_CURRENT_SEASON in lib/nflDvpEngine.js).
+            const nflFlattenDvpWindow = (entry) => {
+                if (!entry || !entry.windows) return { windows: {}, recommended: null };
+                const { windows, recommended } = entry;
+                const resolved = (recommended && windows[recommended.window]) || {};
+                return {
+                    resolvedWindow: recommended ? recommended.window : null,
+                    resolvedGames: recommended ? recommended.games : 0,
+                    ...resolved,
+                    windows
+                };
+            };
 
             // ============================================================
             // NFL REAL SLATE — ESPN (keyless) for identity/stats/game logs,
@@ -10998,6 +11038,65 @@
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
                 if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no NFL lines matched this slate\'s roster scan (name join).'); return []; }
 
+                // Real Defense-vs-Position — batch-fetched once per unique
+                // opponent in this slate (same "one call per team, not per
+                // player" pattern as NHL/MLB's team-level matchup fetches),
+                // then attached directly on each player object below. This
+                // replaces the old async post-merge (fetchCombinedDefenseData's
+                // NFL branch), which required `p.opponentDefense` to already
+                // be truthy before it would ever merge anything in — real
+                // players never had that, so it never actually ran.
+                // ESPN abbreviation → the backend's nflverse-sourced abbreviation
+                // — same idea as NBA_DVP_ABBR above. Confirmed live this session:
+                // ESPN sends "WSH" for Washington but nflverse's box scores (and
+                // this app's own nfl_player_game_stats/nfl_team_defense_game
+                // tables) use "WAS" — an unmapped lookup 404s and that team's
+                // players silently keep opponentDefense: null.
+                const NFL_DVP_ABBR = { WSH: 'WAS' };
+                const dvpByTeam = {};
+                if (backendUrl) {
+                    const oppAbbrs = [...new Set(matchedNames.map(nm => bySlot[nm].opponent).filter(Boolean))];
+                    // Small sequential batches, not one Promise.all across the
+                    // whole league — a full 32-team slate firing every request
+                    // at once reproducibly crashed the backend's better-sqlite3
+                    // binding under concurrent read load in local testing (see
+                    // lib/nflDvpEngine.js's header comment: this native crash
+                    // isn't limited to heavy writes). This stays just as fast in
+                    // practice (a handful of batches of a few teams each) without
+                    // hammering your own backend with two dozen simultaneous requests.
+                    const DVP_BATCH_SIZE = 6;
+                    for (let i = 0; i < oppAbbrs.length; i += DVP_BATCH_SIZE) {
+                        const batch = oppAbbrs.slice(i, i + DVP_BATCH_SIZE);
+                        await Promise.all(batch.map(async (team) => {
+                            try {
+                                const res = await fetch(`${backendUrl}/api/nfl/defense/by-position/${NFL_DVP_ABBR[team] || team}`);
+                                if (!res.ok) return;
+                                const data = await res.json();
+                                if (!data.byPosition) return;
+                                const byPosition = {};
+                                Object.entries(data.byPosition).forEach(([pos, entry]) => { byPosition[pos] = nflFlattenDvpWindow(entry); });
+                                const intFlat = nflFlattenDvpWindow(data.defenseInterceptions);
+                                if (byPosition.QB) {
+                                    // Same real number, duplicated onto the QB card for
+                                    // convenience — "generated", never "allowed" (Phase
+                                    // 6 terminology: these are the defense's OWN
+                                    // interceptions, not something thrown against it).
+                                    byPosition.QB.defenseInterceptionsGenerated = intFlat.interceptionsGenerated;
+                                    byPosition.QB.defenseInterceptionsPerGame = intFlat.interceptionsPerGame;
+                                    byPosition.QB.defenseInterceptionRate = intFlat.interceptionRate;
+                                }
+                                dvpByTeam[team] = {
+                                    team,
+                                    byPosition,
+                                    defenseInterceptions: intFlat,
+                                    dataSource: 'Your backend (real nflverse box scores)',
+                                    isRealByPosition: true
+                                };
+                            } catch (e) { /* this opponent's players keep opponentDefense: null this refresh — no crash, no fabrication */ }
+                        }));
+                    }
+                }
+
                 const glMap = await nflGamelogs(matchedNames.map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _nflLedger = plLoadLedger('nfl', selectedDate);
@@ -11038,6 +11137,14 @@
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
                         oppDef: slot.oppDef || null,
+                        // `overall` reuses the already-real, already-working
+                        // team-level points-allowed rank (slot.oppDef) — NOT a
+                        // fabricated per-position number. The real DvP data is
+                        // entirely in byPosition below; this is just the same
+                        // header-line context NHL/WNBA already show alongside it.
+                        opponentDefense: dvpByTeam[slot.opponent]
+                            ? { ...dvpByTeam[slot.opponent], overall: slot.oppDef ? { rank: slot.oppDef.rank, ppg: slot.oppDef.paPerGame } : null }
+                            : null,
                         gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: linesByName[nm], _isNfl: true, _detailLoaded: glRows.length > 0,
@@ -15859,6 +15966,29 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         const oppRow = od && od.rank ? [['Points allowed / game', `${od.paPerGame} (#${od.rank} of 32)`]] : [];
                                                         const ya = avgOf('passYds') && avgOf('passAttempts') ? Math.round(avgOf('passYds') / avgOf('passAttempts') * 10) / 10 : null;
                                                         const cmpPct = avgOf('passCompletions') && avgOf('passAttempts') ? Math.round(avgOf('passCompletions') / avgOf('passAttempts') * 100) : null;
+                                                        // QB INT Matchup (Phase 7/15) — research/display only, does NOT
+                                                        // feed the rare-event INT probability model. Real opponent
+                                                        // defensive INT numbers (duplicated onto byPosition.QB — see
+                                                        // fetchNflPropLines) shown side by side with the QB's own real
+                                                        // season/recent INT rate, using real attempts as the denominator.
+                                                        const qbIntRow = (() => {
+                                                            if (pos !== 'QB') return null;
+                                                            const seasonIntPg = avgOf('interceptions'), seasonAtt = avgOf('passAttempts');
+                                                            const seasonIntRate = seasonIntPg != null && seasonAtt ? Math.round(seasonIntPg / seasonAtt * 1000) / 10 : null;
+                                                            const recIntPg = SBK.interceptions && SBK.interceptions.last5 && SBK.interceptions.last5.avg;
+                                                            const recAtt = SBK.passAttempts && SBK.passAttempts.last5 && SBK.passAttempts.last5.avg;
+                                                            const recentIntRate = recIntPg != null && recAtt ? Math.round(recIntPg / recAtt * 1000) / 10 : null;
+                                                            const oppQb = player.opponentDefense && player.opponentDefense.byPosition && player.opponentDefense.byPosition.QB;
+                                                            return (
+                                                                <Topic name="QB INT Matchup" rows={[
+                                                                    [`${player.opponent} defense INT/game`, oppQb && oppQb.defenseInterceptionsPerGame != null ? oppQb.defenseInterceptionsPerGame : null],
+                                                                    [`${player.opponent} defense INT rate`, oppQb && oppQb.defenseInterceptionRate != null ? (oppQb.defenseInterceptionRate * 100).toFixed(1) + '%' : null],
+                                                                    ['Player season INT/game', seasonIntPg],
+                                                                    ['Player season INT rate', seasonIntRate != null ? seasonIntRate + '%' : null],
+                                                                    ['Player recent INT rate (L5)', recentIntRate != null ? recentIntRate + '%' : null]
+                                                                ]} todo="Research/display only — does not feed the rare-event INT probability model in this pass." />
+                                                            );
+                                                        })();
                                                         const playerGroup = pos === 'QB' ? <React.Fragment>
                                                             <Topic name="Opportunity" rows={[['Pass attempts / game', avgOf('passAttempts')], ['Completions / game', avgOf('passCompletions')]]}
                                                                 todo="dropbacks, team pass rate, neutral-situation pass rate, early-down pass rate, pace, drives / game, red-zone drives, two-minute-offense usage" />
@@ -15885,6 +16015,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             <Group title="Matchup">
                                                                 <Topic name="Opponent defense" rows={oppRow}
                                                                     todo="PASS: pass / dropback EPA allowed, comp %, Y/A, explosive-pass & aDOT & air-yards & YAC allowed, pressure / sack / blitz %, man / zone %, Cover-1/3/4 & two-high %, slot / TE / WR / RB coverage. RUN: rush EPA, Y/C, stuff %, YBC / YAC, explosive-run %, run success rate, missed tackles, goal-line defense — needs an advanced defensive feed" />
+                                                                {qbIntRow}
                                                                 <Topic name="vs this opponent" rows={[['vs ' + player.opponent, SBK[activeProp.statKey] && SBK[activeProp.statKey].vsOpp && SBK[activeProp.statKey].vsOpp.games ? win(SBK[activeProp.statKey].vsOpp) : null]]} />
                                                                 <Topic name="Scheme & tendencies" todo="opp pass rate faced, blitz tendencies, pace of opponent, situational splits" />
                                                             </Group>
@@ -16267,9 +16398,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         <div className="opponent-defense-header">
                                             <div className="opponent-defense-title">🛡️ Opponent Defense</div>
                                             <div className="opponent-badge">{player.opponentDefense.team}</div>
-                                            <div style={{ marginLeft: 'auto', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                                                Def Rank: #{player.opponentDefense.overall.rank} • {player.opponentDefense.overall.ppg} PPG
-                                            </div>
+                                            {player.opponentDefense.overall && (
+                                                <div style={{ marginLeft: 'auto', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                                    Def Rank: #{player.opponentDefense.overall.rank} • {player.opponentDefense.overall.ppg} PPG
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="defense-source-note">
                                             {player.opponentDefense.dataSource ? `🟢 Live — ${player.opponentDefense.dataSource}` : '🟡 Sample data'}.{' '}
@@ -16296,6 +16429,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             <div className="defense-stat-label">League Rank</div>
                                                             <span className={`defense-rank-badge ${rankTier}`}>#{stats.rank}</span>
                                                         </div>
+                                                        {stats.resolvedWindow && (
+                                                            // Sample size always travels with the number (per-position,
+                                                            // since QB can resolve to a different window than RB/WR/TE
+                                                            // for the same team when 2026 is still thin) — never
+                                                            // presented as more stable than it is.
+                                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', paddingTop: '0.4rem' }}>
+                                                                {stats.resolvedWindow === 'multiseason' ? `3-season baseline · ${stats.resolvedGames} games`
+                                                                    : stats.resolvedWindow === 'season' ? `${stats.seasonYear || ''} season · ${stats.resolvedGames} games so far`
+                                                                    : `Last ${stats.resolvedWindow.slice(1)} games`}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 );
                                             })}

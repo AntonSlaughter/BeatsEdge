@@ -2,110 +2,316 @@
 // to NFL's stat categories. Unlike NBA, positions here are real from
 // ingestion — no compiled-positions.js equivalent needed for NFL, since
 // nflverse publishes QB/RB/WR/TE cleanly for every row.
-
-const db = require('./nflDb');
+//
+// Rewritten as part of the NFL DvP live-wiring pass to: (1) expand the
+// field list (opportunity volume — attempts/completions/targets — plus
+// TDs split by type instead of one combined number), (2) replace the old
+// ambiguous 'season' window (which actually meant "every season ever
+// ingested, no filter") with an explicit L3/L5/L10/season/multiseason set,
+// each carrying its own real games_sampled, and (3) add a real defensive-
+// interceptions rollup from nfl_team_defense_game.
+//
+// Every exported function takes `db` as an explicit argument instead of
+// requiring lib/nflDb.js itself. Reads (getNflDefenseByPosition, called
+// live from routes/api.js) use the server's existing better-sqlite3 handle.
+// The recompute functions do hundreds of sequential writes and are
+// deliberately run from scripts/recompute-nfl-dvp.js through node:sqlite's
+// DatabaseSync instead — this codebase has a reproducible native crash
+// (Assertion failed: (env) != nullptr) when better-sqlite3 is used for
+// write-heavy work under this Node/Windows build (see the header comment
+// on scripts/ingest-nflverse-stats.js for the full story; confirmed again
+// this session when recomputeNflDefenseByPosition crashed the same way
+// under better-sqlite3). Not taking a dependency on either module here
+// keeps this file correct against both.
 
 const POSITIONS = ['QB', 'RB', 'WR', 'TE'];
 
-function recomputeNflDefenseByPosition() {
-  const teams = db.prepare(`SELECT DISTINCT opponent AS team FROM nfl_player_game_stats`).all();
+// Caches prepared statements per `db` handle so the live read path
+// (getNflDefenseByPosition, called on every /api/nfl/defense/by-position
+// request) doesn't construct fresh native Statement objects on every call.
+// Confirmed live this session: a full slate's worth of concurrent requests
+// (one per opponent, ~30 at once) reproducibly crashed better-sqlite3's
+// native binding on this box even though each request only reads — the
+// crash isn't limited to heavy writes, it's Statement churn under load.
+// Reusing one Statement per (db, sql) for the process lifetime removes that
+// churn; the frontend also throttles its batch fetch as a second layer.
+const _preparedCache = new WeakMap();
+function prepared(db, sql) {
+  let m = _preparedCache.get(db);
+  if (!m) { m = new Map(); _preparedCache.set(db, m); }
+  let stmt = m.get(sql);
+  if (!stmt) { stmt = db.prepare(sql); m.set(sql, stmt); }
+  return stmt;
+}
 
-  const upsert = db.prepare(`
+// Eligibility gate, NOT a stability claim: below this many current-season
+// games, `season` is not even considered as a standalone answer and
+// `recommended` names the historical `multiseason` window instead. At or
+// above it, `season` MAY become recommended — but L3/L5/L10/season/
+// multiseason and every one of their games_sampled counts are still always
+// returned; resolving one as "recommended" never hides the other four.
+const MIN_GAMES_FOR_CURRENT_SEASON = 3;
+
+// Rolling windows cross season boundaries by design (that's what "rolling"
+// means) — they don't need the eligibility gate above, only the strictly-
+// current-season window does.
+const ROLLING_WINDOWS = [
+  { type: 'L3', limitGames: 3 },
+  { type: 'L5', limitGames: 5 },
+  { type: 'L10', limitGames: 10 }
+];
+
+const ALLOWED_FIELDS = [
+  'pass_attempts_allowed', 'completions_allowed', 'passing_yards_allowed', 'passing_tds_allowed',
+  'rush_attempts_allowed', 'rushing_yards_allowed', 'rushing_tds_allowed',
+  'targets_allowed', 'receptions_allowed', 'receiving_yards_allowed', 'receiving_tds_allowed',
+  'fantasy_points_allowed'
+];
+
+const round1 = n => n == null ? null : Math.round(n * 10) / 10;
+const round2 = n => n == null ? null : Math.round(n * 100) / 100;
+
+function currentAndCompleteSeasons(db) {
+  const row = db.prepare(`SELECT MAX(season) mx FROM nfl_player_game_stats`).get();
+  const current = row && row.mx != null ? row.mx : null;
+  const complete = current == null ? [] : [current - 3, current - 2, current - 1];
+  return { current, complete };
+}
+
+// One (team, position, gameRows) -> averaged "allowed" stat line. Every
+// field is computed for every position (a QB row's targets_allowed is
+// always 0, e.g.) — harmless, and keeps this one function correct for all
+// four positions instead of four near-duplicate branches. Which fields are
+// actually meaningful per position is a UI/display concern, not a data-
+// shape concern.
+function averageAllowed(games) {
+  if (!games.length) return null;
+  const avg = key => games.reduce((s, g) => s + (g[key] || 0), 0) / games.length;
+  return {
+    pass_attempts_allowed: round1(avg('pass_attempts')),
+    completions_allowed: round1(avg('completions')),
+    passing_yards_allowed: round1(avg('passing_yards')),
+    passing_tds_allowed: round2(avg('passing_tds')),
+    rush_attempts_allowed: round1(avg('rush_attempts')),
+    rushing_yards_allowed: round1(avg('rushing_yards')),
+    rushing_tds_allowed: round2(avg('rushing_tds')),
+    targets_allowed: round1(avg('targets')),
+    receptions_allowed: round1(avg('receptions')),
+    receiving_yards_allowed: round1(avg('receiving_yards')),
+    receiving_tds_allowed: round2(avg('receiving_tds')),
+    fantasy_points_allowed: round1(avg('fantasy_points_ppr')),
+    games_sampled: games.length
+  };
+}
+
+function recomputeNflDefenseByPosition(db) {
+  const teams = db.prepare(`SELECT DISTINCT opponent AS team FROM nfl_player_game_stats`).all().map(r => r.team);
+  const { current, complete } = currentAndCompleteSeasons(db);
+
+  const upsertPos = db.prepare(`
     INSERT INTO nfl_defense_by_position
-      (team, position, window_type, passing_yards_allowed, rushing_yards_allowed,
-       receiving_yards_allowed, receptions_allowed, tds_allowed, fantasy_points_allowed,
-       rank, games_sampled, updated_at)
-    VALUES (@team, @position, @window_type, @passing_yards_allowed, @rushing_yards_allowed,
-       @receiving_yards_allowed, @receptions_allowed, @tds_allowed, @fantasy_points_allowed,
-       @rank, @games_sampled, datetime('now'))
+      (team, position, window_type, season_year, pass_attempts_allowed, completions_allowed,
+       passing_yards_allowed, passing_tds_allowed, rush_attempts_allowed, rushing_yards_allowed,
+       rushing_tds_allowed, targets_allowed, receptions_allowed, receiving_yards_allowed,
+       receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled, updated_at)
+    VALUES (@team, @position, @window_type, @season_year, @pass_attempts_allowed, @completions_allowed,
+       @passing_yards_allowed, @passing_tds_allowed, @rush_attempts_allowed, @rushing_yards_allowed,
+       @rushing_tds_allowed, @targets_allowed, @receptions_allowed, @receiving_yards_allowed,
+       @receiving_tds_allowed, @fantasy_points_allowed, @rank, @games_sampled, datetime('now'))
     ON CONFLICT(team, position, window_type) DO UPDATE SET
-      passing_yards_allowed=excluded.passing_yards_allowed,
-      rushing_yards_allowed=excluded.rushing_yards_allowed,
-      receiving_yards_allowed=excluded.receiving_yards_allowed,
-      receptions_allowed=excluded.receptions_allowed,
-      tds_allowed=excluded.tds_allowed,
-      fantasy_points_allowed=excluded.fantasy_points_allowed,
+      season_year=excluded.season_year,
+      pass_attempts_allowed=excluded.pass_attempts_allowed, completions_allowed=excluded.completions_allowed,
+      passing_yards_allowed=excluded.passing_yards_allowed, passing_tds_allowed=excluded.passing_tds_allowed,
+      rush_attempts_allowed=excluded.rush_attempts_allowed, rushing_yards_allowed=excluded.rushing_yards_allowed,
+      rushing_tds_allowed=excluded.rushing_tds_allowed, targets_allowed=excluded.targets_allowed,
+      receptions_allowed=excluded.receptions_allowed, receiving_yards_allowed=excluded.receiving_yards_allowed,
+      receiving_tds_allowed=excluded.receiving_tds_allowed, fantasy_points_allowed=excluded.fantasy_points_allowed,
       rank=excluded.rank, games_sampled=excluded.games_sampled, updated_at=datetime('now')
   `);
 
-  // "last8"/"last4" = most recent games by season+week ordering (a full NFL
-  // season is 17-18 games, so 8/4 are meaningful recent-form windows —
-  // NBA's last10/last20 don't translate directly given NFL's weekly schedule).
-  const windows = [
-    { type: 'season', limitGames: null },
-    { type: 'last8', limitGames: 8 },
-    { type: 'last4', limitGames: 4 }
-  ];
+  const qByLimit = db.prepare(`
+    SELECT pass_attempts, completions, passing_yards, passing_tds,
+           rush_attempts, rushing_yards, rushing_tds,
+           targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
+    FROM nfl_player_game_stats WHERE opponent = ? AND position = ?
+    ORDER BY season DESC, week DESC LIMIT ?
+  `);
+  const qBySeason = db.prepare(`
+    SELECT pass_attempts, completions, passing_yards, passing_tds,
+           rush_attempts, rushing_yards, rushing_tds,
+           targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
+    FROM nfl_player_game_stats WHERE opponent = ? AND position = ? AND season = ?
+    ORDER BY week DESC
+  `);
+  const qBySeasonSet = db.prepare(`
+    SELECT pass_attempts, completions, passing_yards, passing_tds,
+           rush_attempts, rushing_yards, rushing_tds,
+           targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
+    FROM nfl_player_game_stats WHERE opponent = ? AND position = ? AND season IN (?, ?, ?)
+    ORDER BY season DESC, week DESC
+  `);
 
   const results = {};
+  const windowDefs = [
+    ...ROLLING_WINDOWS.map(w => ({ type: w.type, seasonYear: null, fetch: (team, pos) => qByLimit.all(team, pos, w.limitGames) })),
+    { type: 'season', seasonYear: current, fetch: (team, pos) => current == null ? [] : qBySeason.all(team, pos, current) },
+    { type: 'multiseason', seasonYear: null, fetch: (team, pos) => complete.length < 3 ? [] : qBySeasonSet.all(team, pos, ...complete) }
+  ];
 
-  windows.forEach(({ type, limitGames }) => {
+  windowDefs.forEach(({ type, seasonYear, fetch }) => {
     POSITIONS.forEach(position => {
-      const rows = teams.map(({ team }) => {
-        const games = limitGames
-          ? db.prepare(`
-              SELECT passing_yards, rushing_yards, receiving_yards, receptions,
-                     (passing_tds + rushing_tds + receiving_tds) AS tds, fantasy_points_ppr
-              FROM nfl_player_game_stats
-              WHERE opponent = ? AND position = ?
-              ORDER BY season DESC, week DESC LIMIT ?
-            `).all(team, position, limitGames)
-          : db.prepare(`
-              SELECT passing_yards, rushing_yards, receiving_yards, receptions,
-                     (passing_tds + rushing_tds + receiving_tds) AS tds, fantasy_points_ppr
-              FROM nfl_player_game_stats
-              WHERE opponent = ? AND position = ?
-              ORDER BY season DESC, week DESC
-            `).all(team, position);
-
-        if (games.length === 0) return null;
-        const avg = (key) => games.reduce((s, g) => s + (g[key] || 0), 0) / games.length;
-
-        return {
-          team,
-          passing_yards_allowed: Math.round(avg('passing_yards') * 10) / 10,
-          rushing_yards_allowed: Math.round(avg('rushing_yards') * 10) / 10,
-          receiving_yards_allowed: Math.round(avg('receiving_yards') * 10) / 10,
-          receptions_allowed: Math.round(avg('receptions') * 10) / 10,
-          tds_allowed: Math.round(avg('tds') * 100) / 100,
-          fantasy_points_allowed: Math.round(avg('fantasy_points_ppr') * 10) / 10,
-          games_sampled: games.length
-        };
+      const rows = teams.map(team => {
+        const games = fetch(team, position);
+        const avgd = averageAllowed(games);
+        return avgd ? { team, ...avgd } : null;
       }).filter(Boolean);
 
-      // Rank by fantasy points allowed to this position: 1 = fewest allowed (toughest)
+      // Rank by fantasy points allowed within this exact (position, window):
+      // 1 = fewest allowed (toughest defense against this position).
       const sorted = [...rows].sort((a, b) => a.fantasy_points_allowed - b.fantasy_points_allowed);
       sorted.forEach((r, i) => { r.rank = i + 1; });
 
-      rows.forEach(r => upsert.run({ ...r, position, window_type: type }));
+      rows.forEach(r => upsertPos.run({ ...r, position, window_type: type, season_year: seasonYear }));
       results[`${position}:${type}`] = rows.length;
     });
   });
 
-  return results;
+  recomputeNflDefenseInterceptions(db, current, complete);
+
+  return { current, completeSeasons: complete, ...results };
 }
 
-function getNflDefenseByPosition(team, windowType = 'season') {
-  const rows = db.prepare(`
-    SELECT position, passing_yards_allowed, rushing_yards_allowed, receiving_yards_allowed,
-           receptions_allowed, tds_allowed, fantasy_points_allowed, rank, games_sampled
-    FROM nfl_defense_by_position WHERE team = ? AND window_type = ?
-  `).all(team, windowType);
+function recomputeNflDefenseInterceptions(db, current, complete) {
+  const teams = db.prepare(`SELECT DISTINCT team FROM nfl_team_defense_game`).all().map(r => r.team);
+
+  const upsert = db.prepare(`
+    INSERT INTO nfl_defense_interceptions
+      (team, window_type, season_year, interceptions_generated, interceptions_per_game,
+       interception_rate, pass_attempts_faced, games_sampled, updated_at)
+    VALUES (@team, @window_type, @season_year, @interceptions_generated, @interceptions_per_game,
+       @interception_rate, @pass_attempts_faced, @games_sampled, datetime('now'))
+    ON CONFLICT(team, window_type) DO UPDATE SET
+      season_year=excluded.season_year, interceptions_generated=excluded.interceptions_generated,
+      interceptions_per_game=excluded.interceptions_per_game, interception_rate=excluded.interception_rate,
+      pass_attempts_faced=excluded.pass_attempts_faced, games_sampled=excluded.games_sampled,
+      updated_at=datetime('now')
+  `);
+
+  const qByLimit = db.prepare(`
+    SELECT interceptions_generated, pass_attempts_faced FROM nfl_team_defense_game
+    WHERE team = ? ORDER BY season DESC, week DESC LIMIT ?
+  `);
+  const qBySeason = db.prepare(`
+    SELECT interceptions_generated, pass_attempts_faced FROM nfl_team_defense_game
+    WHERE team = ? AND season = ?
+  `);
+  const qBySeasonSet = db.prepare(`
+    SELECT interceptions_generated, pass_attempts_faced FROM nfl_team_defense_game
+    WHERE team = ? AND season IN (?, ?, ?)
+  `);
+
+  const windowDefs = [
+    ...ROLLING_WINDOWS.map(w => ({ type: w.type, seasonYear: null, fetch: team => qByLimit.all(team, w.limitGames) })),
+    { type: 'season', seasonYear: current, fetch: team => current == null ? [] : qBySeason.all(team, current) },
+    { type: 'multiseason', seasonYear: null, fetch: team => complete.length < 3 ? [] : qBySeasonSet.all(team, ...complete) }
+  ];
+
+  windowDefs.forEach(({ type, seasonYear, fetch }) => {
+    teams.forEach(team => {
+      const games = fetch(team);
+      if (!games.length) return;
+      const totalInt = games.reduce((s, g) => s + (g.interceptions_generated || 0), 0);
+      const totalAtt = games.reduce((s, g) => s + (g.pass_attempts_faced || 0), 0);
+      upsert.run({
+        team, window_type: type, season_year: seasonYear,
+        interceptions_generated: round2(totalInt),
+        interceptions_per_game: round2(totalInt / games.length),
+        interception_rate: totalAtt > 0 ? round2(totalInt / totalAtt) : null,
+        pass_attempts_faced: round1(totalAtt),
+        games_sampled: games.length
+      });
+    });
+  });
+}
+
+// Resolves which window to recommend for one already-fetched `windows`
+// object (as produced by getNflDefenseByPosition below): `season` if it
+// meets the eligibility gate, otherwise the named historical `multiseason`
+// window — never a blend of the two. Returns null (not a guess) if neither
+// window has any games at all.
+function resolveWindow(windows) {
+  const season = windows.season;
+  if (season && season.games >= MIN_GAMES_FOR_CURRENT_SEASON) {
+    return { window: 'season', games: season.games };
+  }
+  const multi = windows.multiseason;
+  if (multi && multi.games > 0) return { window: 'multiseason', games: multi.games };
+  // Neither current season nor the 3-season baseline has data (e.g. a very
+  // early expansion team, or a brand-new position gap) — fall further to
+  // whichever rolling window has the most games rather than claim a
+  // resolution that doesn't exist.
+  const rolling = ['L10', 'L5', 'L3'].map(w => windows[w]).find(w => w && w.games > 0);
+  return rolling ? { window: ['L10', 'L5', 'L3'].find(w => windows[w] === rolling), games: rolling.games } : null;
+}
+
+function getNflDefenseByPosition(db, team) {
+  const windowTypes = ['L3', 'L5', 'L10', 'season', 'multiseason'];
+  const rows = prepared(db, `
+    SELECT position, window_type, season_year, pass_attempts_allowed, completions_allowed,
+           passing_yards_allowed, passing_tds_allowed, rush_attempts_allowed, rushing_yards_allowed,
+           rushing_tds_allowed, targets_allowed, receptions_allowed, receiving_yards_allowed,
+           receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled
+    FROM nfl_defense_by_position WHERE team = ?
+  `).all(team);
 
   const byPosition = {};
+  POSITIONS.forEach(pos => { byPosition[pos] = { windows: {} }; });
+
   rows.forEach(r => {
-    byPosition[r.position] = {
-      passingYardsAllowed: r.passing_yards_allowed,
-      rushingYardsAllowed: r.rushing_yards_allowed,
-      receivingYardsAllowed: r.receiving_yards_allowed,
-      receptionsAllowed: r.receptions_allowed,
-      tdsAllowed: r.tds_allowed,
-      fantasyPointsAllowed: r.fantasy_points_allowed,
-      rank: r.rank,
-      gamesSampled: r.games_sampled
+    if (!byPosition[r.position]) return;
+    byPosition[r.position].windows[r.window_type] = {
+      seasonYear: r.season_year,
+      passAttemptsAllowed: r.pass_attempts_allowed, completionsAllowed: r.completions_allowed,
+      passingYardsAllowed: r.passing_yards_allowed, passingTdsAllowed: r.passing_tds_allowed,
+      rushAttemptsAllowed: r.rush_attempts_allowed, rushingYardsAllowed: r.rushing_yards_allowed,
+      rushingTdsAllowed: r.rushing_tds_allowed, targetsAllowed: r.targets_allowed,
+      receptionsAllowed: r.receptions_allowed, receivingYardsAllowed: r.receiving_yards_allowed,
+      receivingTdsAllowed: r.receiving_tds_allowed, fantasyPointsAllowed: r.fantasy_points_allowed,
+      rank: r.rank, games: r.games_sampled
     };
   });
-  return byPosition;
+
+  POSITIONS.forEach(pos => {
+    windowTypes.forEach(w => { if (!byPosition[pos].windows[w]) byPosition[pos].windows[w] = null; });
+    byPosition[pos].recommended = resolveWindow(byPosition[pos].windows);
+  });
+
+  // Team-level defensive interceptions — same window set, same resolution rule.
+  const intRows = prepared(db, `
+    SELECT window_type, season_year, interceptions_generated, interceptions_per_game,
+           interception_rate, pass_attempts_faced, games_sampled
+    FROM nfl_defense_interceptions WHERE team = ?
+  `).all(team);
+  const intWindows = {};
+  windowTypes.forEach(w => { intWindows[w] = null; });
+  intRows.forEach(r => {
+    intWindows[r.window_type] = {
+      seasonYear: r.season_year,
+      interceptionsGenerated: r.interceptions_generated,
+      interceptionsPerGame: r.interceptions_per_game,
+      interceptionRate: r.interception_rate,
+      passAttemptsFaced: r.pass_attempts_faced,
+      games: r.games_sampled
+    };
+  });
+  const interceptions = { windows: intWindows, recommended: resolveWindow(intWindows) };
+
+  return { byPosition, interceptions };
 }
 
-module.exports = { recomputeNflDefenseByPosition, getNflDefenseByPosition, POSITIONS };
+module.exports = {
+  recomputeNflDefenseByPosition,
+  getNflDefenseByPosition,
+  POSITIONS,
+  MIN_GAMES_FOR_CURRENT_SEASON
+};

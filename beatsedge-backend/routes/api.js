@@ -5,6 +5,7 @@ const { fetchProbablePitchers } = require('../lib/mlbProxy');
 const { getDefenseByPosition, getTeamAdvancedStats } = require('../lib/dvpEngine');
 const { getPlayerSituationalSplits, getTeamScheduleContext } = require('../lib/situationalEngine');
 const { getNflDefenseByPosition } = require('../lib/nflDvpEngine');
+const nflDb = require('../lib/nflDb');
 const mlbDb = require('../lib/mlbDb');
 const { getDefenseByPosition: getNhlDefenseByPosition } = require('../lib/nhlEngine');
 const nhlDb = require('../lib/nhlDb');
@@ -157,15 +158,23 @@ router.get('/team/schedule-context/:sport/:team/:gameId', (req, res) => {
 // reference table needed, unlike NBA's PG/SG/SF/PF situation.
 // ============================================================
 
-// GET /api/nfl/defense/by-position/:team?window=season|last8|last4
+// GET /api/nfl/defense/by-position/:team
+// Always returns all five windows (L3/L5/L10/season/multiseason) per
+// position, each carrying its own games_sampled — never a single bare
+// number. See lib/nflDvpEngine.js for the window/eligibility design.
 router.get('/nfl/defense/by-position/:team', (req, res) => {
   const { team } = req.params;
-  const windowType = req.query.window || 'season';
-  const byPosition = getNflDefenseByPosition(team.toUpperCase(), windowType);
-  if (Object.keys(byPosition).length === 0) {
+  const { byPosition, interceptions } = getNflDefenseByPosition(nflDb, team.toUpperCase());
+  const hasData = Object.values(byPosition).some(p => Object.values(p.windows).some(Boolean));
+  if (!hasData) {
     return res.status(404).json({ error: `No computed NFL data for ${team}` });
   }
-  res.json({ source: 'BeatsEdge computed (real nflverse box scores)', team: team.toUpperCase(), window: windowType, byPosition });
+  res.json({
+    source: 'BeatsEdge computed (real nflverse box scores)',
+    team: team.toUpperCase(),
+    byPosition,
+    defenseInterceptions: interceptions
+  });
 });
 
 // ============================================================
