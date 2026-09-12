@@ -858,6 +858,13 @@
             border: 1px solid rgba(255,138,61,0.35);
         }
         .prime-banner em { color: #ff8a3d; font-style: normal; font-weight: 700; }
+        .plusev-banner { margin: -0.4rem 0 1.1rem; padding: 0.6rem 0.8rem; border-radius: 8px; font-size: 0.78rem; line-height: 1.5; color: var(--text-secondary); background: rgba(34,197,94,0.10); border: 1px solid rgba(34,197,94,0.35); }
+        .plusev-banner em { color: #22c55e; font-style: normal; font-weight: 700; }
+        .plusev-banner .plusev-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-top: 0.5rem; }
+        .plusev-banner .plusev-cell-k { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+        .plusev-banner .plusev-cell-v { font-size: 0.95rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+        .altvalue-banner { margin: -0.4rem 0 1.1rem; padding: 0.6rem 0.8rem; border-radius: 8px; font-size: 0.78rem; line-height: 1.5; color: var(--text-secondary); background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.3); }
+        .altvalue-banner em { color: #94a3b8; font-style: normal; font-weight: 700; }
 
         .edge-descriptor-row { display: flex; flex-wrap: wrap; gap: 1.4rem; }
         .edge-descriptor { display: flex; flex-direction: column; gap: 0.1rem; }
@@ -943,6 +950,8 @@
         .pp-kind.goblin { background: rgba(52, 211, 153, 0.18); color: #34d399; border: 1px solid rgba(52,211,153,0.4); }
         .pp-kind.demon  { background: rgba(255, 68, 54, 0.16);  color: var(--accent-red-light); border: 1px solid rgba(255,68,54,0.4); }
         .pp-kind.cross  { background: rgba(245, 166, 35, 0.14); color: var(--warning-yellow); border: 1px solid rgba(245,166,35,0.4); }
+        .pp-kind.plusev  { background: rgba(34, 197, 94, 0.18); color: #22c55e; border: 1px solid rgba(34,197,94,0.45); }
+        .pp-kind.altvalue { background: rgba(148, 163, 184, 0.16); color: #94a3b8; border: 1px solid rgba(148,163,184,0.4); }
         .prop-pill.selected .pp-kind { background: rgba(255,255,255,0.22); color: #fff; border-color: rgba(255,255,255,0.35); }
 
         .prop-pill-odds {
@@ -2591,7 +2600,22 @@
         .research-side-label.over { color: var(--success-green); }
         .research-side-label.under { color: var(--danger-red); }
         .research-side-label.prime { color: #ff8a3d; }
+        .research-side-label.plusev { color: #22c55e; }
         .research-side-label:first-of-type { margin-top: 0.5rem; }
+
+        /* ── 💰 +EV Plays section (independent of Prime — a separate,
+           PrizePicks-vs-sharp-market signal, never promoted into or fed
+           back into Prime/grade/probability) ── */
+        .plusev-section { position: relative; margin: 0.5rem 0 0.5rem; }
+        .plusev-section.pro-locked { overflow: hidden; border-radius: 12px; max-height: 360px; }
+        .plusev-section.pro-locked .prime-intro,
+        .plusev-section.pro-locked .prime-defs,
+        .plusev-section.pro-locked .prime-list { filter: blur(7px); opacity: 0.45; pointer-events: none; user-select: none; }
+        .plusev-section.pro-locked .pro-lock-overlay { align-items: flex-start; padding-top: 3.5rem; }
+        .plusev-card { border-color: rgba(34,197,94,0.22); }
+        .plusev-card .prime-card-main:hover { background: rgba(34,197,94,0.06); }
+        .plusev-card-rank { font-weight: 800; color: #22c55e; font-size: 0.9rem; white-space: nowrap; }
+        .plusev-why { border-top: 1px solid rgba(34,197,94,0.2); }
 
         /* ── ⭐ Prime Plays section (Item 12 — UI only, no model change) ── */
         .prime-section { position: relative; margin: 0.5rem 0 0.5rem; }
@@ -3995,6 +4019,29 @@
                 for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) return ra[i] - rb[i]; }
                 return 0;
             });
+            return rows.slice(0, n);
+        }
+
+        // The 💰 +EV Plays list — every DFS standard-line prop currently
+        // flagged eligible by the PrizePicks +EV signal (see attachPlusEV /
+        // computePlusEVForProp). Deliberately independent of Prime/Grade —
+        // ranked by how large the combined market+model edge is, since
+        // that's what this specific signal is actually claiming. Does NOT
+        // include Goblin/Demon "Alt-Line Value" props — those are a
+        // separate, softer signal shown only on the card/modal, not
+        // promoted to their own Top Picks list.
+        function findPlusEVPicks(players, n = 15) {
+            const rows = [];
+            (players || []).forEach(player => {
+                if (player.status === 'OUT' || !Array.isArray(player.props)) return;
+                if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
+                player.props.forEach((prop, idx) => {
+                    if (!prop.plusEV || !prop.plusEV.eligible) return;
+                    const edge = calculateEdgeScore(player, prop);
+                    rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
+                });
+            });
+            rows.sort((a, b) => (b.plusEV.modelDifference + b.plusEV.marketDifference) - (a.plusEV.modelDifference + a.plusEV.marketDifference));
             return rows.slice(0, n);
         }
 
@@ -5656,6 +5703,9 @@
             const primePicks = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findPrimePicks(playersData)
                 : [];
+            const plusEVPicks = !loading && Array.isArray(playersData) && playersData.length > 0
+                ? findPlusEVPicks(playersData)
+                : [];
 
             const verdictClass = (label) => label === 'GREEN MATCHUP' ? 'green' : (label === 'RED MATCHUP' ? 'red' : 'mixed');
             const otherReadySports = Object.keys(SPORT_STATUS).filter(s => SPORT_STATUS[s] === 'ready' && s !== selectedSport);
@@ -5678,6 +5728,48 @@
 
             // Compact row for the ⭐ Prime Plays section. Reads only existing
             // engine output — no Prime logic here.
+            // 💰 +EV card — a PrizePicks line vs the real sharp-market median
+            // plus BeatsEdge's own (unmodified) projection. Independent of
+            // Prime: this reads `p.plusEV`, never `p.edge.prime`, so a play
+            // can show up here with or without also being Prime.
+            const PlusEVCard = ({ p, n }) => {
+                const ev = p.plusEV;
+                const e = p.edge;
+                return (
+                    <div className="prime-card plusev-card">
+                        <div className="prime-card-main" onClick={() => onOpenPick(p.player, p.propIdx)} title="Tap for the full research breakdown">
+                            <div className="plusev-card-rank">💰 {n}</div>
+                            <div className="prime-card-id">
+                                <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
+                                <div className="prime-card-prop">
+                                    {p.prop.type} {ev.direction === 'UNDER' ? 'Under' : 'Over'} {ev.prizePicksLine}
+                                    {ev.ppKind && ev.ppKind !== 'standard' && <span className={`pp-kind ${ev.ppKind}`}> {ev.ppKind === 'goblin' ? '👺' : '😈'}</span>}
+                                    <span className="prime-book" title={`Sharp-market median across ${ev.sportsbookCount} book(s): ${ev.marketMedianLine}`}>PrizePicks vs {ev.sportsbookCount}-book market</span>
+                                </div>
+                            </div>
+                            <div className="prime-card-stats">
+                                <div className="prime-stat"><span className="prime-stat-v">{ev.marketMedianLine}</span><span className="prime-stat-k">Market med.</span></div>
+                                <div className="prime-stat"><span className="prime-stat-v">{ev.modelProjection}</span><span className="prime-stat-k">BeatsEdge proj.</span></div>
+                                <div className="prime-stat"><span className="prime-stat-v">+{ev.marketDifference}</span><span className="prime-stat-k">Market edge</span></div>
+                                <div className="prime-stat"><span className="prime-stat-v">+{ev.modelDifference}</span><span className="prime-stat-k">Model edge</span></div>
+                            </div>
+                        </div>
+                        <details className="prime-why plusev-why">
+                            <summary>Why +EV?</summary>
+                            <div className="prime-why-body">
+                                <div className="prime-why-line">
+                                    PrizePicks lists this {ev.direction === 'UNDER' ? 'Under' : 'Over'} at <strong>{ev.prizePicksLine}</strong>, easier than the real sharp-market median of <strong>{ev.marketMedianLine}</strong> ({ev.sportsbookCount} book{ev.sportsbookCount === 1 ? '' : 's'}, range {ev.marketMinLine}–{ev.marketMaxLine}) — a market edge of <strong>+{ev.marketDifference}</strong>.
+                                </div>
+                                <div className="prime-why-line">
+                                    BeatsEdge's own model independently projects <strong>{ev.modelProjection}</strong>, agreeing with the same side by <strong>+{ev.modelDifference}</strong> over the PrizePicks line.
+                                </div>
+                                <div className="prime-why-line">This is a market-price-value signal, not a guarantee — and it's fully independent of Prime/Grade ({e.grade}, {e.prime ? 'also Prime' : 'not Prime'} on this model's own factors).</div>
+                            </div>
+                        </details>
+                    </div>
+                );
+            };
+
             const PrimeCard = ({ p, n }) => {
                 const e = p.edge;
                 const why = e.factors.filter(f => f.supports).map(f => f.name);
@@ -7219,6 +7311,37 @@
                         })()}
                     </div>
 
+                    {!loading && plusEVPicks.length > 0 && (
+                        <div className={`prime-section plusev-section ${!isPro ? 'pro-locked' : ''}`}>
+                            {!isPro && (
+                                <div className="pro-lock-overlay">
+                                    <ProLock compact title="💰 +EV Plays"
+                                        text="Where PrizePicks posts a meaningfully easier line than the real sportsbook market — and BeatsEdge's own model agrees."
+                                        onUnlock={onUnlock} />
+                                </div>
+                            )}
+                            <div className="research-side-label plusev">💰 +EV Plays</div>
+                            <div className="prime-intro">
+                                <div className="prime-intro-lead">PrizePicks lines that sit meaningfully off the real sportsbook market — confirmed independently by BeatsEdge's own projection. A market-price-value signal, separate from Prime/Grade.</div>
+                                <span className="prime-chip" style={{ background: 'rgba(34,197,94,0.16)', color: '#22c55e', borderColor: 'rgba(34,197,94,0.4)' }}>+EV</span>
+                                <span className="prime-chip-desc">PrizePicks vs sharp-book market + BeatsEdge projection agree</span>
+                            </div>
+                            <div className="prime-defs">
+                                <div><strong>💰 +EV</strong> — PrizePicks line is easier than the sharp-book market AND BeatsEdge projects the same side further still</div>
+                                <div><strong>Market med.</strong> — median sharp-sportsbook line for this exact stat</div>
+                                <div><strong>BeatsEdge proj.</strong> — the model's own (unchanged) projection</div>
+                                <div><strong>Market edge</strong> — how much easier PrizePicks' line is than the market</div>
+                                <div><strong>Model edge</strong> — how much further BeatsEdge projects past the PrizePicks line</div>
+                            </div>
+                            <div className="prime-list">
+                                {plusEVPicks.slice(0, isPro ? 15 : 4).map((p, i) => <PlusEVCard key={p.player.id + ':' + p.propIdx} p={p} n={i + 1} />)}
+                            </div>
+                            {isPro && plusEVPicks.length > 15 && (
+                                <div className="prime-more">Showing the 15 top-ranked of {plusEVPicks.length} +EV plays on this {SPORT_LABELS[selectedSport]} slate.</div>
+                            )}
+                        </div>
+                    )}
+
                     {!loading && primePicks.length > 0 && (
                         <div className={`prime-section ${!isPro ? 'pro-locked' : ''}`}>
                             {!isPro && (
@@ -8328,6 +8451,7 @@
                             const nextByKey = { ...p.statsByKey };
                             let props = mlbBuildProps(p._seasonStat || {}, !!p._isPitcher, nextByKey, p._allLines, wantBook);
                             props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
+                            props = attachPlusEV({ ...p, statsByKey: nextByKey }, props);
                             return {
                                 ...p, props, statsByKey: nextByKey,
                                 stats: props.length ? nextByKey[props[0].statKey] : p.stats,
@@ -8340,6 +8464,7 @@
                             const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                             let props = nflBuildProps(posKeys, nextByKey, p._allLines, wantBook, perGameFor);
                             props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
+                            props = attachPlusEV({ ...p, statsByKey: nextByKey }, props);
                             return {
                                 ...p, props, statsByKey: nextByKey,
                                 stats: props.length ? (nextByKey[props[0].statKey] || p.stats) : p.stats,
@@ -8351,6 +8476,7 @@
                             const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                             let props = nbaBuildProps(nextByKey, p._allLines, wantBook, perGameFor);
                             props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
+                            props = attachPlusEV({ ...p, statsByKey: nextByKey }, props);
                             return {
                                 ...p, props, statsByKey: nextByKey,
                                 stats: props.length ? (nextByKey[props[0].statKey] || p.stats) : p.stats,
@@ -9779,6 +9905,121 @@
                     .map(x => x.pr);
             };
 
+            // ══════════════════════════════════════════════════════════════
+            // PRIZEPICKS +EV — a SEPARATE, ADDITIVE signal layered on top of
+            // the existing engine. Reads calculateEdgeScore's own outputs
+            // (projection) and compares the DFS line against the REAL sharp-
+            // book market already sitting in player._allLines (same data the
+            // "Compare across books" modal section reads — no new fetch).
+            // Does NOT feed back into grade, probability, Prime, or any
+            // existing calibration — a prop can be Prime=true/+EV=false,
+            // Prime=false/+EV=true, or any other combination, independently.
+            //
+            // Two DELIBERATELY SEPARATE outputs, per explicit instruction:
+            //   - `prop.plusEV`       — standard board line only. A real
+            //     market-price-inefficiency candidate: PrizePicks softer
+            //     than the sharp consensus AND BeatsEdge's own projection
+            //     independently agrees, in the same direction, by enough.
+            //   - `prop.altLineValue` — goblin/demon only. Goblins/demons are
+            //     INTENTIONALLY offset from the standard market by design
+            //     (that's the product) — the same raw gap that would mean
+            //     real mispricing on a standard line is expected and
+            //     uninformative here. This is never labeled or treated as
+            //     "+EV" anywhere (UI included) — it's a distinct, softer
+            //     "alternate-line value" read, gated by its own (stricter)
+            //     threshold precisely because some gap is always expected.
+            // ══════════════════════════════════════════════════════════════
+
+            // Tunable, NOT final — deliberately its own config, separate from
+            // GRADE_CUTOFFS/PROB_CALIB/FAMILY_CALIB, so it can be iterated
+            // without touching anything the locked model depends on.
+            const PRIZEPICKS_EV_CONFIG = {
+                minMarketDifference: 1.0,  // PrizePicks vs sharp-market median, in stat units
+                minModelDifference: 1.0,   // BeatsEdge projection vs the PrizePicks line
+                minSharpBooks: 2           // need at least this many real sharp books to trust a "market"
+            };
+            // Stricter on purpose — see the block comment above. A goblin/
+            // demon needs a LARGER gap than a standard line would before this
+            // is worth surfacing at all, because part of that gap is simply
+            // the product working as intended, not new information.
+            const ALT_LINE_VALUE_CONFIG = {
+                minMarketDifference: 3.0,
+                minModelDifference: 2.0,
+                minSharpBooks: 2
+            };
+            // Real sharp-book consensus for one stat, from data ALREADY
+            // fetched onto the player (player._allLines[statKey][book] — the
+            // exact structure every sport's build function already populates
+            // from one combined PropLine/ParlayAPI call per game). Never
+            // fabricates a market: returns null unless real sharp-book lines
+            // are actually present, so a stat with no market coverage simply
+            // yields no signal rather than a guessed one.
+            const computeMarketConsensus = (byBook) => {
+                if (!byBook) return null;
+                const lines = [];
+                PROPLINE_BOOK_PRIORITY.forEach(bk => {
+                    if (DFS_PLATFORMS.has(bk)) return; // sharp books only — never a DFS line as its own "market"
+                    const arr = byBook[bk];
+                    if (!arr || !arr.length) return;
+                    const e = arr.find(x => x.primary) || arr[0];
+                    if (e && e.line != null) lines.push(e.line);
+                });
+                if (!lines.length) return null;
+                const sorted = lines.slice().sort((a, b) => a - b);
+                const mid = sorted.length >> 1;
+                const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+                return { median: Math.round(median * 100) / 100, min: sorted[0], max: sorted[sorted.length - 1], count: lines.length };
+            };
+            // One DFS prop (standard, goblin, or demon) vs the real sharp
+            // market + BeatsEdge's own (unmodified) projection. Returns null
+            // for anything that isn't a real, matchable DFS line (a cross-
+            // book fallback, a modeled isProjection estimate, a sportsbook-
+            // native N+ rung) — this signal only ever compares a REAL
+            // PrizePicks-style line against a REAL market, never a synthetic
+            // stand-in for either side.
+            const computePlusEVForProp = (prop, byBook, projection, thinData) => {
+                if (!DFS_PLATFORMS.has(prop.book) || prop.crossBook || prop.isProjection || prop.line == null) return null;
+                if (thinData) return null; // same "not enough game log to trust the projection" bar findTopPicks/Prime already use — a huge gap built on an untrustworthy projection is exactly the "system fooling itself" the +EV signal must avoid
+                const isAlt = prop.ppKind === 'goblin' || prop.ppKind === 'demon';
+                const cfg = isAlt ? ALT_LINE_VALUE_CONFIG : PRIZEPICKS_EV_CONFIG;
+                const consensus = computeMarketConsensus(byBook);
+                if (!consensus || consensus.count < cfg.minSharpBooks) return null; // no real market to compare — show nothing, never guess
+                const dir = prop.direction === 'under' ? 'under' : 'over';
+                const ppLine = prop.line;
+                const marketDifference = Math.round((dir === 'over' ? (consensus.median - ppLine) : (ppLine - consensus.median)) * 100) / 100;
+                const modelDifference = Math.round((dir === 'over' ? (projection - ppLine) : (ppLine - projection)) * 100) / 100;
+                const eligible = marketDifference >= cfg.minMarketDifference && modelDifference >= cfg.minModelDifference;
+                return {
+                    isAltLine: isAlt,
+                    eligible,
+                    direction: dir === 'over' ? 'OVER' : 'UNDER',
+                    ppKind: prop.ppKind || null,
+                    prizePicksLine: ppLine,
+                    marketMedianLine: consensus.median,
+                    marketMinLine: consensus.min,
+                    marketMaxLine: consensus.max,
+                    sportsbookCount: consensus.count,
+                    modelProjection: Math.round(projection * 100) / 100,
+                    marketDifference,
+                    modelDifference
+                };
+            };
+            // Attaches plusEV / altLineValue to every DFS prop on this
+            // player's already-final props array. Pure and additive — reads
+            // calculateEdgeScore's projection output, never changes it, and
+            // never touches grade/probability/Prime/gradeScore. Call this
+            // AFTER sortPropsByEdge (order is unaffected either way — this
+            // only adds fields, never reorders).
+            const attachPlusEV = (player, props) => {
+                return props.map(pr => {
+                    const byBook = player._allLines && player._allLines[pr.statKey];
+                    const edge = calculateEdgeScore(player, pr);
+                    const result = computePlusEVForProp(pr, byBook, edge.projection, edge.thinData);
+                    if (!result) return pr;
+                    return result.isAltLine ? { ...pr, altLineValue: result } : { ...pr, plusEV: result };
+                });
+            };
+
             // Build one player object. `props` has an over AND an under entry
             // per stat, each with its own stat windows in statsByKey so every
             // column in the card is real for whichever prop is selected. Starts
@@ -10372,6 +10613,7 @@
                     const nextByKey = { ...p.statsByKey };
                     let props = mlbBuildProps(p._seasonStat || {}, !!p._isPitcher, nextByKey, all, wantBook);
                     props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
+                    props = attachPlusEV({ ...p, statsByKey: nextByKey, _allLines: all }, props);
                     const hasRealForBook = props.some(pr => pr.lineSource);
                     if (hasRealForBook) bookMatched++;
                     return {
@@ -10930,6 +11172,7 @@
                         _seasonPerGame: perGameFor
                     };
                     props = sortPropsByEdge(player, props);
+                    props = attachPlusEV(player, props);
                     if (!props.length) return;
                     player.props = props;
                     player.stats = statsByKey[props[0].statKey] || {};
@@ -11220,6 +11463,7 @@
                         _seasonPerGame: perGameFor
                     };
                     props = sortPropsByEdge(player, props);
+                    props = attachPlusEV(player, props);
                     if (!props.length) return;
                     player.props = props;
                     player.stats = statsByKey[props[0].statKey] || {};
@@ -11797,6 +12041,7 @@
                         _seasonPerGame: perGameFor
                     };
                     props = sortPropsByEdge(player, props);
+                    props = attachPlusEV(player, props);
                     if (!props.length) return;
                     player.props = props;
                     player.stats = statsByKey[props[0].statKey] || {};
@@ -12256,6 +12501,7 @@
                         _seasonPerGame: perGameFor
                     };
                     props = sortPropsByEdge(player, props);
+                    props = attachPlusEV(player, props);
                     if (!props.length) return;
                     player.props = props;
                     player.stats = statsByKey[props[0].statKey] || {};
@@ -15096,6 +15342,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {prop.ppKind === 'demon' && <span className="pp-kind demon" title="PrizePicks Demon — harder line, bigger payout. Over only.">😈 DEMON</span>}
                                                     {prop.crossBook && <span className="pp-kind cross" title={prop.lineSource}>NOT ON {(prop.book && PLATFORM_BOOK[selectedPlatform]) ? (platforms.find(p=>p.id===selectedPlatform)||{}).name : 'this site'}</span>}
                                                     {prop.altLine && !prop.ppKind && <span className="prop-pill-alt">ALT</span>}
+                                                    {prop.plusEV && prop.plusEV.eligible && <span className="pp-kind plusev" title={`PrizePicks +EV — line ${prop.plusEV.prizePicksLine} vs market median ${prop.plusEV.marketMedianLine} (${prop.plusEV.sportsbookCount} books), BeatsEdge projects ${prop.plusEV.modelProjection}. A market-price-value signal, independent of Grade/Prime.`}>💰 +EV</span>}
+                                                    {prop.altLineValue && prop.altLineValue.eligible && <span className="pp-kind altvalue" title={`Alt-Line Value — this ${prop.ppKind} line still clears the sportsbook market (${prop.altLineValue.marketMedianLine}) and BeatsEdge's projection (${prop.altLineValue.modelProjection}) by more than its intentional offset alone would explain. NOT the same as +EV — some gap here is expected by design.`}>🔁 Alt Value</span>}
                                                 </div>
                                                 <div className="prop-pill-value">
                                                     {/* isProjection = no book/DFS platform posts this stat — there is
@@ -15279,6 +15527,33 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 </div>
                                                             );
                                                         })()}
+                                                        {activeProp.plusEV && activeProp.plusEV.eligible && (
+                                                            <div className="plusev-banner">
+                                                                💰 <em>PRIZEPICKS +EV</em> — this standard line is softer than the real sportsbook
+                                                                market, and BeatsEdge's own model projection independently agrees, in the same
+                                                                direction. A line-value signal, separate from Grade/Prime — never a guarantee.
+                                                                <div className="plusev-grid">
+                                                                    <div><div className="plusev-cell-k">PrizePicks</div><div className="plusev-cell-v">{activeProp.plusEV.prizePicksLine}</div></div>
+                                                                    <div><div className="plusev-cell-k">Market ({activeProp.plusEV.sportsbookCount}bk)</div><div className="plusev-cell-v">{activeProp.plusEV.marketMedianLine}</div></div>
+                                                                    <div><div className="plusev-cell-k">BeatsEdge</div><div className="plusev-cell-v">{activeProp.plusEV.modelProjection}</div></div>
+                                                                    <div><div className="plusev-cell-k">Market Edge</div><div className="plusev-cell-v">+{activeProp.plusEV.marketDifference}</div></div>
+                                                                    <div><div className="plusev-cell-k">Model Edge</div><div className="plusev-cell-v">+{activeProp.plusEV.modelDifference}</div></div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                        {activeProp.altLineValue && activeProp.altLineValue.eligible && (
+                                                            <div className="altvalue-banner">
+                                                                🔁 <em>ALT-LINE VALUE</em> — this {activeProp.ppKind} line clears both the real
+                                                                sportsbook market and BeatsEdge's model by more than its intentional {activeProp.ppKind}
+                                                                offset alone would explain. Not the same as +EV — some gap here is expected by design;
+                                                                this only fires when it's noticeably larger than that.
+                                                                <div className="plusev-grid">
+                                                                    <div><div className="plusev-cell-k">PrizePicks</div><div className="plusev-cell-v">{activeProp.altLineValue.prizePicksLine}</div></div>
+                                                                    <div><div className="plusev-cell-k">Market ({activeProp.altLineValue.sportsbookCount}bk)</div><div className="plusev-cell-v">{activeProp.altLineValue.marketMedianLine}</div></div>
+                                                                    <div><div className="plusev-cell-k">BeatsEdge</div><div className="plusev-cell-v">{activeProp.altLineValue.modelProjection}</div></div>
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                         {(() => {
                                                             // Every book's line for THIS exact stat, side by side — all
                                                             // of it already sitting in memory (player._allLines is
