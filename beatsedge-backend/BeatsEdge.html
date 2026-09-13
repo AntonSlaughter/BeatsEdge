@@ -1145,6 +1145,16 @@
             border-bottom-color: var(--accent-red);
         }
 
+        /* Subtle data-sufficiency note — only rendered when a rolling window
+           (L5/L10/L15/L20) has fewer real games than requested. Never shown
+           for a complete window. */
+        .stats-insufficient {
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            font-weight: 600;
+            margin: -0.6rem 0 0.75rem;
+        }
+
         /* Stats Table */
         .stats-table {
             margin-top: 1rem;
@@ -9689,25 +9699,25 @@
             // means PropLine has no line for it (fantasy scores, pitcher walks)
             // so it's shown as a computed projection off the real game log.
             const MLB_PROP_DEFS = {
-                hits:             { type: 'Hits',                  market: 'batter_hits',            get: s => s.hits || 0 },
-                totalBases:       { type: 'Total Bases',           market: 'batter_total_bases',     get: s => s.totalBases || 0 },
-                homeRuns:         { type: 'Home Runs',             market: 'batter_home_runs',       get: s => s.homeRuns || 0 },
-                rbis:             { type: 'RBIs',                  market: 'batter_rbis',            get: s => s.rbi || 0 },
-                runs:             { type: 'Runs',                  market: 'batter_runs',            get: s => s.runs || 0 },
-                doubles:          { type: 'Doubles',               market: 'batter_doubles',         get: s => s.doubles || 0 },
-                triples:          { type: 'Triples',               market: 'batter_triples',         get: s => s.triples || 0 },
-                singles:          { type: 'Singles',               market: 'batter_singles',         get: s => Math.max(0, (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0)) },
-                batterWalks:      { type: 'Walks',                 market: 'batter_walks',           get: s => s.baseOnBalls || 0 },
-                batterStrikeouts: { type: 'Hitter Strikeouts',     market: 'batter_strikeouts',      get: s => s.strikeOuts || 0 },
-                stolenBases:      { type: 'Stolen Bases',          market: 'batter_stolen_bases',    get: s => s.stolenBases || 0 },
-                hitsRunsRbis:     { type: 'Hits+Runs+RBIs',        market: 'batter_hits_runs_rbis',  get: s => (s.hits || 0) + (s.runs || 0) + (s.rbi || 0) },
-                fantasy:          { type: 'Hitter Fantasy Score',  market: null,                     get: s => mlbFantasyHit(s) },
-                strikeouts:       { type: 'Pitcher Strikeouts',    market: 'pitcher_strikeouts',     get: s => s.strikeOuts || 0, pitcher: true },
-                earnedRuns:       { type: 'Earned Runs Allowed',   market: 'pitcher_earned_runs',    get: s => s.earnedRuns || 0, pitcher: true },
-                hitsAllowed:      { type: 'Hits Allowed',          market: 'pitcher_hits_allowed',   get: s => s.hits || 0, pitcher: true },
-                pitcherOuts:      { type: 'Pitching Outs',         market: 'pitcher_outs',           get: s => s.outs != null ? s.outs : Math.round((parseFloat(s.inningsPitched) || 0) * 3), pitcher: true },
-                pitcherWalks:     { type: 'Walks Allowed',         market: null,                     get: s => s.baseOnBalls || 0, pitcher: true },
-                pitcherFantasy:   { type: 'Pitcher Fantasy Score', market: null,                     get: s => mlbFantasyPitch(s), pitcher: true }
+                hits:             { type: 'Hits',                  market: 'batter_hits',            get: s => s.hits || 0, has: s => s.hits != null },
+                totalBases:       { type: 'Total Bases',           market: 'batter_total_bases',     get: s => s.totalBases || 0, has: s => s.totalBases != null },
+                homeRuns:         { type: 'Home Runs',             market: 'batter_home_runs',       get: s => s.homeRuns || 0, has: s => s.homeRuns != null },
+                rbis:             { type: 'RBIs',                  market: 'batter_rbis',            get: s => s.rbi || 0, has: s => s.rbi != null },
+                runs:             { type: 'Runs',                  market: 'batter_runs',            get: s => s.runs || 0, has: s => s.runs != null },
+                doubles:          { type: 'Doubles',               market: 'batter_doubles',         get: s => s.doubles || 0, has: s => s.doubles != null },
+                triples:          { type: 'Triples',               market: 'batter_triples',         get: s => s.triples || 0, has: s => s.triples != null },
+                singles:          { type: 'Singles',               market: 'batter_singles',         get: s => Math.max(0, (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0)), has: s => s.hits != null },
+                batterWalks:      { type: 'Walks',                 market: 'batter_walks',           get: s => s.baseOnBalls || 0, has: s => s.baseOnBalls != null },
+                batterStrikeouts: { type: 'Hitter Strikeouts',     market: 'batter_strikeouts',      get: s => s.strikeOuts || 0, has: s => s.strikeOuts != null },
+                stolenBases:      { type: 'Stolen Bases',          market: 'batter_stolen_bases',    get: s => s.stolenBases || 0, has: s => s.stolenBases != null },
+                hitsRunsRbis:     { type: 'Hits+Runs+RBIs',        market: 'batter_hits_runs_rbis',  get: s => (s.hits || 0) + (s.runs || 0) + (s.rbi || 0), has: s => s.hits != null || s.runs != null || s.rbi != null },
+                fantasy:          { type: 'Hitter Fantasy Score',  market: null,                     get: s => mlbFantasyHit(s), has: s => s.hits != null || s.runs != null || s.rbi != null },
+                strikeouts:       { type: 'Pitcher Strikeouts',    market: 'pitcher_strikeouts',     get: s => s.strikeOuts || 0, has: s => s.strikeOuts != null, pitcher: true },
+                earnedRuns:       { type: 'Earned Runs Allowed',   market: 'pitcher_earned_runs',    get: s => s.earnedRuns || 0, has: s => s.earnedRuns != null, pitcher: true },
+                hitsAllowed:      { type: 'Hits Allowed',          market: 'pitcher_hits_allowed',   get: s => s.hits || 0, has: s => s.hits != null, pitcher: true },
+                pitcherOuts:      { type: 'Pitching Outs',         market: 'pitcher_outs',           get: s => s.outs != null ? s.outs : Math.round((parseFloat(s.inningsPitched) || 0) * 3), has: s => s.outs != null || s.inningsPitched != null, pitcher: true },
+                pitcherWalks:     { type: 'Walks Allowed',         market: null,                     get: s => s.baseOnBalls || 0, has: s => s.baseOnBalls != null, pitcher: true },
+                pitcherFantasy:   { type: 'Pitcher Fantasy Score', market: null,                     get: s => mlbFantasyPitch(s), has: s => s.outs != null || s.inningsPitched != null, pitcher: true }
             };
             const MLB_MARKET_TO_KEY = Object.fromEntries(Object.entries(MLB_PROP_DEFS).filter(([, v]) => v.market).map(([k, v]) => [v.market, k]));
             // MLB_STAT_FAMILY / MLB_FAMILY_ORDER / MLB_FAMILY_LABEL are defined at
@@ -9780,24 +9790,24 @@
             // statKey -> { PrizePicks type, PropLine market, positions it applies
             // to, and how to read it from a zipped ESPN gamelog row }.
             const NFL_PROP_DEFS = {
-                passYds:         { type: 'Pass Yards',        market: 'player_pass_yds',           pos: 'QB',       get: r => r.passingYards || 0 },
-                passTds:         { type: 'Pass TDs',          market: 'player_pass_tds',           pos: 'QB',       get: r => r.passingTouchdowns || 0 },
-                passAttempts:    { type: 'Pass Attempts',     market: 'player_pass_attempts',      pos: 'QB',       get: r => r.passingAttempts || 0 },
-                passCompletions: { type: 'Pass Completions',  market: 'player_pass_completions',   pos: 'QB',       get: r => r.completions || 0 },
-                interceptions:   { type: 'Interceptions',     market: 'player_pass_interceptions', pos: 'QB',       get: r => r.interceptions || 0 },
-                passRushYds:     { type: 'Pass+Rush Yards',   market: 'player_pass_rush_yds',      pos: 'QB',       get: r => (r.passingYards || 0) + (r.rushingYards || 0) },
-                rushYds:         { type: 'Rush Yards',        market: 'player_rush_yds',           pos: 'RB,QB,WR', get: r => r.rushingYards || 0 },
-                rushAttempts:    { type: 'Rush Attempts',     market: 'player_rush_attempts',      pos: 'RB,QB',    get: r => r.rushingAttempts || 0 },
-                rushTds:         { type: 'Rush TDs',          market: 'player_rush_tds',           pos: 'RB,QB,WR', get: r => r.rushingTouchdowns || 0 },
-                longRush:        { type: 'Longest Rush',      market: 'player_rush_longest',       pos: 'RB,QB',    get: r => r.longRushing || 0 },
-                recYds:          { type: 'Receiving Yards',   market: 'player_reception_yds',      pos: 'WR,TE,RB', get: r => r.receivingYards || 0 },
-                receptions:      { type: 'Receptions',        market: 'player_receptions',         pos: 'WR,TE,RB', get: r => r.receptions || 0 },
-                recTds:          { type: 'Receiving TDs',     market: 'player_reception_tds',      pos: 'WR,TE,RB', get: r => r.receivingTouchdowns || 0 },
-                targets:         { type: 'Targets',           market: 'player_reception_targets',  pos: 'WR,TE,RB', get: r => r.receivingTargets || 0 },
-                longRec:         { type: 'Longest Reception', market: 'player_reception_longest',  pos: 'WR,TE,RB', get: r => r.longReception || 0 },
-                rushRecYds:      { type: 'Rush+Rec Yards',    market: 'player_rush_reception_yds', pos: 'RB,WR,TE', get: r => (r.rushingYards || 0) + (r.receivingYards || 0) },
-                kickingPts:      { type: 'Kicking Points',    market: 'player_kicking_points',     pos: 'K',        get: r => r.totalKickingPoints != null ? r.totalKickingPoints : (r.totalPoints || 0) },
-                fgMade:          { type: 'FG Made',           market: 'player_field_goals_made',   pos: 'K',        get: r => r['fieldGoalsMade-fieldGoalAttempts'] || r.fieldGoalsMade || 0 }
+                passYds:         { type: 'Pass Yards',        market: 'player_pass_yds',           pos: 'QB',       get: r => r.passingYards || 0,        has: r => r.passingYards != null },
+                passTds:         { type: 'Pass TDs',          market: 'player_pass_tds',           pos: 'QB',       get: r => r.passingTouchdowns || 0,   has: r => r.passingTouchdowns != null },
+                passAttempts:    { type: 'Pass Attempts',     market: 'player_pass_attempts',      pos: 'QB',       get: r => r.passingAttempts || 0,     has: r => r.passingAttempts != null },
+                passCompletions: { type: 'Pass Completions',  market: 'player_pass_completions',   pos: 'QB',       get: r => r.completions || 0,         has: r => r.completions != null },
+                interceptions:   { type: 'Interceptions',     market: 'player_pass_interceptions', pos: 'QB',       get: r => r.interceptions || 0,       has: r => r.interceptions != null },
+                passRushYds:     { type: 'Pass+Rush Yards',   market: 'player_pass_rush_yds',      pos: 'QB',       get: r => (r.passingYards || 0) + (r.rushingYards || 0), has: r => r.passingYards != null || r.rushingYards != null },
+                rushYds:         { type: 'Rush Yards',        market: 'player_rush_yds',           pos: 'RB,QB,WR', get: r => r.rushingYards || 0,        has: r => r.rushingYards != null },
+                rushAttempts:    { type: 'Rush Attempts',     market: 'player_rush_attempts',      pos: 'RB,QB',    get: r => r.rushingAttempts || 0,     has: r => r.rushingAttempts != null },
+                rushTds:         { type: 'Rush TDs',          market: 'player_rush_tds',           pos: 'RB,QB,WR', get: r => r.rushingTouchdowns || 0,   has: r => r.rushingTouchdowns != null },
+                longRush:        { type: 'Longest Rush',      market: 'player_rush_longest',       pos: 'RB,QB',    get: r => r.longRushing || 0,         has: r => r.longRushing != null },
+                recYds:          { type: 'Receiving Yards',   market: 'player_reception_yds',      pos: 'WR,TE,RB', get: r => r.receivingYards || 0,      has: r => r.receivingYards != null },
+                receptions:      { type: 'Receptions',        market: 'player_receptions',         pos: 'WR,TE,RB', get: r => r.receptions || 0,          has: r => r.receptions != null },
+                recTds:          { type: 'Receiving TDs',     market: 'player_reception_tds',      pos: 'WR,TE,RB', get: r => r.receivingTouchdowns || 0, has: r => r.receivingTouchdowns != null },
+                targets:         { type: 'Targets',           market: 'player_reception_targets',  pos: 'WR,TE,RB', get: r => r.receivingTargets || 0,    has: r => r.receivingTargets != null },
+                longRec:         { type: 'Longest Reception', market: 'player_reception_longest',  pos: 'WR,TE,RB', get: r => r.longReception || 0,       has: r => r.longReception != null },
+                rushRecYds:      { type: 'Rush+Rec Yards',    market: 'player_rush_reception_yds', pos: 'RB,WR,TE', get: r => (r.rushingYards || 0) + (r.receivingYards || 0), has: r => r.rushingYards != null || r.receivingYards != null },
+                kickingPts:      { type: 'Kicking Points',    market: 'player_kicking_points',     pos: 'K',        get: r => r.totalKickingPoints != null ? r.totalKickingPoints : (r.totalPoints || 0), has: r => r.totalKickingPoints != null || r.totalPoints != null },
+                fgMade:          { type: 'FG Made',           market: 'player_field_goals_made',   pos: 'K',        get: r => r['fieldGoalsMade-fieldGoalAttempts'] || r.fieldGoalsMade || 0, has: r => r['fieldGoalsMade-fieldGoalAttempts'] != null || r.fieldGoalsMade != null }
             };
             const NFL_MARKET_TO_KEY = Object.fromEntries(Object.entries(NFL_PROP_DEFS).map(([k, v]) => [v.market, k]));
             const nflPosKeys = (pos) => Object.keys(NFL_PROP_DEFS).filter(k => NFL_PROP_DEFS[k].pos.split(',').includes(pos));
@@ -9820,7 +9830,7 @@
                 const w = (g) => ({ avg, hitRate: hr, games: g });
                 return {
                     recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(1, Math.ceil(perGame * 2))], games: 0 },
-                    last5: w(0), last10: w(0), last20: w(0), season: w(0), vsOpp: { avg, hitRate: hr, games: 0 }
+                    last5: w(0), last10: w(0), last15: w(0), last20: w(0), last40: w(0), season: w(0), trueSeason: w(0), vsOpp: { avg, hitRate: hr, games: 0 }
                 };
             };
 
@@ -9868,7 +9878,7 @@
                 const w = (g) => ({ avg, hitRate: hr, games: g });
                 return {
                     recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(2, Math.ceil(perGame * 3))], games },
-                    last5: w(5), last10: w(10), last20: w(20), season: w(games), vsOpp: { avg, hitRate: hr, games: 0 }
+                    last5: w(5), last10: w(10), last15: w(15), last20: w(20), last40: w(40), season: w(games), trueSeason: w(games), vsOpp: { avg, hitRate: hr, games: 0 }
                 };
             };
 
@@ -10887,17 +10897,22 @@
                 const isPitcher = !!player._isPitcher || player.role === 'pitcher';
                 const group = isPitcher ? 'pitching' : 'hitting';
                 const pit = player.oppPitcherId;
-                // Game log + (batters only) situational splits, batter-vs-this-
-                // pitcher career, and the opposing starter's throwing hand —
-                // all keyless, all in one round trip.
-                const [glData, splitData, bvpData, pitchData] = await Promise.all([
+                // Game log (current season + a previous-season fallback so an
+                // early-season sample isn't stuck at a handful of games — see
+                // nflGamelogMulti/cfbGamelogMulti for the same pattern) plus
+                // (batters only) situational splits, batter-vs-this-pitcher
+                // career, and the opposing starter's throwing hand — all
+                // keyless, all in one round trip.
+                const [glData, glDataPrev, splitData, bvpData, pitchData] = await Promise.all([
                     mlbFetch(`/people/${player.id}/stats?stats=gameLog&group=${group}&season=${MLB_SEASON}`).catch(() => null),
+                    mlbFetch(`/people/${player.id}/stats?stats=gameLog&group=${group}&season=${MLB_SEASON - 1}`).catch(() => null),
                     (!isPitcher) ? mlbFetch(`/people/${player.id}/stats?stats=statSplits&group=hitting&season=${MLB_SEASON}&sitCodes=vl,vr,h,a&sportId=1`).catch(() => null) : Promise.resolve(null),
                     (!isPitcher && pit) ? mlbFetch(`/people/${player.id}/stats?stats=vsPlayerTotal&group=hitting&opposingPlayerId=${pit}&sportId=1`).catch(() => null) : Promise.resolve(null),
                     (!isPitcher && pit) ? mlbFetch(`/people/${pit}?fields=people,id,pitchHand,code`).catch(() => null) : Promise.resolve(null)
                 ]);
                 const splits = (glData && glData.stats && glData.stats[0] && glData.stats[0].splits) || [];
-                if (!splits.length) {
+                const splitsPrev = (glDataPrev && glDataPrev.stats && glDataPrev.stats[0] && glDataPrev.stats[0].splits) || [];
+                if (!splits.length && !splitsPrev.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.role === player.role ? { ...p, _detailLoaded: true } : p));
                     return;
                 }
@@ -10910,19 +10925,36 @@
 
                 const abbrById = mlbCache.current.abbrById;
                 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                const games = splits.map(sp => {
+                const mapSplits = (arr, seasonYr) => arr.map(sp => {
                     const iso = sp.date || '';
                     const parts = iso.split('-'); // YYYY-MM-DD
                     const disp = parts.length === 3 ? `${MON[+parts[1] - 1] || parts[1]} ${+parts[2]}, ${parts[0]}` : iso;
                     const oppAbbr = (sp.opponent && (abbrById[sp.opponent.id] || sp.opponent.name)) || '';
                     return {
+                        ts: Date.parse(iso) || 0,
+                        gamePk: (sp.game && sp.game.gamePk) || null,
                         date: disp,                       // "Sep 6, 2026"
                         dateShort: parts.length === 3 ? `${+parts[1]}/${+parts[2]}/${parts[0].slice(2)}` : iso, // "9/6/26"
                         opponent: oppAbbr,
                         vsLabel: (sp.isHome === false ? '@ ' : 'vs ') + oppAbbr,
+                        season: seasonYr,
                         stat: sp.stat || {}
                     };
                 });
+                // Oldest → newest; a gameLog split is a stat record (only
+                // played games have one), but guard against a future/bad date
+                // anyway. Dedup by MLB gamePk (falls back to date+opponent).
+                const now = Date.now();
+                const seen = new Set();
+                const games = [...mapSplits(splitsPrev, MLB_SEASON - 1), ...mapSplits(splits, MLB_SEASON)]
+                    .filter(g => g.ts > 0 && g.ts <= now)
+                    .filter(g => {
+                        const key = g.gamePk != null ? `pk:${g.gamePk}` : `${g.date}|${g.opponent}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    })
+                    .sort((a, b) => a.ts - b.ts);
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
 
                 setPlayersData(prev => prev.map(p => {
@@ -10935,24 +10967,42 @@
                     const nextLogByKey = { ...p.gameLogByKey };
 
                     Object.keys(nextByKey).forEach(k => {
-                        const getV = MLB_PROP_DEFS[k].get;
-                        const vals = games.map(g => getV(g.stat) || 0);
-                        const line = lineFor[k] != null ? lineFor[k] : nextByKey[k].season.avg;
+                        const def = MLB_PROP_DEFS[k];
+                        const getV = def.get;
+                        const hasV = def.has || (() => true);
+                        const withVal = games.filter(g => hasV(g.stat));
+                        const vals = withVal.map(g => getV(g.stat) || 0);
+                        const line = lineFor[k] != null ? lineFor[k] : (mean(vals) != null ? mean(vals) : nextByKey[k].season.avg);
                         const hitRateOf = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
-                        const lastN = (n) => vals.slice(-n);
+                        const windowOf = (n) => {
+                            const arr = vals.slice(-n);
+                            return { avg: mean(arr), hitRate: hitRateOf(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n };
+                        };
                         const sorted = [...vals].sort((a, b) => a - b);
-                        const oppVals = games.filter(g => g.opponent === p.opponent).map(g => getV(g.stat) || 0);
+                        const oppVals = withVal.filter(g => g.opponent === p.opponent).map(g => getV(g.stat) || 0);
+                        // `season` keeps its EXISTING meaning (the model reads
+                        // season.avg/hitRate/games as an input — see
+                        // calculateEdgeScore) and is NEVER filtered to a
+                        // calendar season here, only deduped/has()-corrected
+                        // like every other window. `trueSeason` is a NEW,
+                        // additive, UI-only field — current-SEASON games ONLY
+                        // — for the analytics tab labeled "Season"; the model
+                        // never reads it.
+                        const trueSeasonVals = withVal.filter(g => g.season === MLB_SEASON).map(g => getV(g.stat) || 0);
                         nextByKey[k] = {
-                            last5: { avg: mean(lastN(5)), hitRate: hitRateOf(lastN(5)), games: Math.min(5, vals.length) },
-                            last10: { avg: mean(lastN(10)), hitRate: hitRateOf(lastN(10)), games: Math.min(10, vals.length) },
-                            last20: { avg: mean(lastN(20)), hitRate: hitRateOf(lastN(20)), games: Math.min(20, vals.length) },
+                            last5: windowOf(5),
+                            last10: windowOf(10),
+                            last15: windowOf(15),
+                            last20: windowOf(20),
+                            last40: windowOf(40),
                             season: { avg: mean(vals), hitRate: hitRateOf(vals), games: vals.length },
-                            vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length } : nextByKey[k].vsOpp,
-                            recent: { avg: mean(lastN(10)), hitRate: hitRateOf(lastN(10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                            trueSeason: { avg: mean(trueSeasonVals), hitRate: hitRateOf(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true },
+                            vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true } : nextByKey[k].vsOpp,
+                            recent: { avg: mean(vals.slice(-10)), hitRate: hitRateOf(vals.slice(-10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
                         };
                         // full recent series (up to 40) so the chart can widen
                         // to L20 / season when the window selector changes
-                        nextLogByKey[k] = games.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.stat) || 0, line }));
+                        nextLogByKey[k] = withVal.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.stat) || 0, line, season: g.season }));
                     });
 
                     return {
@@ -11009,22 +11059,42 @@
                                 dateShort: parts.length === 3 ? `${+parts[1]}/${+parts[2]}/${parts[0].slice(2)}` : (meta.week ? `Wk${meta.week}` : ''),
                                 opponent: opp,
                                 vsLabel: (away ? '@ ' : 'vs ') + opp,
+                                eventId: ev.eventId != null ? String(ev.eventId) : null,
                                 row
                             });
                         });
                     });
                 });
-                return out.sort((a, b) => a.ts - b.ts);
+                // A gamelog is a stat LOG — ESPN only ever posts an entry once a
+                // box score exists — but guard anyway: drop anything with no
+                // parseable date or a date in the future (defensive, not
+                // expected to ever fire for a real completed-games log).
+                const now = Date.now();
+                return out.filter(g => Number.isFinite(g.ts) && g.ts > 0 && g.ts <= now).sort((a, b) => a.ts - b.ts);
             };
 
+            // Multi-season concat for ONE player (oldest → newest) — the live
+            // per-card path. One NFL season is only ~17 games, so a single
+            // season (what nflFetchGamelog picks) can silently under-populate
+            // an L15/L20/"Last 40"-style window; this pulls 3 seasons the same
+            // way cfbGamelogMulti already does and never discards a season.
+            // Each row is tagged with the season year it was fetched under, so
+            // window math can tell true CURRENT-season games from prior-season
+            // games pulled in only to fill out a rolling window.
+            const nflGamelogMulti = async (id) => {
+                const rows = [];
+                const years = [NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON];
+                const gls = await Promise.all(years.map(y =>
+                    nflFetch(`${NFL_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            };
             const nflGamelogs = async (ids) => {
                 const map = {};
                 for (const grp of chunk([...new Set(ids)], 24)) {
                     await Promise.all(grp.map(async id => {
-                        try {
-                            const gl = await nflFetchGamelog(id);
-                            map[id] = gl ? nflParseGamelog(gl) : [];
-                        } catch (e) { map[id] = []; }
+                        try { map[id] = await nflGamelogMulti(id); }
+                        catch (e) { map[id] = []; }
                     }));
                 }
                 return map;
@@ -11096,30 +11166,66 @@
             };
 
             // Real windows for one player from their parsed game log.
-            const nflComputeWindows = (glRows, posKeys, lineFor, oppAbbr) => {
+            // - Dedupes by ESPN event id (falls back to date+opponent when no
+            //   id is present) before any window math runs.
+            // - `seasonYear` (when given) splits true CURRENT-SEASON games
+            //   (the `season` window) from the rolling L5/L10/L15/L20 windows,
+            //   which may cross season boundaries by design to reach N games.
+            // - Every rolling window reports requestedGames/availableGames/
+            //   complete so the UI can show "7 games available" instead of
+            //   silently treating 7 games as a full L10/L20.
+            // - Uses each stat's additive `has` check (never the shared `get`
+            //   the model reads) to exclude a game where the stat was never
+            //   recorded, instead of silently counting it as a real zero.
+            const nflComputeWindows = (glRows, posKeys, lineFor, oppAbbr, seasonYear) => {
                 const statsByKey = {}, gameLogByKey = {};
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
+                const seen = new Set();
+                const rows = glRows.filter(g => {
+                    const key = g.eventId != null ? `id:${g.eventId}` : `${g.date}|${g.opponent}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                }).sort((a, b) => (a.ts || 0) - (b.ts || 0));
                 posKeys.forEach(k => {
-                    const getV = NFL_PROP_DEFS[k].get;
-                    const vals = glRows.map(g => getV(g.row) || 0);
+                    const def = NFL_PROP_DEFS[k];
+                    const getV = def.get;
+                    const hasV = def.has || (() => true);
+                    const withVal = rows.filter(g => hasV(g.row));
+                    const vals = withVal.map(g => getV(g.row) || 0);
                     // No real data for this stat (ESPN gamelog had no column for
                     // it, or every game is 0) → leave the window unbuilt so the
                     // prop seeds off the posted line instead of charting zeros.
                     if (!vals.some(v => v > 0)) return;
                     const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
                     const rate = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
-                    const lastN = (n) => vals.slice(-n);
-                    const sorted = [...vals].sort((a, b) => a - b);
-                    const oppVals = glRows.filter(g => g.opponent === oppAbbr).map(g => getV(g.row) || 0);
-                    statsByKey[k] = {
-                        last5: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), games: Math.min(5, vals.length) },
-                        last10: { avg: mean(lastN(10)), hitRate: rate(lastN(10)), games: Math.min(10, vals.length) },
-                        last20: { avg: mean(lastN(20)), hitRate: rate(lastN(20)), games: Math.min(20, vals.length) },
-                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length },
-                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length } : { avg: mean(vals), hitRate: rate(vals), games: 0 },
-                        recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                    const windowOf = (n) => {
+                        const arr = vals.slice(-n);
+                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n };
                     };
-                    gameLogByKey[k] = glRows.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line }));
+                    const sorted = [...vals].sort((a, b) => a - b);
+                    const oppVals = withVal.filter(g => g.opponent === oppAbbr).map(g => getV(g.row) || 0);
+                    // `season` keeps its EXISTING meaning (calculateEdgeScore
+                    // reads season.avg/hitRate/games as a model input) and is
+                    // NEVER filtered to a calendar season — only deduped/
+                    // has()-corrected like every other window. `trueSeason` is
+                    // a NEW, additive, UI-only field — current-SEASON games
+                    // ONLY — for the analytics tab labeled "Season"; the model
+                    // never reads it.
+                    const trueSeasonRows = seasonYear != null ? withVal.filter(g => g.season === seasonYear) : withVal;
+                    const trueSeasonVals = trueSeasonRows.map(g => getV(g.row) || 0);
+                    statsByKey[k] = {
+                        last5: windowOf(5),
+                        last10: windowOf(10),
+                        last15: windowOf(15),
+                        last20: windowOf(20),
+                        last40: windowOf(40),
+                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length },
+                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true },
+                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true } : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true },
+                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                    };
+                    gameLogByKey[k] = withVal.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line, season: g.season }));
                 });
                 return { statsByKey, gameLogByKey };
             };
@@ -11412,7 +11518,7 @@
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent)
+                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => {
                         const w = statsByKey[k];
@@ -11459,8 +11565,7 @@
             const fetchNflPlayerDetail = async (player) => {
                 let glRows;
                 try {
-                    const gl = await nflFetchGamelog(player.id);
-                    glRows = gl ? nflParseGamelog(gl) : [];
+                    glRows = await nflGamelogMulti(player.id);
                 } catch (e) { return; }
                 if (!glRows.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nfl' ? { ...p, _detailLoaded: true } : p));
@@ -11470,7 +11575,7 @@
                     if (p.id !== player.id || p.sport !== 'nfl') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent);
+                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
@@ -11499,9 +11604,10 @@
             // ESPN returns the empty in-progress season.
             const cfbGamelogMulti = async (id) => {
                 const rows = [];
-                const gls = await Promise.all([NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON].map(y =>
+                const years = [NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON];
+                const gls = await Promise.all(years.map(y =>
                     nflFetch(`${CFB_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
-                gls.forEach(gl => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl)); });
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
                 return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
             };
             const cfbGamelogs = async (ids) => {
@@ -11645,7 +11751,7 @@
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent)
+                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                     let props = nflBuildProps(posKeys, statsByKey, lines, wantBook, perGameFor);
@@ -11686,7 +11792,7 @@
                     if (p.id !== player.id || p.sport !== 'ncaaf') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent);
+                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
@@ -11773,19 +11879,20 @@
             // "made-attempted" string ("3-7") — parseFloat keeps the makes.
             const NBA_3PM = 'threePointFieldGoalsMade-threePointFieldGoalsAttempted';
             const nbaPts = r => r.points || 0, nbaReb = r => r.totalRebounds || 0, nbaAst = r => r.assists || 0;
+            const nbaHasPts = r => r.points != null, nbaHasReb = r => r.totalRebounds != null, nbaHasAst = r => r.assists != null;
             const NBA_PROP_DEFS = {
-                points:       { type: 'Points',        market: 'player_points',                  get: nbaPts },
-                rebounds:     { type: 'Rebounds',      market: 'player_rebounds',                get: nbaReb },
-                assists:      { type: 'Assists',       market: 'player_assists',                 get: nbaAst },
-                threes:       { type: '3-PT Made',     market: 'player_threes',                  get: r => r[NBA_3PM] || 0 },
-                pra:          { type: 'Pts+Reb+Ast',   market: 'player_points_rebounds_assists', get: r => nbaPts(r) + nbaReb(r) + nbaAst(r) },
-                pr:           { type: 'Pts+Reb',       market: 'player_points_rebounds',         get: r => nbaPts(r) + nbaReb(r) },
-                pa:           { type: 'Pts+Ast',       market: 'player_points_assists',          get: r => nbaPts(r) + nbaAst(r) },
-                ra:           { type: 'Reb+Ast',       market: 'player_rebounds_assists',        get: r => nbaReb(r) + nbaAst(r) },
-                steals:       { type: 'Steals',        market: 'player_steals',                  get: r => r.steals || 0 },
-                blocks:       { type: 'Blocks',        market: 'player_blocks',                  get: r => r.blocks || 0 },
-                turnovers:    { type: 'Turnovers',     market: 'player_turnovers',               get: r => r.turnovers || 0 },
-                blocksSteals: { type: 'Blocks+Steals', market: 'player_blocks_steals',           get: r => (r.blocks || 0) + (r.steals || 0) }
+                points:       { type: 'Points',        market: 'player_points',                  get: nbaPts, has: nbaHasPts },
+                rebounds:     { type: 'Rebounds',      market: 'player_rebounds',                get: nbaReb, has: nbaHasReb },
+                assists:      { type: 'Assists',       market: 'player_assists',                 get: nbaAst, has: nbaHasAst },
+                threes:       { type: '3-PT Made',     market: 'player_threes',                  get: r => r[NBA_3PM] || 0, has: r => r[NBA_3PM] != null },
+                pra:          { type: 'Pts+Reb+Ast',   market: 'player_points_rebounds_assists', get: r => nbaPts(r) + nbaReb(r) + nbaAst(r), has: r => nbaHasPts(r) || nbaHasReb(r) || nbaHasAst(r) },
+                pr:           { type: 'Pts+Reb',       market: 'player_points_rebounds',         get: r => nbaPts(r) + nbaReb(r), has: r => nbaHasPts(r) || nbaHasReb(r) },
+                pa:           { type: 'Pts+Ast',       market: 'player_points_assists',          get: r => nbaPts(r) + nbaAst(r), has: r => nbaHasPts(r) || nbaHasAst(r) },
+                ra:           { type: 'Reb+Ast',       market: 'player_rebounds_assists',        get: r => nbaReb(r) + nbaAst(r), has: r => nbaHasReb(r) || nbaHasAst(r) },
+                steals:       { type: 'Steals',        market: 'player_steals',                  get: r => r.steals || 0, has: r => r.steals != null },
+                blocks:       { type: 'Blocks',        market: 'player_blocks',                  get: r => r.blocks || 0, has: r => r.blocks != null },
+                turnovers:    { type: 'Turnovers',     market: 'player_turnovers',               get: r => r.turnovers || 0, has: r => r.turnovers != null },
+                blocksSteals: { type: 'Blocks+Steals', market: 'player_blocks_steals',           get: r => (r.blocks || 0) + (r.steals || 0), has: r => r.blocks != null || r.steals != null }
             };
             const NBA_MARKET_TO_KEY = {
                 ...Object.fromEntries(Object.entries(NBA_PROP_DEFS).map(([k, v]) => [v.market, k])),
@@ -11805,11 +11912,24 @@
                 if (nflEventCount(prev) > 0) return prev;
                 return nflEventCount(cur) > 0 ? cur : null;
             };
+            // Multi-season concat for ONE player (oldest → newest) — the live
+            // per-card path. Both seasons nbaFetchGamelog already requests are
+            // kept here (not one discarded), same pattern as cfbGamelogMulti.
+            // Each row is tagged with its season year so window math can
+            // separate true CURRENT-season games from rolling-window fill.
+            const nbaGamelogMulti = async (id) => {
+                const rows = [];
+                const years = [NBA_YR_PREV, NBA_YR_CUR];
+                const gls = await Promise.all(years.map(y =>
+                    nflFetch(`${NBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            };
             const nbaGamelogs = async (ids) => {
                 const map = {};
                 for (const grp of chunk([...new Set(ids)], 20)) {
                     await Promise.all(grp.map(async id => {
-                        try { const gl = await nbaFetchGamelog(id); map[id] = gl ? nflParseGamelog(gl) : []; }
+                        try { map[id] = await nbaGamelogMulti(id); }
                         catch (e) { map[id] = []; }
                     }));
                 }
@@ -11932,40 +12052,74 @@
                 return Math.round(w * 10) / 10;
             };
 
-            const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr) => {
+            // `seasonYear` (when given) splits true CURRENT-SEASON games (the
+            // `season` window) from the rolling L5/L10/L15/L20 windows, which
+            // may cross season boundaries by design to reach N games. Dedupes
+            // by ESPN event id (falls back to date+opponent) before any window
+            // math runs, and reports requestedGames/availableGames/complete on
+            // every rolling window so the UI never silently treats fewer games
+            // as a full L10/L20. Uses each stat's additive `has` check (never
+            // the shared `get` the model reads) to exclude games where the
+            // stat was never recorded rather than counting them as real zeros.
+            const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr, seasonYear) => {
                 const statsByKey = {}, gameLogByKey = {};
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
-                // minutes per game, aligned to glRows order
-                const minOf = glRows.map(g => (g.row && g.row.minutes) || null);
+                const seen = new Set();
+                const rows = glRows.filter(g => {
+                    const key = g.eventId != null ? `id:${g.eventId}` : `${g.date}|${g.opponent}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                }).sort((a, b) => (a.ts || 0) - (b.ts || 0));
                 const minMean = (arr) => { const v = arr.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
                 nbaAllKeys.forEach(k => {
-                    const getV = NBA_PROP_DEFS[k].get;
-                    const vals = glRows.map(g => getV(g.row) || 0);
+                    const def = NBA_PROP_DEFS[k];
+                    const getV = def.get;
+                    const hasV = def.has || (() => true);
+                    const withVal = rows.filter(g => hasV(g.row));
+                    const vals = withVal.map(g => getV(g.row) || 0);
+                    const minOf = withVal.map(g => (g.row && g.row.minutes) || null);
                     const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
                     const rate = (arr) => arr.length ? Math.round((arr.filter(v => v > line).length / arr.length) * 100) : null;
-                    const lastN = (n) => vals.slice(-n);
                     const minN = (n) => minMean(minOf.slice(-n));
                     const sorted = [...vals].sort((a, b) => a - b);
-                    const oppIdx = glRows.map((g, i) => g.opponent === oppAbbr ? i : -1).filter(i => i >= 0);
+                    const oppIdx = withVal.map((g, i) => g.opponent === oppAbbr ? i : -1).filter(i => i >= 0);
                     const oppVals = oppIdx.map(i => vals[i]);
+                    // `season` keeps its EXISTING meaning (the model reads
+                    // season.avg/hitRate/games as an input) and is NEVER
+                    // filtered to a calendar season — only deduped/has()-
+                    // corrected like every other window. `trueSeason` is a
+                    // NEW, additive, UI-only field — current-SEASON games
+                    // ONLY — for the analytics tab labeled "Season"; the model
+                    // never reads it.
+                    const trueSeasonRows = seasonYear != null ? withVal.filter(g => g.season === seasonYear) : withVal;
+                    const trueSeasonVals = trueSeasonRows.map(g => getV(g.row) || 0);
+                    const trueSeasonMinOf = trueSeasonRows.map(g => (g.row && g.row.minutes) || null);
+                    const windowOf = (n) => {
+                        const arr = vals.slice(-n);
+                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, minAvg: minN(n) };
+                    };
                     statsByKey[k] = {
-                        last5: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), games: Math.min(5, vals.length), minAvg: minN(5) },
-                        last10: { avg: mean(lastN(10)), hitRate: rate(lastN(10)), games: Math.min(10, vals.length), minAvg: minN(10) },
-                        last20: { avg: mean(lastN(20)), hitRate: rate(lastN(20)), games: Math.min(20, vals.length), minAvg: minN(20) },
+                        last5: windowOf(5),
+                        last10: windowOf(10),
+                        last15: windowOf(15),
+                        last20: windowOf(20),
+                        last40: windowOf(40),
                         season: { avg: mean(vals), hitRate: rate(vals), games: vals.length, minAvg: minMean(minOf) },
+                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, minAvg: minMean(trueSeasonMinOf) },
                         vsOpp: oppVals.length
-                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, minAvg: minMean(oppIdx.map(i => minOf[i])) }
-                            : { avg: mean(vals), hitRate: rate(vals), games: 0, minAvg: minMean(minOf) },
-                        recent: { avg: mean(lastN(5)), hitRate: rate(lastN(5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length, minAvg: minN(5) }
+                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, minAvg: minMean(oppIdx.map(i => minOf[i])) }
+                            : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true, minAvg: minMean(minOf) },
+                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length, minAvg: minN(5) }
                     };
                     // Each row carries minutes played, day-of-week, that
                     // opponent's defensive rank, and days of rest before it.
-                    const _last40 = glRows.slice(-40);
+                    const _last40 = withVal.slice(-40);
                     gameLogByKey[k] = _last40.map((g, i) => {
-                        const prevTs = i > 0 ? _last40[i - 1].ts : (glRows.length > _last40.length ? glRows[glRows.length - _last40.length - 1].ts : null);
+                        const prevTs = i > 0 ? _last40[i - 1].ts : (withVal.length > _last40.length ? withVal[withVal.length - _last40.length - 1].ts : null);
                         return {
                             date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
-                            points: getV(g.row) || 0, line,
+                            points: getV(g.row) || 0, line, season: g.season,
                             min: (g.row && g.row.minutes) || null,
                             dow: Number.isFinite(g.ts) && g.ts > 0 ? new Date(g.ts).getDay() : null,
                             oppRank: (oppRankByAbbr && oppRankByAbbr[g.opponent]) || null,
@@ -12167,7 +12321,7 @@
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nbaComputeWindows(glRows, lineFor, slot.opponent, nbaCache.current.oppRankByAbbr)
+                        ? nbaComputeWindows(glRows, lineFor, slot.opponent, nbaCache.current.oppRankByAbbr, NBA_YR_CUR)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                     let props = nbaBuildProps(statsByKey, linesByName[nm], wantBook, perGameFor);
@@ -12252,11 +12406,25 @@
                 if (nflEventCount(prev) > 0) return prev;
                 return nflEventCount(cur) > 0 ? cur : null;
             };
+            // Multi-season concat for ONE player (oldest → newest). WNBA's
+            // season is only ~40-44 games total, so a single season (what
+            // wnbaFetchGamelog picks) can barely reach "Last 40" on its own —
+            // both seasons are kept here, tagged with their season year so
+            // window math can separate true CURRENT-season games from
+            // rolling-window fill.
+            const wnbaGamelogMulti = async (id) => {
+                const rows = [];
+                const years = [WNBA_YR_PREV, WNBA_YR_CUR];
+                const gls = await Promise.all(years.map(y =>
+                    nflFetch(`${WNBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            };
             const wnbaGamelogs = async (ids) => {
                 const map = {};
                 for (const grp of chunk([...new Set(ids)], 20)) {
                     await Promise.all(grp.map(async id => {
-                        try { const gl = await wnbaFetchGamelog(id); map[id] = gl ? nflParseGamelog(gl) : []; }
+                        try { map[id] = await wnbaGamelogMulti(id); }
                         catch (e) { map[id] = []; }
                     }));
                 }
@@ -12511,7 +12679,7 @@
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nbaComputeWindows(glRows, lineFor, slot.opponent, wnbaCache.current.oppRankByAbbr)
+                        ? nbaComputeWindows(glRows, lineFor, slot.opponent, wnbaCache.current.oppRankByAbbr, WNBA_YR_CUR)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                     let props = nbaBuildProps(statsByKey, linesByName[nm], wantBook, perGameFor);
@@ -12548,7 +12716,7 @@
 
             const fetchWnbaPlayerDetail = async (player) => {
                 let glRows;
-                try { const gl = await wnbaFetchGamelog(player.id); glRows = gl ? nflParseGamelog(gl) : []; }
+                try { glRows = await wnbaGamelogMulti(player.id); }
                 catch (e) { return; }
                 if (!glRows.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'wnba' ? { ...p, _detailLoaded: true } : p));
@@ -12558,7 +12726,7 @@
                     if (p.id !== player.id || p.sport !== 'wnba') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent, wnbaCache.current.oppRankByAbbr);
+                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent, wnbaCache.current.oppRankByAbbr, WNBA_YR_CUR);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
@@ -12849,7 +13017,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
             const fetchNbaPlayerDetail = async (player) => {
                 let glRows;
-                try { const gl = await nbaFetchGamelog(player.id); glRows = gl ? nflParseGamelog(gl) : []; }
+                try { glRows = await nbaGamelogMulti(player.id); }
                 catch (e) { return; }
                 if (!glRows.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nba' ? { ...p, _detailLoaded: true } : p));
@@ -12862,7 +13030,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     if (p.id !== player.id || p.sport !== 'nba') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent, nbaCache.current.oppRankByAbbr);
+                    const { statsByKey, gameLogByKey } = nbaComputeWindows(glRows, lineFor, p.opponent, nbaCache.current.oppRankByAbbr, NBA_YR_CUR);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
@@ -15230,6 +15398,42 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const dirUnder = !!(cardProp && cardProp.direction === 'under');
                 const hr = (x) => (x == null ? null : (dirUnder ? 100 - x : x));
 
+                // Single source of truth for the selected window: one games
+                // array drives hit rate, average, median, range, games count,
+                // the chart bars, chart labels, hit/miss status, AND the
+                // threshold line — never two separately computed datasets for
+                // the same tab. "Season" means the current/selected season
+                // ONLY (never the rolling last-40 games); the rolling windows
+                // (L5/L10/L15/L20) may cross season boundaries by design.
+                const WIN = { last5: 5, last10: 10, last15: 15, last20: 20 };
+                const fullLog = Array.isArray(cLog) ? cLog : [];
+                const oppU = (player.opponent || '').toUpperCase();
+                const seasonYearFor = { nfl: NFL_SEASON, ncaaf: NFL_SEASON, nba: NBA_YR_CUR, wnba: WNBA_YR_CUR, mlb: MLB_SEASON }[player.sport];
+                const shownGames = selectedPropTab === 'vsOpp'
+                    ? fullLog.filter(g => (g.opponent || '').toUpperCase() === oppU)
+                    : (selectedPropTab === 'trueSeason'
+                        ? fullLog.filter(g => g.season === seasonYearFor)
+                        : fullLog.slice(-(WIN[selectedPropTab] || 10)));
+                const windowLine = cardProp ? cardProp.line : (fullLog[0] && fullLog[0].line) || 0;
+                const clearedOf = (g) => dirUnder ? g.points < windowLine : g.points >= windowLine;
+                const shownVals = shownGames.map(g => g.points);
+                const shownSorted = [...shownVals].sort((a, b) => a - b);
+                const windowAvg = shownVals.length ? round1(shownVals.reduce((s, v) => s + v, 0) / shownVals.length) : null;
+                const windowMedian = shownSorted.length ? shownSorted[shownSorted.length >> 1] : null;
+                const windowRange = shownSorted.length ? [shownSorted[0], shownSorted[shownSorted.length - 1]] : null;
+                const windowHitCount = shownGames.filter(clearedOf).length;
+                const windowHitRate = shownGames.length ? Math.round((windowHitCount / shownGames.length) * 100) : null;
+                const shownMins = shownGames.map(g => g.min).filter(m => m != null);
+                const windowMinAvg = shownMins.length ? Math.round((shownMins.reduce((s, v) => s + v, 0) / shownMins.length) * 10) / 10 : null;
+                // requestedGames/availableGames/complete come from the window
+                // builder (computed over the player's FULL fetched history,
+                // not just the last-40-game chart array) — used only for the
+                // subtle "N games available" honesty message; never used to
+                // compute the numbers above.
+                const tabMeta = cStats[selectedPropTab] || {};
+                const windowLabel = { last5: 'Last 5', last10: 'Last 10', last15: 'Last 15', last20: 'Last 20', trueSeason: 'Season' }[selectedPropTab]
+                    || (selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}` : selectedPropTab);
+
                 return (
                     <div className="player-card">
                         <div className="player-header" onClick={() => openDetail(player.id, firstCatIdx)}>
@@ -16379,25 +16583,31 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     // is one number set against whatever line the window builder
                                     // picked, which is wrong for any stat with several lines.
                                     const L = cardProp ? cardProp.line : ((cStats.season && cStats.season.avg) || 0);
-                                    const glv = (cLog || []).map(g => (g && typeof g.points === 'number') ? g.points : null).filter(v => v != null);
-                                    const oppVals = (cLog || []).filter(g => g && g.opponent === player.opponent && typeof g.points === 'number').map(g => g.points);
+                                    const validGames = (cLog || []).filter(g => g && typeof g.points === 'number');
+                                    const glv = validGames.map(g => g.points);
+                                    const oppVals = validGames.filter(g => g.opponent === player.opponent).map(g => g.points);
+                                    // "Season" here means the current/selected season ONLY — never
+                                    // the rolling last-40-game log — same seasonYearFor used above.
+                                    const seasonVals = validGames.filter(g => g.season === seasonYearFor).map(g => g.points);
                                     const gr = (vals) => vals.length ? Math.round((dirUnder ? vals.filter(v => v <= L).length : vals.filter(v => v > L).length) / vals.length * 100) : null;
                                     const useGl = glv.length >= 3;
                                     const bars = (useGl ? [
                                         { label: 'L5', value: gr(glv.slice(-5)) },
                                         { label: 'L10', value: gr(glv.slice(-10)) },
+                                        { label: 'L15', value: gr(glv.slice(-15)) },
                                         { label: 'L20', value: gr(glv.slice(-20)) },
-                                        { label: 'Season', value: gr(glv) },
+                                        { label: 'Season', value: gr(seasonVals) },
                                         oppVals.length >= 3 ? { label: `Vs Opp (${oppVals.length})`, value: gr(oppVals) } : null
                                     ] : [
                                         { label: 'L5', value: hr(cStats.last5 && cStats.last5.hitRate) },
                                         { label: 'L10', value: hr(cStats.last10 && cStats.last10.hitRate) },
+                                        { label: 'L15', value: hr(cStats.last15 && cStats.last15.hitRate) },
                                         { label: 'L20', value: hr(cStats.last20 && cStats.last20.hitRate) },
-                                        { label: 'Season', value: hr(cStats.season && cStats.season.hitRate) },
+                                        { label: 'Season', value: hr(cStats.trueSeason && cStats.trueSeason.hitRate) },
                                         { label: 'Vs Opp', value: hr(cStats.vsOpp && cStats.vsOpp.hitRate) }
                                     ]).filter(b => b && b.value != null);
                                     const headline = useGl ? (oppVals.length >= 4 ? gr(oppVals) : gr(glv))
-                                        : (hr(cStats.vsOpp && cStats.vsOpp.hitRate) != null ? hr(cStats.vsOpp.hitRate) : hr(cStats.season && cStats.season.hitRate));
+                                        : (hr(cStats.vsOpp && cStats.vsOpp.hitRate) != null ? hr(cStats.vsOpp.hitRate) : hr(cStats.trueSeason && cStats.trueSeason.hitRate));
                                     return (
                                         <div className="hit-rate-section">
                                             <div className="hit-rate-header">
@@ -16428,7 +16638,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 })()}
 
                                 <div className="stats-tabs">
-                                    {[['last5', 'L5'], ['last10', 'L10'], ['last20', 'L20'], ['season', 'Season'], ['vsOpp', `vs ${player.opponent}`]].map(([tab, label]) => (
+                                    {[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent}`]].map(([tab, label]) => (
                                         <button
                                             key={tab}
                                             className={`stats-tab ${selectedPropTab === tab ? 'active' : ''}`}
@@ -16438,6 +16648,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         </button>
                                     ))}
                                 </div>
+                                {tabMeta.complete === false && (
+                                    <div className="stats-insufficient">{windowLabel} — {tabMeta.availableGames} game{tabMeta.availableGames === 1 ? '' : 's'} available</div>
+                                )}
 
                                 <div className="stats-table">
                                     <div className="section-title-label">
@@ -16446,28 +16659,28 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     <div className="stats-summary">
                                         <div className="stat-summary-item">
                                             <div className="stat-summary-label">Hit Rate</div>
-                                            <div className="stat-summary-value">{(hr(cStats[selectedPropTab] && cStats[selectedPropTab].hitRate) != null ? hr(cStats[selectedPropTab].hitRate) : hr(cStats.recent && cStats.recent.hitRate)) ?? '—'}%</div>
+                                            <div className="stat-summary-value">{windowHitRate ?? '—'}%</div>
                                         </div>
                                         <div className="stat-summary-item">
                                             <div className="stat-summary-label">Average</div>
-                                            <div className="stat-summary-value">{(cStats[selectedPropTab] && cStats[selectedPropTab].avg != null ? cStats[selectedPropTab].avg : (cStats.recent && cStats.recent.avg)) ?? '—'}</div>
+                                            <div className="stat-summary-value">{windowAvg ?? '—'}</div>
                                         </div>
                                         <div className="stat-summary-item">
                                             <div className="stat-summary-label">Median</div>
-                                            <div className="stat-summary-value">{cStats.recent ? cStats.recent.median : '—'}</div>
+                                            <div className="stat-summary-value">{windowMedian ?? '—'}</div>
                                         </div>
                                         <div className="stat-summary-item">
                                             <div className="stat-summary-label">Range</div>
-                                            <div className="stat-summary-value">{cStats.recent && cStats.recent.range ? `${cStats.recent.range[0]} - ${cStats.recent.range[1]}` : '—'}</div>
+                                            <div className="stat-summary-value">{windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—'}</div>
                                         </div>
                                         <div className="stat-summary-item">
                                             <div className="stat-summary-label">Games</div>
-                                            <div className="stat-summary-value">{(cStats[selectedPropTab] && cStats[selectedPropTab].games != null ? cStats[selectedPropTab].games : (cStats.recent && cStats.recent.games)) ?? '—'}</div>
+                                            <div className="stat-summary-value">{shownGames.length}</div>
                                         </div>
                                         {player.sport === 'nba' && (
                                             <div className="stat-summary-item">
                                                 <div className="stat-summary-label">Min / Game</div>
-                                                <div className="stat-summary-value">{(cStats[selectedPropTab] && cStats[selectedPropTab].minAvg != null ? cStats[selectedPropTab].minAvg : (cStats.recent && cStats.recent.minAvg)) ?? '—'}</div>
+                                                <div className="stat-summary-value">{windowMinAvg ?? '—'}</div>
                                             </div>
                                         )}
                                     </div>
@@ -16512,27 +16725,22 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 })()}
 
                                 {(() => {
-                                    const WIN = { last5: 5, last10: 10, last20: 20, recent: 15, season: 40 };
-                                    const full = Array.isArray(cLog) ? cLog : [];
-                                    const oppU = (player.opponent || '').toUpperCase();
-                                    let shown = selectedPropTab === 'vsOpp'
-                                        ? full.filter(g => (g.opponent || '').toUpperCase() === oppU)
-                                        : full.slice(-(WIN[selectedPropTab] || 10));
-                                    const line = cardProp ? cardProp.line : (full[0] && full[0].line) || 0;
-                                    const windowLabel = { last5: 'Last 5', last10: 'Last 10', last20: 'Last 20', recent: 'Last 15', season: 'Last 40' }[selectedPropTab]
-                                        || (selectedPropTab === 'vsOpp' ? `vs ${player.opponent}` : selectedPropTab);
-                                    const cleared = (g) => dirUnder ? g.points < line : g.points >= line;
-                                    const clearedCount = shown.filter(cleared).length;
+                                    // shownGames/windowLine/clearedOf/windowHitCount are the SAME
+                                    // values the stats-summary panel above just used — one games
+                                    // array drives both, so they can never disagree.
+                                    const chartWindowLabel = selectedPropTab === 'trueSeason' ? 'Season'
+                                        : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}`
+                                        : `Last ${shownGames.length}`;
                                     const plotH = 190, dateH = 32, barAreaH = plotH - dateH;
-                                    const maxV = Math.max(...shown.map(g => g.points), line * 1.3, 1) * 1.14;
+                                    const maxV = Math.max(...shownGames.map(g => g.points), windowLine * 1.3, 1) * 1.14;
                                     const px = (v) => (v / maxV) * barAreaH;
 
                                     return (
                                     <div className="game-log-chart">
                                         <div className="chart-top">
                                             <div className="chart-title">
-                                                {cardProp ? `${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${line}` : 'Recent games'}
-                                                <span className="chart-window"> · {windowLabel}</span>
+                                                {cardProp ? `${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${windowLine}` : 'Recent games'}
+                                                <span className="chart-window"> · {chartWindowLabel}{selectedPropTab === 'vsOpp' ? ` · Games: ${shownGames.length}` : ''}</span>
                                                 {player.sport === 'mlb' && !player._detailLoaded && <span className="chart-loading"> · loading game log…</span>}
                                             </div>
                                             <div className="chart-legend">
@@ -16541,15 +16749,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             </div>
                                         </div>
 
-                                        {shown.length === 0 ? (
+                                        {shownGames.length === 0 ? (
                                             <div className="chart-empty">
-                                                {player.sport === 'mlb' && !player._detailLoaded ? 'Loading real game log…' : `No games in this window${selectedPropTab === 'vsOpp' ? ` vs ${player.opponent}` : ''} yet.`}
+                                                {player.sport === 'mlb' && !player._detailLoaded ? 'Loading real game log…' : (selectedPropTab === 'vsOpp' ? `No previous games vs ${player.opponent}` : 'No games in this window yet.')}
                                             </div>
                                         ) : (
                                             <React.Fragment>
                                                 <div className="chart-hitline">
-                                                    <strong>{clearedCount} of {shown.length}</strong> games {dirUnder ? `stayed under ${line}` : `cleared ${line}`}
-                                                    <span className="chart-hitpct"> · {Math.round((clearedCount / shown.length) * 100)}% hit rate</span>
+                                                    <strong>{windowHitCount} of {shownGames.length}</strong> games {dirUnder ? `stayed under ${windowLine}` : `cleared ${windowLine}`}
+                                                    <span className="chart-hitpct"> · {windowHitRate}% hit rate</span>
                                                 </div>
                                                 <div className="chart-plot" style={{ height: plotH + 'px' }}>
                                                     {/* .chart-line used to be positioned directly inside
@@ -16563,15 +16771,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         .chart-bars always used); .chart-line and .chart-bars
                                                         both size to it, so the line now always spans the
                                                         full dataset, at 5/10/20/40+ games, on every sport. */}
-                                                    <div className="chart-inner" style={{ width: (shown.length * 46) + 'px' }}>
-                                                        <div className="chart-line" style={{ bottom: (dateH + px(line)) + 'px' }}>
-                                                            <span className="chart-line-label">Line {line}</span>
+                                                    <div className="chart-inner" style={{ width: (shownGames.length * 46) + 'px' }}>
+                                                        <div className="chart-line" style={{ bottom: (dateH + px(windowLine)) + 'px' }}>
+                                                            <span className="chart-line-label">Line {windowLine}</span>
                                                         </div>
                                                         <div className="chart-bars">
-                                                        {shown.map((g, i) => {
-                                                            const good = cleared(g);
+                                                        {shownGames.map((g, i) => {
+                                                            const good = clearedOf(g);
                                                             return (
-                                                                <div key={i} className="chart-bar-col" title={`${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= line ? 'over' : 'under'} ${line})${g.min != null ? ` · ${g.min} min` : ''}`}>
+                                                                <div key={i} className="chart-bar-col" title={`${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= windowLine ? 'over' : 'under'} ${windowLine})${g.min != null ? ` · ${g.min} min` : ''}`}>
                                                                     <div className="chart-bar-val">
                                                                         {g.points}
                                                                         {player.sport === 'nba' && g.min != null && <span className="chart-bar-min">{g.min}′</span>}
@@ -16587,7 +16795,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div className="chart-foot">Tap a window above (L5 · L10 · L20 · Season · vs {player.opponent}) to change the range.</div>
+                                                <div className="chart-foot">Tap a window above (L5 · L10 · L15 · L20 · Season · Vs {player.opponent}) to change the range.</div>
                                             </React.Fragment>
                                         )}
                                     </div>
