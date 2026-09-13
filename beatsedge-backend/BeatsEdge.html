@@ -8459,6 +8459,14 @@
             // slow refresh landing after the user has since switched sport/date.
             const loadingRef = React.useRef(loading);
             useEffect(() => { loadingRef.current = loading; }, [loading]);
+            // Mirrors playersData for fetchData's silent-refresh guard below —
+            // fetchData is a plain closure re-created every render, but the
+            // 90s interval captures whichever fetchData existed when ITS
+            // OWN effect last ran, which can be a stale render relative to
+            // the actual latest playersData. A ref sidesteps that (same
+            // pattern as loadingRef just above).
+            const playersDataRef = React.useRef(playersData);
+            useEffect(() => { playersDataRef.current = playersData; }, [playersData]);
             useEffect(() => {
                 if (SPORT_STATUS[selectedSport] !== 'ready') return;
                 const iv = setInterval(() => {
@@ -8712,8 +8720,31 @@
                     }
                     // Bail before publishing if the user has since switched away.
                     if (stale()) return;
-                    setPlayersData(players);
-                    setLoading(false);
+                    // ROOT CAUSE of "real props load, then get replaced by
+                    // sample": for MLB, `players` here is fetchMlbSlate's
+                    // output — buildMlbPlayer ALWAYS seeds every player's
+                    // props in seedMode (season-average sample lines), every
+                    // single call. Real ParlayAPI lines only land afterward,
+                    // in step 1c below (fetchMlbPropLines), which — since the
+                    // per-market pagination fix — takes ~15-20s. Publishing
+                    // this seed array unconditionally, including on the 90s
+                    // SILENT background refresh, wiped already-real,
+                    // already-matched props back to sample for that whole
+                    // window, every single cycle. Skip the publish on a
+                    // silent MLB refresh when real data is already on
+                    // screen — warmMlbSlateForm and fetchMlbPropLines below
+                    // both already merge into the EXISTING state via
+                    // setPlayersData(prev => prev.map(...)), so real numbers
+                    // still update in place once ready; what's currently
+                    // shown just never regresses to sample in the meantime.
+                    const hadRealMlb = playersDataRef.current.some(p => p.sport === 'mlb' && p.realPropLine);
+                    const skipSeedPublish = silent && selectedSport === 'mlb' && hadRealMlb;
+                    if (skipSeedPublish) {
+                        console.log(`[DATA FLOW] silent MLB refresh — skipping seed-mode publish, ${playersDataRef.current.filter(p => p.sport === 'mlb' && p.realPropLine).length} real players already on screen preserved`);
+                    } else {
+                        setPlayersData(players);
+                        setLoading(false);
+                    }
                     markFresh();
 
                     // 1b. For MLB, layer real recent-form windows (L5/L10) and the
@@ -10395,7 +10426,18 @@
                         }
                         nextByKey[k] = w;
                     });
-                    return { ...p, statsByKey: nextByKey, stats: nextByKey[p.props[0].statKey], statsSource: 'statsapi.mlb.com — season + L5/L10 (real)' };
+                    // Guarded the same way every other statsByKey/props[0]
+                    // merge in this file already is (e.g. fetchMlbPropLines,
+                    // fetchMlbPlayerDetail) — p.props CAN legitimately be []
+                    // here (matched real data exists for some OTHER book, but
+                    // none for the currently selected platform tab), which
+                    // this one spot didn't guard against. Only surfaced as a
+                    // crash once the "never publish seed data over real data
+                    // on a silent refresh" fix above started letting warmMlb-
+                    // SlateForm actually run against real (not freshly-reseeded)
+                    // player state — the seed array always happened to have a
+                    // non-empty props[0], which is what was masking this.
+                    return { ...p, statsByKey: nextByKey, stats: p.props.length ? nextByKey[p.props[0].statKey] : p.stats, statsSource: 'statsapi.mlb.com — season + L5/L10 (real)' };
                 }));
             };
 
