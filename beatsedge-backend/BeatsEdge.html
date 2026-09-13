@@ -1242,6 +1242,16 @@
             overflow-y: hidden;
         }
 
+        /* The real content width (matches shown.length * 46px, computed once
+           in the render function and shared by both children below) — .chart-
+           line's left:0/right:0 must resolve against THIS, not .chart-plot's
+           visible viewport, or it stops scrolling with the bars past whatever
+           was on-screen at first render. */
+        .chart-inner {
+            position: relative;
+            height: 100%;
+        }
+
         .chart-line {
             position: absolute;
             left: 0;
@@ -1602,64 +1612,32 @@
             }
         }
 
-        /* Projected Minutes Bar */
+        /* Projected Minutes — compact numeric row, same presentation for
+           every sport that has meaningful minutes data (was previously a
+           full-width progress bar for NBA only vs. plain text for WNBA). */
         .projected-minutes-container {
-            padding: 1.5rem;
+            padding: 1rem 1.5rem;
             background: var(--bg-primary);
             border-bottom: 1px solid var(--border-color);
+        }
+
+        .projected-minutes-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
         }
 
         .projected-minutes-title {
             font-size: 0.9rem;
             font-weight: 600;
             color: var(--text-secondary);
-            margin-bottom: 1rem;
         }
 
-        .minutes-bars {
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
-        }
-
-        .minutes-bar-row {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .player-name-small {
-            width: 150px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--accent-red);
-        }
-
-        .minutes-bar-track {
-            flex: 1;
-            height: 32px;
-            background: var(--bg-tertiary);
-            border-radius: 16px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .minutes-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent-red-light), var(--accent-red));
-            border-radius: 16px;
-            position: relative;
-            transition: width 0.3s;
-        }
-
-        .minutes-value {
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%);
+        .projected-minutes-value {
+            font-size: 0.95rem;
             font-weight: 700;
-            color: white;
-            font-size: 0.9rem;
+            color: var(--text-primary);
         }
 
         /* Opponent Defense by Position */
@@ -8167,13 +8145,34 @@
             const [selectedPlatform, setSelectedPlatform] = useState('prizepicks');
             const [currentView, setCurrentView] = useState('picks'); // 'picks' | 'browse'
             const [selectedSport, setSelectedSport] = useState('mlb');
-            const [selectedDate, setSelectedDate] = useState(() => {
-                // LOCAL calendar date, not UTC — otherwise a US evening rolls to
-                // tomorrow's (empty) slate. Shift to US Eastern so "today's
-                // games" matches when MLB actually plays them.
+            // LOCAL calendar date, not UTC — otherwise a US evening rolls to
+            // tomorrow's (empty) slate. Shift to US Eastern so "today's games"
+            // matches when MLB actually plays them. Pulled out of the useState
+            // initializer so the auto-advance check below can call it again
+            // later, not just once at mount.
+            const todayEasternDate = () => {
                 const now = new Date(Date.now() - 4 * 3600 * 1000); // ~US Eastern
                 return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
-            });
+            };
+            const [selectedDate, setSelectedDate] = useState(todayEasternDate);
+            // True once the user has EXPLICITLY picked a date (the <input
+            // type="date"> below) — gates the auto-advance effect so it never
+            // yanks a deliberately-chosen past/future date back to "today".
+            // Stays false for the common case: tab left open, calendar day
+            // rolls over underneath it. Without this, selectedDate was
+            // computed exactly once at mount and never re-evaluated, so a
+            // tab left open past midnight (or just open for hours) kept
+            // silently re-fetching an increasingly stale date on every 90s
+            // background refresh — real "yesterday's props still showing" bug.
+            const userPickedDateRef = React.useRef(false);
+            useEffect(() => {
+                const iv = setInterval(() => {
+                    if (userPickedDateRef.current || document.hidden) return;
+                    const t = todayEasternDate();
+                    setSelectedDate(prev => prev === t ? prev : t);
+                }, 60000);
+                return () => clearInterval(iv);
+            }, []);
             const [loading, setLoading] = useState(false);
             const [playersData, setPlayersData] = useState([]);
             const [detailModal, setDetailModal] = useState(null); // { playerId, propIdx, propId } — opens the full-breakdown popup
@@ -8634,9 +8633,15 @@
                             if (!slate.slots.length) {
                                 if (!stale()) setCfbSlateSource('sample');
                                 players = generateMockPlayerData('ncaaf');
-                            } else if (!proplineKey || !backendUrl) {
+                            } else if (!parlayApiKey || !backendUrl) {
+                                // fetchCfbPropLines is ParlayAPI-only (see its
+                                // header comment) — same stale-gate bug already
+                                // fixed for NFL/MLB this session. A ParlayAPI-
+                                // only user (the normal config) never got a real
+                                // fetch to run at all while this checked the old
+                                // PropLine key.
                                 setCfbSlateSource('sample');
-                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real CFB lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                setProplineError(!parlayApiKey ? 'Add a ParlayAPI key in Data Sources for real CFB lines.' : 'ParlayAPI needs "Your Backend" URL set too.');
                                 players = generateMockPlayerData('ncaaf');
                             } else {
                                 players = await fetchCfbPropLines(slate, stale);
@@ -8652,9 +8657,11 @@
                     } else if (selectedSport === 'nba') {
                         setMlbSlateSource('checking');
                         try {
-                            if (!proplineKey || !backendUrl) {
+                            if (!parlayApiKey || !backendUrl) {
+                                // fetchNbaPropLines is ParlayAPI-only — same
+                                // stale-gate bug already fixed for NFL/MLB/CFB.
                                 setNbaSlateSource('sample');
-                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real NBA lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                setProplineError(!parlayApiKey ? 'Add a ParlayAPI key in Data Sources for real NBA lines.' : 'ParlayAPI needs "Your Backend" URL set too.');
                                 players = generateMockPlayerData('nba');
                             } else {
                                 const slate = await fetchNbaSlate(selectedDate);
@@ -8676,9 +8683,11 @@
                     } else if (selectedSport === 'wnba') {
                         setMlbSlateSource('checking');
                         try {
-                            if (!proplineKey || !backendUrl) {
+                            if (!parlayApiKey || !backendUrl) {
+                                // fetchWnbaPropLines is ParlayAPI-only — same
+                                // stale-gate bug already fixed for NFL/MLB/CFB/NBA.
                                 setWnbaSlateSource('sample');
-                                setProplineError(!proplineKey ? 'Add a PropLine key in Data Sources for real WNBA lines.' : 'PropLine needs "Your Backend" URL set too.');
+                                setProplineError(!parlayApiKey ? 'Add a ParlayAPI key in Data Sources for real WNBA lines.' : 'ParlayAPI needs "Your Backend" URL set too.');
                                 players = generateMockPlayerData('wnba');
                             } else {
                                 const slate = await fetchWnbaSlate(selectedDate);
@@ -15261,18 +15270,22 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </div>
                         </div>
 
-                        {player.projectedMinutes && (
+                        {/* Compact numeric presentation, same as the inline
+                            "~36 min" shown elsewhere on this card — no giant
+                            progress bar. `projectedMinutes` only ever existed
+                            on the hardcoded sample NBA players (real players,
+                            NBA and WNBA alike, set `projMin` instead), which
+                            is why this looked NBA-only and inconsistent with
+                            WNBA's plain-text minutes. Reading either field
+                            keeps sample data working; presentation is now
+                            identical for both sports. Minutes aren't
+                            meaningful outside nba/wnba, so this stays gated
+                            the same way the rest of the card already gates it. */}
+                        {(player.sport === 'nba' || player.sport === 'wnba') && (player.projMin ?? player.projectedMinutes) != null && (
                             <div className="projected-minutes-container">
-                                <div className="projected-minutes-title">Projected Minutes</div>
-                                <div className="minutes-bar-row">
-                                    <div className="minutes-bar-track">
-                                        <div 
-                                            className="minutes-bar-fill" 
-                                            style={{ width: `${(player.projectedMinutes / 48) * 100}%` }}
-                                        >
-                                            <span className="minutes-value">{player.projectedMinutes}</span>
-                                        </div>
-                                    </div>
+                                <div className="projected-minutes-row">
+                                    <span className="projected-minutes-title">Projected Minutes</span>
+                                    <span className="projected-minutes-value">{player.projMin ?? player.projectedMinutes} min</span>
                                 </div>
                             </div>
                         )}
@@ -16497,10 +16510,22 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <span className="chart-hitpct"> · {Math.round((clearedCount / shown.length) * 100)}% hit rate</span>
                                                 </div>
                                                 <div className="chart-plot" style={{ height: plotH + 'px' }}>
-                                                    <div className="chart-line" style={{ bottom: (dateH + px(line)) + 'px' }}>
-                                                        <span className="chart-line-label">Line {line}</span>
-                                                    </div>
-                                                    <div className="chart-bars" style={{ minWidth: (shown.length * 46) + 'px' }}>
+                                                    {/* .chart-line used to be positioned directly inside
+                                                        .chart-plot (the overflow-x:auto SCROLL VIEWPORT),
+                                                        so its left:0/right:0 resolved against the visible
+                                                        width, not the actual scrollable content width —
+                                                        the dashed threshold line stopped at whatever was
+                                                        on-screen at render time and never extended into
+                                                        the rest of the chart while scrolling. .chart-inner
+                                                        carries the one real content width (same formula
+                                                        .chart-bars always used); .chart-line and .chart-bars
+                                                        both size to it, so the line now always spans the
+                                                        full dataset, at 5/10/20/40+ games, on every sport. */}
+                                                    <div className="chart-inner" style={{ width: (shown.length * 46) + 'px' }}>
+                                                        <div className="chart-line" style={{ bottom: (dateH + px(line)) + 'px' }}>
+                                                            <span className="chart-line-label">Line {line}</span>
+                                                        </div>
+                                                        <div className="chart-bars">
                                                         {shown.map((g, i) => {
                                                             const good = cleared(g);
                                                             return (
@@ -16517,6 +16542,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 </div>
                                                             );
                                                         })}
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div className="chart-foot">Tap a window above (L5 · L10 · L20 · Season · vs {player.opponent}) to change the range.</div>
@@ -17337,7 +17363,18 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     type="date"
                                     className="date-input"
                                     value={selectedDate}
-                                    onChange={(e) => setSelectedDate(e.target.value)}
+                                    onChange={(e) => {
+                                        // Marks this as a deliberate choice so the
+                                        // auto-advance-to-today effect leaves it
+                                        // alone — picking yesterday's completed
+                                        // slate to review must not get silently
+                                        // yanked back to today 60s later. Picking
+                                        // today's own date again re-arms auto-
+                                        // advance for tomorrow, which is the
+                                        // common "just checking today" case.
+                                        userPickedDateRef.current = e.target.value !== todayEasternDate();
+                                        setSelectedDate(e.target.value);
+                                    }}
                                 />
                                 {isPro ? (
                                     <select
