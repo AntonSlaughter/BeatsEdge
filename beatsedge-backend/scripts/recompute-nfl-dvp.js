@@ -11,12 +11,12 @@
 // nullptr" / Statement cleanup abort) on this Node/Windows build. See the
 // header comment in ingest-nflverse-stats.js for the original discovery of
 // this issue — confirmed again here, so this script stays node:sqlite-only.
-const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const { runNflMigrations } = require('../lib/nflSchema');
 const { recomputeNflDefenseByPosition } = require('../lib/nflDvpEngine');
+const { BEATSEDGE_DB_PATH } = require('../lib/dataPaths');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'beatsedge.db');
+const DB_PATH = BEATSEDGE_DB_PATH;
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 runNflMigrations(db);

@@ -21,6 +21,59 @@ router.get('/health', (req, res) => {
   res.json({ ok: true, lastIngest: lastIngest || null });
 });
 
+// GET /api/data-health — non-sensitive database/storage status: where the
+// two SQLite files actually live right now, whether they exist, their size,
+// and headline row counts. No secrets, no env var values, no raw row
+// contents — just enough to tell "production has real persistent data" from
+// "production just reset to an empty/missing database" at a glance.
+router.get('/data-health', (req, res) => {
+  try {
+    const fs = require('fs');
+    const { DATA_DIR, BEATSEDGE_DB_PATH, SNAPSHOTS_DB_PATH, usingCustomDataDir } = require('../lib/dataPaths');
+
+    const fileInfo = (p) => {
+      try { const st = fs.statSync(p); return { exists: true, sizeBytes: st.size }; }
+      catch (e) { return { exists: false, sizeBytes: null }; }
+    };
+
+    const BEATSEDGE_TABLES = [
+      'box_scores', 'nba_player_box', 'team_schedule', 'team_game_advanced', 'team_advanced_rollup',
+      'nfl_player_game_stats', 'nfl_defense_by_position', 'nfl_team_defense_game', 'nfl_defense_interceptions',
+      'mlb_batter_game_stats', 'mlb_pitcher_game_stats', 'mlb_pitcher_rollup', 'mlb_team_batting_rollup',
+      'nhl_skater_game_stats', 'nhl_goalie_game_stats', 'ingest_log'
+    ];
+    const beatsedgeTableCounts = {};
+    BEATSEDGE_TABLES.forEach(t => {
+      try { beatsedgeTableCounts[t] = db.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c; }
+      catch (e) { /* table doesn't exist in this DB — omit rather than error the whole endpoint */ }
+    });
+
+    let snapshotCounts;
+    try {
+      const snapDb = require('../lib/snapshotDb').db;
+      const c = (where) => snapDb.prepare(`SELECT COUNT(*) c FROM prop_snapshots${where ? ' WHERE ' + where : ''}`).get().c;
+      snapshotCounts = {
+        total: c(), modelA: c(`model_variant='A'`), modelB: c(`model_variant='B'`),
+        settled: c(`settlement_status='settled'`), dnp: c(`settlement_status='dnp'`),
+        unresolved: c(`settlement_status='unresolved'`), invalid: c(`settlement_status='invalid'`),
+        neverAttempted: c(`result IS NULL AND settlement_status IS NULL`)
+      };
+    } catch (e) { snapshotCounts = { error: 'snapshots.db unreadable: ' + e.message }; }
+
+    res.json({
+      databaseType: 'sqlite',
+      dataDir: DATA_DIR,
+      persistenceMode: usingCustomDataDir
+        ? 'persistent (BEATSEDGE_DATA_DIR set — expected to be a mounted disk)'
+        : 'ephemeral (default repo ./data path — resets on every deploy/restart unless a disk is mounted here)',
+      beatsedge: { path: BEATSEDGE_DB_PATH, ...fileInfo(BEATSEDGE_DB_PATH), tableCounts: beatsedgeTableCounts },
+      snapshots: { path: SNAPSHOTS_DB_PATH, ...fileInfo(SNAPSHOTS_DB_PATH), counts: snapshotCounts }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/defense/overall/:sport/:season/:team
 // Tries the LIVE stats.nba.com/wnba.com call first (real-time if it gets
 // through). If that fails — which it did with an HTTP 403 in our own

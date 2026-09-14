@@ -1,3 +1,10 @@
+// Must run before anything below (routes/api.js and every cron module) is
+// required — those transitively open the two SQLite connections at
+// require-time, so the data directory / seed-once logic has to happen
+// first. See lib/dataPaths.js and lib/ensureDataInitialized.js.
+const { ensureDataInitialized } = require('./lib/ensureDataInitialized');
+ensureDataInitialized();
+
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -30,6 +37,7 @@ app.get('/', (req, res) => {
     status: 'running',
     endpoints: [
       'GET /api/health',
+      'GET /api/data-health (non-sensitive DB path/persistence/row-count status)',
       'GET /api/defense/overall/:sport/:season/:team',
       'GET /api/defense/by-position/:sport/:team?window=season|last10|last20',
       'GET /api/defense/combined/:sport/:season/:team?window=season|last10|last20',

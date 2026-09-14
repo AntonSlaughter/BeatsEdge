@@ -8,9 +8,9 @@
 // `git checkout -- data/beatsedge.db` during development can't wipe it.
 
 const Database = require('better-sqlite3');
-const path = require('path');
+const { SNAPSHOTS_DB_PATH } = require('./dataPaths');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'snapshots.db');
+const DB_PATH = SNAPSHOTS_DB_PATH;
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 

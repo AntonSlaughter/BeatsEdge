@@ -17,8 +17,9 @@ const fs = require('fs');
 const path = require('path');
 const { parse } = require('csv-parse/sync');
 const { DatabaseSync } = require('node:sqlite');
+const { BEATSEDGE_DB_PATH } = require('../lib/dataPaths');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'beatsedge.db');
+const DB_PATH = BEATSEDGE_DB_PATH;
 const DIR = path.join(__dirname, '..', 'data', 'hoopr', 'player_box');
 const SINCE = (() => { const i = process.argv.indexOf('--since'); return i > -1 ? parseInt(process.argv[i + 1], 10) : 0; })();
 

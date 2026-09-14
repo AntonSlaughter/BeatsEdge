@@ -10,10 +10,10 @@
 // for why.
 
 const Database = require('better-sqlite3');
-const path = require('path');
 const { runNflMigrations } = require('./nflSchema');
+const { BEATSEDGE_DB_PATH } = require('./dataPaths');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'beatsedge.db');
+const DB_PATH = BEATSEDGE_DB_PATH;
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 runNflMigrations(db);

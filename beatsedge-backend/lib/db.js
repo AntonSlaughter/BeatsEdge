@@ -1,20 +1,15 @@
 // Database layer — SQLite, single file, zero setup, zero cost.
 //
-// On Render's free tier, the disk is NOT guaranteed to persist across
-// redeploys (only across requests while the instance is alive). That's
-// fine here because everything in this DB is REBUILDABLE:
-//   - box_scores: re-seeded from a CSV you download once (see scripts/seed-from-csv.js)
-//   - defense_by_position: recomputed nightly from box_scores (see cron/nightlyUpdate.js)
-// If you redeploy and lose the file, just re-run `npm run seed` and let
-// the cron job run once — you're back to full data within a day.
-// (If you want true persistence across redeploys without re-seeding,
-// attach a Render persistent disk — a few dollars/month — but it is
-// NOT required for this to work.)
+// Path resolution lives in lib/dataPaths.js: local dev defaults to this
+// repo's own ./data directory; production points BEATSEDGE_DATA_DIR at a
+// Render persistent disk mount so this file survives deploys/restarts
+// instead of resetting to whatever Git shipped. See lib/ensureDataInitialized.js
+// for the one-time, idempotent seed-on-first-boot logic.
 
 const Database = require('better-sqlite3');
-const path = require('path');
+const { BEATSEDGE_DB_PATH } = require('./dataPaths');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'beatsedge.db');
+const DB_PATH = BEATSEDGE_DB_PATH;
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 

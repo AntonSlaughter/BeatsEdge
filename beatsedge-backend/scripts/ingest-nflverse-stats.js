@@ -23,7 +23,6 @@
 // season coverage is genuinely thin right at the start of a week and fills
 // in over the following nights as this script is re-run.
 
-const path = require('path');
 const https = require('https');
 const { parse } = require('csv-parse/sync');
 // node:sqlite's DatabaseSync (Node >= 22.5), NOT better-sqlite3/lib/nflDb.js
@@ -37,7 +36,8 @@ const { parse } = require('csv-parse/sync');
 // has no better-sqlite3 dependency, so it runs unchanged against either handle.
 const { DatabaseSync } = require('node:sqlite');
 const { runNflMigrations } = require('../lib/nflSchema');
-const DB_PATH = path.join(__dirname, '..', 'data', 'beatsedge.db');
+const { BEATSEDGE_DB_PATH } = require('../lib/dataPaths');
+const DB_PATH = BEATSEDGE_DB_PATH;
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 runNflMigrations(db);

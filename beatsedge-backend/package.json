@@ -11,7 +11,8 @@
     "fetch:nba": "node scripts/fetch-hoopr-nba.js",
     "ingest:nba": "node scripts/fetch-hoopr-nba.js && node scripts/ingest-hoopr-nba.js",
     "test:dvp": "node scripts/test-dvp-engine.js",
-    "test:settlement": "node scripts/test-settlement.js"
+    "test:settlement": "node scripts/test-settlement.js",
+    "test:data-paths": "node scripts/test-data-paths.js"
   },
   "dependencies": {
     "express": "^4.19.2",
