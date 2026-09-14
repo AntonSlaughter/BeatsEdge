@@ -50,7 +50,7 @@ db.exec(`
     data_quality TEXT,               -- JSON {gameLog,oppDefense,minutes,...}
     -- settled result, filled in later by a results-join job
     actual REAL,
-    result TEXT,                      -- 'over' | 'under' | 'push' | null
+    result TEXT,                      -- 'over' | 'under' | 'push' | 'dnp' | null
     graded_at TEXT,
     captured_at INTEGER,             -- client ts
     received_at TEXT DEFAULT (datetime('now'))
@@ -61,26 +61,60 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_prop_snap_ungraded ON prop_snapshots(result, snap_date);
 `);
 
-// Lazy migrations for DBs created before a column existed.
-for (const col of ['proj_min REAL', 'pa_per_game REAL', 'ab_per_game REAL', 'batting_order INTEGER']) {
+// Lazy migrations for DBs created before a column existed. Additive only —
+// every ADD COLUMN here carries a DEFAULT (or is nullable), so every
+// existing row gets a value for free and nothing already stored changes.
+for (const col of [
+  'proj_min REAL', 'pa_per_game REAL', 'ab_per_game REAL', 'batting_order INTEGER',
+  // Model-variant: lets Model A and a future Model B coexist for the exact
+  // same prop instead of colliding on the old 6-column unique key. Every
+  // row written before this column existed is a Model A prediction, so the
+  // DEFAULT backfills all of them correctly with zero data loss.
+  "model_variant TEXT NOT NULL DEFAULT 'A'",
+  // Settlement bookkeeping, separate from the objective over/under/push
+  // `result` -- lets a failed/blocked settlement attempt be recorded
+  // (with why) instead of leaving the row silently untouched forever.
+  'settlement_status TEXT', 'settlement_reason TEXT', 'settlement_source TEXT'
+]) {
   try { db.exec(`ALTER TABLE prop_snapshots ADD COLUMN ${col}`); } catch (e) { /* already there */ }
+}
+
+// The unique key must include model_variant so Model A and Model B can both
+// have a row for the same (date, sport, player, stat, line, dir) without
+// colliding. Rebuilding an INDEX (unlike a table) never touches row data --
+// this is safe to run on every boot; DROP+CREATE is a no-op once the wider
+// index already exists (name match short-circuits nothing, so compare shape
+// via a marker query instead of trusting IF NOT EXISTS on a changed index).
+const idxCols = db.prepare(`PRAGMA index_info(idx_prop_snap_unique)`).all().map(r => r.name);
+const wantCols = ['snap_date', 'sport', 'player', 'stat', 'line', 'dir', 'model_variant'];
+if (idxCols.join(',') !== wantCols.join(',')) {
+  const before = db.prepare(`SELECT COUNT(*) c FROM prop_snapshots`).get().c;
+  db.exec('BEGIN');
+  try {
+    db.exec(`DROP INDEX IF EXISTS idx_prop_snap_unique`);
+    db.exec(`CREATE UNIQUE INDEX idx_prop_snap_unique ON prop_snapshots(${wantCols.join(', ')})`);
+    const after = db.prepare(`SELECT COUNT(*) c FROM prop_snapshots`).get().c;
+    if (after !== before) throw new Error(`row count changed during index migration: ${before} -> ${after}`);
+    db.exec('COMMIT');
+    console.log(`[snapshotDb] migrated idx_prop_snap_unique to include model_variant (${before} rows preserved)`);
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
 const upsert = db.prepare(`
   INSERT INTO prop_snapshots (
     snap_date, sport, player, team, opp, pos, stat, type, line, dir, book, line_source,
-    model_projection, proj_min, pa_per_game, ab_per_game, batting_order,
+    model_variant, model_projection, proj_min, pa_per_game, ab_per_game, batting_order,
     probability, raw_probability, edge, edge_pct, edge_signal_pct,
     grade, grade_score, confidence, factors_aligned, factors_total, prime,
     market_line, mkt_gap, hit_rates, factors, data_quality, captured_at
   ) VALUES (
     @snap_date, @sport, @player, @team, @opp, @pos, @stat, @type, @line, @dir, @book, @line_source,
-    @model_projection, @proj_min, @pa_per_game, @ab_per_game, @batting_order,
+    @model_variant, @model_projection, @proj_min, @pa_per_game, @ab_per_game, @batting_order,
     @probability, @raw_probability, @edge, @edge_pct, @edge_signal_pct,
     @grade, @grade_score, @confidence, @factors_aligned, @factors_total, @prime,
     @market_line, @mkt_gap, @hit_rates, @factors, @data_quality, @captured_at
   )
-  ON CONFLICT(snap_date, sport, player, stat, line, dir) DO UPDATE SET
+  ON CONFLICT(snap_date, sport, player, stat, line, dir, model_variant) DO UPDATE SET
     team=excluded.team, opp=excluded.opp, pos=excluded.pos, type=excluded.type,
     book=excluded.book, line_source=excluded.line_source,
     model_projection=excluded.model_projection, proj_min=excluded.proj_min,
@@ -114,6 +148,7 @@ function saveSnapshots(snapDate, sport, rows) {
         team: str(r.team), opp: str(r.opp), pos: str(r.pos),
         stat: str(r.stat), type: str(r.type), line: num(r.line),
         dir: str(r.dir) || 'over', book: str(r.book), line_source: str(r.lineSource),
+        model_variant: str(r.modelVariant) || 'A',
         model_projection: num(r.modelProjection),
         proj_min: num(r.projMin), pa_per_game: num(r.paPerGame),
         ab_per_game: num(r.abPerGame), batting_order: num(r.battingOrder),

@@ -24,16 +24,46 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── MLB ────────────────────────────────────────────────────────────────
 // statsapi boxscore batting / pitching field → snapshot stat key.
-const MLB_RESOLVE = {
-  hits: b => b.hits, totalBases: b => b.totalBases, homeRuns: b => b.homeRuns,
-  rbis: b => b.rbi, runs: b => b.runs, doubles: b => b.doubles, triples: b => b.triples,
-  singles: b => Math.max(0, (b.hits || 0) - (b.doubles || 0) - (b.triples || 0) - (b.homeRuns || 0)),
-  batterWalks: b => b.baseOnBalls, batterStrikeouts: b => b.strikeOuts, stolenBases: b => b.stolenBases,
-  hitsRunsRbis: b => (b.hits || 0) + (b.runs || 0) + (b.rbi || 0),
-  strikeouts: p => p.strikeOuts, earnedRuns: p => p.earnedRuns, hitsAllowed: p => p.hits,
-  pitcherOuts: p => (p.outs != null ? p.outs : Math.round((parseFloat(p.inningsPitched) || 0) * 3)),
-  pitcherWalks: p => p.baseOnBalls
+//
+// Fantasy Score resolvers below are copied VERBATIM from mlbFantasyHit /
+// mlbFantasyPitch in BeatsEdge.html (the exact scoring the live prediction
+// used) -- not re-derived, so settlement never grades a prop against a
+// different formula than the one that produced its projection/probability.
+// PrizePicks Hitter Fantasy Score: 3/5/8/10 per single/double/triple/HR,
+// +2 RBI/run/BB/HBP, +5 SB.
+const mlbFantasyHit = (s) => {
+  const h = s.hits || 0, d = s.doubles || 0, t = s.triples || 0, hr = s.homeRuns || 0;
+  const singles = Math.max(0, h - d - t - hr);
+  return Math.round((3 * singles + 5 * d + 8 * t + 10 * hr + 2 * (s.rbi || 0) + 2 * (s.runs || 0) + 2 * (s.baseOnBalls || 0) + 2 * (s.hitByPitch || 0) + 5 * (s.stolenBases || 0)) * 10) / 10;
 };
+// PrizePicks Pitcher Fantasy Score: out +1, K +3, ER -3, Win +6, QS +4.
+const mlbFantasyPitch = (s) => {
+  const ipStr = String(s.inningsPitched != null ? s.inningsPitched : '0');
+  const [whole, frac] = ipStr.split('.');
+  const outs = s.outs != null ? s.outs : ((parseInt(whole, 10) || 0) * 3 + (parseInt(frac, 10) || 0));
+  const er = s.earnedRuns || 0;
+  const qs = s.qualityStarts != null ? s.qualityStarts : ((outs >= 18 && er <= 3) ? 1 : 0);
+  return Math.round((outs + 3 * (s.strikeOuts || 0) - 3 * er + 6 * (s.wins || 0) + 4 * qs) * 10) / 10;
+};
+// MLB's boxscore API omits a field entirely for a low-activity player
+// (e.g. a pinch runner with 0 plate appearances) rather than sending an
+// explicit 0 -- every getter needs `|| 0`, matching MLB_PROP_DEFS in
+// BeatsEdge.html (which already does this on every stat). Without it,
+// `b.hits` on such a player is `undefined`, not 0, and settlement wrongly
+// treats a real, resolvable 0-stat game as "value extraction failed".
+const MLB_RESOLVE = {
+  hits: b => b.hits || 0, totalBases: b => b.totalBases || 0, homeRuns: b => b.homeRuns || 0,
+  rbis: b => b.rbi || 0, runs: b => b.runs || 0, doubles: b => b.doubles || 0, triples: b => b.triples || 0,
+  singles: b => Math.max(0, (b.hits || 0) - (b.doubles || 0) - (b.triples || 0) - (b.homeRuns || 0)),
+  batterWalks: b => b.baseOnBalls || 0, batterStrikeouts: b => b.strikeOuts || 0, stolenBases: b => b.stolenBases || 0,
+  hitsRunsRbis: b => (b.hits || 0) + (b.runs || 0) + (b.rbi || 0),
+  fantasy: b => mlbFantasyHit(b),
+  strikeouts: p => p.strikeOuts || 0, earnedRuns: p => p.earnedRuns || 0, hitsAllowed: p => p.hits || 0,
+  pitcherOuts: p => (p.outs != null ? p.outs : Math.round((parseFloat(p.inningsPitched) || 0) * 3)),
+  pitcherWalks: p => p.baseOnBalls || 0,
+  pitcherFantasy: p => mlbFantasyPitch(p)
+};
+const MLB_PITCH_STATS = new Set(['strikeouts', 'earnedRuns', 'hitsAllowed', 'pitcherOuts', 'pitcherWalks', 'pitcherFantasy']);
 
 async function mlbActualsForDate(date) {
   // name -> { batting, pitching };  _final = # of completed games found
@@ -60,10 +90,22 @@ async function mlbActualsForDate(date) {
   return map;
 }
 
-// ── NBA / NFL via ESPN box scores ──────────────────────────────────────
+// ── NBA / NFL / CFB via ESPN box scores ────────────────────────────────
+// CFB (ncaaf) reuses NFL_RESOLVE below -- live-verified before adding this:
+// ESPN's college-football summary endpoint returns the exact same
+// boxscore.players[].statistics[] shape (same category names "passing"/
+// "rushing"/"receiving", same labels "C/ATT"/"YDS"/"TD"/"CAR"/"REC"/"LONG")
+// as NFL's, which matches BeatsEdge.html reusing NFL_PROP_DEFS verbatim for
+// CFB props in the first place. WNBA is NOT added here: its ESPN scoreboard
+// is live (confirmed -- games actively scheduled), but no completed WNBA
+// game was available in the lookback window to verify its boxscore shape
+// against NBA's before writing a resolver, so it's left unimplemented
+// rather than guessed. There are also 0 WNBA snapshot rows stored today,
+// so this has no effect on the current settlement run either way.
 const ESPN_BASE = {
   nba: 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba',
-  nfl: 'https://site.api.espn.com/apis/site/v2/sports/football/nfl'
+  nfl: 'https://site.api.espn.com/apis/site/v2/sports/football/nfl',
+  ncaaf: 'https://site.api.espn.com/apis/site/v2/sports/football/college-football'
 };
 // ESPN box-score stat labels are positional; these index maps are stable.
 const NBA_LABELS = ['MIN', 'FG', '3PT', 'FT', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', '+/-', 'PTS'];
@@ -144,7 +186,7 @@ async function espnActualsForDate(sport, date) {
             }
           }
         }
-        if (sport === 'nfl') {
+        if (sport === 'nfl' || sport === 'ncaaf') {
           // regroup: t.statistics is [{name, labels, athletes:[{athlete, stats}]}]
           const byAthlete = {};
           for (const cat of (t.statistics || [])) {
@@ -173,56 +215,89 @@ function pending(minAgeDays = 1) {
   `).all({ cutoff });
 }
 
+const SETTLEMENT_SOURCE = { mlb: 'statsapi.mlb.com boxscore', nba: 'espn boxscore', nfl: 'espn boxscore', ncaaf: 'espn boxscore' };
+const SUPPORTED_SPORTS = new Set(['mlb', 'nba', 'nfl', 'ncaaf']);
+
+// `result` stays the objective over/under/push/dnp outcome used for grading.
+// settlement_status/reason/source are bookkeeping ONLY: did we actually
+// attempt this row, and if it didn't resolve, why not -- so a later pass (or
+// a human) can tell "genuinely tried and the source has no answer" apart
+// from "never attempted yet" without re-deriving anything.
 const setResult = db.prepare(`
-  UPDATE prop_snapshots SET actual=@actual, result=@result, graded_at=datetime('now')
+  UPDATE prop_snapshots
+  SET actual=@actual, result=@result, graded_at=datetime('now'),
+      settlement_status=@status, settlement_reason=@reason, settlement_source=@source
+  WHERE id=@id
+`);
+const setUnresolved = db.prepare(`
+  UPDATE prop_snapshots
+  SET settlement_status='unresolved', settlement_reason=@reason, settlement_source=@source, graded_at=datetime('now')
   WHERE id=@id
 `);
 
 async function settleSlate(date, sport) {
   const rows = db.prepare(`SELECT id, player, stat, line, dir FROM prop_snapshots WHERE snap_date=? AND sport=? AND result IS NULL`).all(date, sport);
-  if (!rows.length) return { date, sport, settled: 0, dnp: 0, skipped: 0 };
+  if (!rows.length) return { date, sport, settled: 0, dnp: 0, unresolved: 0, skipped: 0 };
 
-  let actuals, resolvers, pick;
+  if (!SUPPORTED_SPORTS.has(sport)) {
+    // A permanent block, not a "try again later" one -- stamp it now so it's
+    // distinguishable from a slate that just hasn't had its games finish yet.
+    const tx = db.transaction(() => {
+      for (const r of rows) setUnresolved.run({ id: r.id, reason: `sport not supported for settlement: ${sport}`, source: null });
+    });
+    tx();
+    return { date, sport, settled: 0, dnp: 0, unresolved: rows.length, skipped: 0, note: 'sport not supported' };
+  }
+
+  let actuals, pick;
   if (sport === 'mlb') {
     actuals = await mlbActualsForDate(date);
-    resolvers = MLB_RESOLVE;
     pick = (entry, stat) => {
       const f = MLB_RESOLVE[stat]; if (!f) return undefined;
-      const isPitch = ['strikeouts', 'earnedRuns', 'hitsAllowed', 'pitcherOuts', 'pitcherWalks'].includes(stat);
-      const src = isPitch ? entry.pitching : entry.batting;
+      const src = MLB_PITCH_STATS.has(stat) ? entry.pitching : entry.batting;
       return src ? f(src) : undefined;
     };
-  } else if (sport === 'nba' || sport === 'nfl') {
+  } else {
     actuals = await espnActualsForDate(sport, date);
     pick = (entry, stat) => {
       if (sport === 'nba') { const f = NBA_RESOLVE[stat]; return (f && entry._nba) ? f(entry._nba) : undefined; }
       const f = NFL_RESOLVE[stat]; return (f && entry._nflGroups) ? f(nflPlayerLine(entry._nflGroups)) : undefined;
     };
-  } else {
-    return { date, sport, settled: 0, dnp: 0, skipped: rows.length };
   }
 
   // No completed games for this slate yet (still in progress, or the feed is
-  // lagging) — leave every row untouched for a later pass. NEVER mass-DNP.
+  // lagging) — leave every row FULLY untouched (no status stamp either) for
+  // a later pass to retry naturally. NEVER mass-DNP, never stamp "tried".
   if (!actuals || !actuals._final) {
-    return { date, sport, settled: 0, dnp: 0, skipped: rows.length, note: 'no finals yet' };
+    return { date, sport, settled: 0, dnp: 0, unresolved: 0, skipped: rows.length, note: 'no finals yet' };
   }
 
-  let settled = 0, dnp = 0, skipped = 0;
+  const source = SETTLEMENT_SOURCE[sport];
+  let settled = 0, dnp = 0, unresolved = 0;
   const tx = db.transaction(() => {
     for (const r of rows) {
       const entry = actuals[norm(r.player)];
-      if (!entry) { setResult.run({ id: r.id, actual: null, result: 'dnp' }); dnp++; continue; }
+      if (!entry) {
+        setResult.run({ id: r.id, actual: null, result: 'dnp', status: 'dnp', reason: 'player not found in completed-game box score', source });
+        dnp++; continue;
+      }
       let v;
       try { v = pick(entry, r.stat); } catch (e) { v = undefined; }
-      if (v == null || Number.isNaN(v)) { skipped++; continue; }   // unknown stat key — leave for a later pass
+      if (v == null || Number.isNaN(v)) {
+        // Genuinely attempted (the player WAS found) but this stat couldn't
+        // be extracted -- record why instead of leaving it silently null.
+        const unmapped = sport === 'mlb' ? !MLB_RESOLVE[r.stat] : (sport === 'nba' ? !NBA_RESOLVE[r.stat] : !NFL_RESOLVE[r.stat]);
+        const reason = unmapped ? `unmapped stat key: ${r.stat}` : `value extraction failed for stat: ${r.stat}`;
+        setUnresolved.run({ id: r.id, reason, source });
+        unresolved++; continue;
+      }
       const res = v > r.line ? 'over' : v < r.line ? 'under' : 'push';
-      setResult.run({ id: r.id, actual: v, result: res });
+      setResult.run({ id: r.id, actual: v, result: res, status: 'settled', reason: null, source });
       settled++;
     }
   });
   tx();
-  return { date, sport, settled, dnp, skipped };
+  return { date, sport, settled, dnp, unresolved, skipped: 0 };
 }
 
 async function runSettleSnapshots({ minAgeDays = 1 } = {}) {
@@ -232,12 +307,14 @@ async function runSettleSnapshots({ minAgeDays = 1 } = {}) {
     try { results.push(await settleSlate(snap_date, sport)); }
     catch (e) { results.push({ date: snap_date, sport, error: e.message }); }
   }
-  const tot = results.reduce((a, r) => ({ settled: a.settled + (r.settled || 0), dnp: a.dnp + (r.dnp || 0) }), { settled: 0, dnp: 0 });
-  console.log(`[settle] ${slates.length} slate(s) → ${tot.settled} settled, ${tot.dnp} DNP`);
+  const tot = results.reduce((a, r) => ({
+    settled: a.settled + (r.settled || 0), dnp: a.dnp + (r.dnp || 0), unresolved: a.unresolved + (r.unresolved || 0)
+  }), { settled: 0, dnp: 0, unresolved: 0 });
+  console.log(`[settle] ${slates.length} slate(s) → ${tot.settled} settled, ${tot.dnp} DNP, ${tot.unresolved} unresolved`);
   return { slates: results, ...tot };
 }
 
-module.exports = { runSettleSnapshots };
+module.exports = { runSettleSnapshots, settleSlate, pending };
 
 if (require.main === module) {
   runSettleSnapshots().then(r => { console.log(JSON.stringify(r, null, 2)); process.exit(0); })
