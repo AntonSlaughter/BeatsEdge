@@ -10,6 +10,8 @@ const cors = require('cors');
 const cron = require('node-cron');
 const path = require('path');
 const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const apiRoutes = require('./routes/api');
 const { runNightlyUpdate } = require('./cron/nightlyUpdate');
 const { runMlbNightlyUpdate } = require('./cron/mlbNightlyUpdate');
@@ -85,15 +87,18 @@ app.get('/', (req, res) => {
 
 // Nightly at 6am UTC — well after all US games have finished and box
 // scores have posted, regardless of which US timezone the games were in.
-cron.schedule('0 6 * * *', () => {
+// Sequential, not concurrent: see the startup chain below for why.
+cron.schedule('0 6 * * *', async () => {
   console.log('[cron] Running scheduled NBA nightly update...');
-  runNightlyUpdate().catch(err => console.error('[cron] NBA nightly update failed:', err));
+  await runNightlyUpdate().catch(err => console.error('[cron] NBA nightly update failed:', err));
 
   console.log('[cron] Running scheduled MLB nightly update...');
-  runMlbNightlyUpdate().catch(err => console.error('[cron] MLB nightly update failed:', err));
+  await runMlbNightlyUpdate().catch(err => console.error('[cron] MLB nightly update failed:', err));
 
   console.log('[cron] Running scheduled NHL nightly update...');
-  runNhlNightlyUpdate().catch(err => console.error('[cron] NHL nightly update failed:', err));
+  await runNhlNightlyUpdate().catch(err => console.error('[cron] NHL nightly update failed:', err));
+
+  await runNflPipeline('cron');
 });
 
 // A bit later — settle yesterday's prop snapshots against real box scores.
@@ -115,53 +120,73 @@ cron.schedule('45 8 * * *', () => {
 // comment): the write volume involved reproducibly crashes better-sqlite3's
 // native binding on this box, so they must stay out of this process's own
 // heap/handles entirely, not just avoid the module import.
-function runNflPipeline(label) {
+//
+// Awaitable and never throws (matches the previous fire-and-forget error
+// handling) so callers can chain it into a sequential run — see the
+// concurrency note on the startup chain below.
+async function runNflPipeline(label) {
   const ingest = path.join(__dirname, 'scripts', 'ingest-nflverse-stats.js');
   const recompute = path.join(__dirname, 'scripts', 'recompute-nfl-dvp.js');
   console.log(`[${label}] Running NFL ingest...`);
-  execFile('node', [ingest], (err, stdout, stderr) => {
+  try {
+    const { stdout } = await execFileAsync('node', [ingest]);
     if (stdout) console.log(`[${label}] NFL ingest output:`, stdout.trim());
-    if (err) { console.error(`[${label}] NFL ingest failed:`, stderr || err.message); return; }
-    console.log(`[${label}] Running NFL DvP recompute...`);
-    execFile('node', [recompute], (err2, stdout2, stderr2) => {
-      if (stdout2) console.log(`[${label}] NFL recompute output:`, stdout2.trim());
-      if (err2) console.error(`[${label}] NFL recompute failed:`, stderr2 || err2.message);
-    });
-  });
+  } catch (err) {
+    console.error(`[${label}] NFL ingest failed:`, err.stderr || err.message);
+    return;
+  }
+  console.log(`[${label}] Running NFL DvP recompute...`);
+  try {
+    const { stdout } = await execFileAsync('node', [recompute]);
+    if (stdout) console.log(`[${label}] NFL recompute output:`, stdout.trim());
+  } catch (err) {
+    console.error(`[${label}] NFL recompute failed:`, err.stderr || err.message);
+  }
 }
 
-cron.schedule('0 6 * * *', () => runNflPipeline('cron'));
+// Only pull the NBA history if it's missing or stale (fresh Render deploys
+// start with an empty disk). Cheap no-op once it's populated and current.
+async function refreshNbaHistoryIfStale(label) {
+  try {
+    const db = require('./lib/db');
+    const row = db.prepare(`SELECT COUNT(*) c, MAX(game_date) d FROM nba_player_box`).get();
+    const stale = !row || !row.c || !row.d || (Date.now() - Date.parse(row.d) > 3 * 864e5);
+    if (stale) {
+      console.log(`[${label}] NBA history missing/stale — refreshing...`);
+      await runNbaHistoryRefresh().catch(err => console.error(`[${label}] NBA history refresh failed:`, err));
+    }
+  } catch (e) {
+    console.error(`[${label}] NBA history check failed:`, e.message);
+  }
+}
 
 // Run once shortly after boot too, so a fresh deploy doesn't wait a full
 // day for its first data refresh attempt. Set SKIP_STARTUP_JOBS=1 in dev to
 // keep the process from churning the DB right after start.
+//
+// Sequential, not concurrent: firing the NBA/MLB/NHL updates, the NFL
+// child-process pipeline, and the NBA history refresh all within the same
+// ~15s window (previous two-setTimeout design) stacked enough simultaneous
+// memory use to exceed Render Free's real RAM and crash with a V8
+// "FATAL ERROR: Reached heap limit" during ingest-hoopr-nba.js (observed in
+// production 2026-09-14). Each job fits comfortably on its own; five at
+// once didn't. Awaiting them one at a time keeps peak memory to roughly one
+// job's footprint without changing what any job does or how much data it
+// touches.
 if (!process.env.SKIP_STARTUP_JOBS) {
-  setTimeout(() => {
+  setTimeout(async () => {
     console.log('[startup] Running initial NBA update pass...');
-    runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
+    await runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
 
     console.log('[startup] Running initial MLB update pass...');
-    runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
+    await runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
 
     console.log('[startup] Running initial NHL update pass...');
-    runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
+    await runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
 
     console.log('[startup] Running initial NFL ingest + DvP recompute...');
-    runNflPipeline('startup');
-  }, 10_000);
+    await runNflPipeline('startup');
 
-  // Slightly later + guarded: only pull the NBA history if it's missing or
-  // stale (fresh Render deploys start with an empty disk). Cheap no-op once
-  // it's populated and current.
-  setTimeout(() => {
-    try {
-      const db = require('./lib/db');
-      const row = db.prepare(`SELECT COUNT(*) c, MAX(game_date) d FROM nba_player_box`).get();
-      const stale = !row || !row.c || !row.d || (Date.now() - Date.parse(row.d) > 3 * 864e5);
-      if (stale) {
-        console.log('[startup] NBA history missing/stale — refreshing...');
-        runNbaHistoryRefresh().catch(err => console.error('[startup] NBA history refresh failed:', err));
-      }
-    } catch (e) { console.error('[startup] NBA history check failed:', e.message); }
-  }, 25_000);
+    await refreshNbaHistoryIfStale('startup');
+  }, 10_000);
 }

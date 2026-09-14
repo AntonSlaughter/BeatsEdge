@@ -21,16 +21,31 @@ const run = (args) => new Promise((resolve, reject) => {
     });
 });
 
+// Startup and the nightly 8:45am cron can both call this; a slow run
+// overlapping a second trigger would double the concurrent memory/network
+// load for no benefit (both would fetch/ingest the exact same two seasons).
+// Guard against that with a simple in-process re-entrancy flag.
+let refreshInProgress = false;
+
 async function runNbaHistoryRefresh() {
-  const now = new Date();
-  // Season END year: Oct-Dec belongs to next year's season, Jan-Sep to this year's.
-  const latest = now.getMonth() >= 9 ? now.getFullYear() + 1 : now.getFullYear();
-  const from = latest - 1;
-  console.log(`[nba-history] refreshing seasons ${from}..${latest}`);
-  await run(['scripts/fetch-hoopr-nba.js', '--from', String(from), '--to', String(latest), '--sets', 'player_box,team_box', '--format', 'csv', '--force']);
-  await run(['scripts/ingest-hoopr-nba.js', '--since', String(from)]);
-  console.log('[nba-history] done');
-  return { seasons: [from, latest] };
+  if (refreshInProgress) {
+    console.log('[nba-history] a refresh is already in progress -- skipping this overlapping call');
+    return { skipped: true };
+  }
+  refreshInProgress = true;
+  try {
+    const now = new Date();
+    // Season END year: Oct-Dec belongs to next year's season, Jan-Sep to this year's.
+    const latest = now.getMonth() >= 9 ? now.getFullYear() + 1 : now.getFullYear();
+    const from = latest - 1;
+    console.log(`[nba-history] refreshing seasons ${from}..${latest}`);
+    await run(['scripts/fetch-hoopr-nba.js', '--from', String(from), '--to', String(latest), '--sets', 'player_box,team_box', '--format', 'csv', '--force']);
+    await run(['scripts/ingest-hoopr-nba.js', '--since', String(from)]);
+    console.log('[nba-history] done');
+    return { seasons: [from, latest] };
+  } finally {
+    refreshInProgress = false;
+  }
 }
 
 module.exports = { runNbaHistoryRefresh };
