@@ -97,9 +97,18 @@ function ensureDataInitialized() {
     console.warn(`[data-init] beatsedge.db does not exist at ${BEATSEDGE_DB_PATH} and no seed source was found -- it will be created EMPTY on first use by lib/db.js. This is almost certainly not what you want in production; see the migration checklist for the manual upload step.`);
   }
 
-  // snapshots.db -- no git-shipped seed exists (gitignored), so there is
-  // nothing to auto-copy. Only validate-if-present.
-  if (fs.existsSync(SNAPSHOTS_DB_PATH)) {
+  // snapshots.db -- ONLY relevant when the local-file SQLite backend is
+  // actually what's serving snapshot storage. When TURSO_DATABASE_URL/
+  // TURSO_AUTH_TOKEN are set, lib/snapshotStore.js selects Turso instead and
+  // this local file is irrelevant -- checking it here would print a
+  // misleading "will be created EMPTY" warning about a file production
+  // isn't even using. Requiring snapshotStore here is also where a Turso
+  // misconfiguration (one of the two env vars set, not both) surfaces and
+  // throws, per that module's own fail-loud contract.
+  const snapshotStore = require('./snapshotStore');
+  if (snapshotStore.backend === 'turso') {
+    console.log(`[data-init] snapshot storage backend = turso (local ${SNAPSHOTS_DB_PATH} not used)`);
+  } else if (fs.existsSync(SNAPSHOTS_DB_PATH)) {
     const result = validateSqliteFile(SNAPSHOTS_DB_PATH, SNAPSHOTS_SAMPLE_TABLES);
     console.log(`[data-init] snapshots.db exists at ${SNAPSHOTS_DB_PATH} (${fmtBytes(fs.statSync(SNAPSHOTS_DB_PATH).size)}, ${result.tables} tables) -- using as-is. Sample counts: ${JSON.stringify(result.counts)}`);
   } else {

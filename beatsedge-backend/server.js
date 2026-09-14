@@ -60,9 +60,28 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`BeatsEdge backend listening on port ${PORT}`);
-});
+// Snapshot storage (SQLite locally, Turso in production once configured)
+// must be verified reachable BEFORE the server starts accepting traffic --
+// never silently serve requests against a snapshot backend that's actually
+// unreachable/misconfigured. A Turso connection/auth/schema failure here
+// crashes the process on purpose (see lib/snapshotStore.js's header) rather
+// than letting the app come up "healthy" with snapshot storage quietly
+// broken.
+(async () => {
+  try {
+    const snapshotStore = require('./lib/snapshotStore');
+    await snapshotStore.verifyReady();
+    console.log(`[startup] snapshot storage ready (backend=${snapshotStore.backend})`);
+  } catch (err) {
+    console.error('[startup] FATAL: snapshot storage is not reachable —', err.message);
+    console.error('[startup] Refusing to start with broken snapshot storage. Check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.');
+    process.exit(1);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`BeatsEdge backend listening on port ${PORT}`);
+  });
+})();
 
 // Nightly at 6am UTC — well after all US games have finished and box
 // scores have posted, regardless of which US timezone the games were in.

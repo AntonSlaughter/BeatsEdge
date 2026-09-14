@@ -26,10 +26,11 @@ router.get('/health', (req, res) => {
 // and headline row counts. No secrets, no env var values, no raw row
 // contents — just enough to tell "production has real persistent data" from
 // "production just reset to an empty/missing database" at a glance.
-router.get('/data-health', (req, res) => {
+router.get('/data-health', async (req, res) => {
   try {
     const fs = require('fs');
     const { DATA_DIR, BEATSEDGE_DB_PATH, SNAPSHOTS_DB_PATH, usingCustomDataDir } = require('../lib/dataPaths');
+    const snapStore = require('../lib/snapshotStore');
 
     const fileInfo = (p) => {
       try { const st = fs.statSync(p); return { exists: true, sizeBytes: st.size }; }
@@ -48,17 +49,30 @@ router.get('/data-health', (req, res) => {
       catch (e) { /* table doesn't exist in this DB — omit rather than error the whole endpoint */ }
     });
 
-    let snapshotCounts;
+    // Snapshot storage: reports which backend is ACTUALLY active (sqlite vs
+    // turso) and, on Turso, whether the connection is genuinely reachable —
+    // never reports "connected" by assumption. A Turso query failure here
+    // surfaces as an explicit error field, not a silently-empty count.
+    let snapshotStatus;
     try {
-      const snapDb = require('../lib/snapshotDb').db;
-      const c = (where) => snapDb.prepare(`SELECT COUNT(*) c FROM prop_snapshots${where ? ' WHERE ' + where : ''}`).get().c;
-      snapshotCounts = {
-        total: c(), modelA: c(`model_variant='A'`), modelB: c(`model_variant='B'`),
-        settled: c(`settlement_status='settled'`), dnp: c(`settlement_status='dnp'`),
-        unresolved: c(`settlement_status='unresolved'`), invalid: c(`settlement_status='invalid'`),
-        neverAttempted: c(`result IS NULL AND settlement_status IS NULL`)
+      const c = async (where) => (await snapStore.queryOne(`SELECT COUNT(*) c FROM prop_snapshots${where ? ' WHERE ' + where : ''}`)).c;
+      const [total, modelA, modelB, settled, dnp, unresolved, invalid, neverAttempted] = await Promise.all([
+        c(), c(`model_variant='A'`), c(`model_variant='B'`),
+        c(`settlement_status='settled'`), c(`settlement_status='dnp'`),
+        c(`settlement_status='unresolved'`), c(`settlement_status='invalid'`),
+        c(`result IS NULL AND settlement_status IS NULL`)
+      ]);
+      snapshotStatus = {
+        backend: snapStore.backend, connected: true,
+        counts: { total, modelA, modelB, settled, dnp, unresolved, invalid, neverAttempted }
       };
-    } catch (e) { snapshotCounts = { error: 'snapshots.db unreadable: ' + e.message }; }
+    } catch (e) {
+      snapshotStatus = { backend: snapStore.backend, connected: false, error: e.message };
+    }
+    if (snapStore.backend === 'sqlite') {
+      snapshotStatus.path = SNAPSHOTS_DB_PATH;
+      snapshotStatus = { ...snapshotStatus, ...fileInfo(SNAPSHOTS_DB_PATH) };
+    }
 
     res.json({
       databaseType: 'sqlite',
@@ -66,8 +80,8 @@ router.get('/data-health', (req, res) => {
       persistenceMode: usingCustomDataDir
         ? 'persistent (BEATSEDGE_DATA_DIR set — expected to be a mounted disk)'
         : 'ephemeral (default repo ./data path — resets on every deploy/restart unless a disk is mounted here)',
-      beatsedge: { path: BEATSEDGE_DB_PATH, ...fileInfo(BEATSEDGE_DB_PATH), tableCounts: beatsedgeTableCounts },
-      snapshots: { path: SNAPSHOTS_DB_PATH, ...fileInfo(SNAPSHOTS_DB_PATH), counts: snapshotCounts }
+      beatsedge: { backend: 'sqlite-local', path: BEATSEDGE_DB_PATH, ...fileInfo(BEATSEDGE_DB_PATH), tableCounts: beatsedgeTableCounts },
+      snapshots: snapshotStatus
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -427,7 +441,7 @@ router.get('/parlayapi/*', async (req, res) => {
 // results-join job fills in `actual` / `result` later.
 
 // POST /api/snapshots  { date, sport, rows: [...] }
-router.post('/snapshots', (req, res) => {
+router.post('/snapshots', async (req, res) => {
   const { date, sport, rows } = req.body || {};
   if (!date || !sport || !Array.isArray(rows)) {
     return res.status(400).json({ error: 'need { date, sport, rows: [] }' });
@@ -436,16 +450,16 @@ router.post('/snapshots', (req, res) => {
     return res.status(413).json({ error: 'too many rows in one post (max 20000)' });
   }
   try {
-    const { written } = saveSnapshots(date, sport, rows);
-    res.json({ ok: true, written, ...snapshotSummary() });
+    const { written } = await saveSnapshots(date, sport, rows);
+    res.json({ ok: true, written, ...(await snapshotSummary()) });
   } catch (err) {
     res.status(500).json({ error: 'snapshot save failed: ' + err.message });
   }
 });
 
 // GET /api/snapshots/summary — counts, for the panel
-router.get('/snapshots/summary', (req, res) => {
-  try { res.json(snapshotSummary()); }
+router.get('/snapshots/summary', async (req, res) => {
+  try { res.json(await snapshotSummary()); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -456,16 +470,16 @@ router.post('/snapshots/settle', async (req, res) => {
   _settling = true;
   try {
     const out = await runSettleSnapshots({ minAgeDays: Math.max(1, Number(req.query.minAgeDays) || 1) });
-    res.json({ ok: true, ...out, ...snapshotSummary() });
+    res.json({ ok: true, ...out, ...(await snapshotSummary()) });
   } catch (err) {
     res.status(500).json({ error: 'settle failed: ' + err.message });
   } finally { _settling = false; }
 });
 
 // GET /api/snapshots?since=YYYY-MM-DD&sport=mlb&limit=N — full export
-router.get('/snapshots', (req, res) => {
+router.get('/snapshots', async (req, res) => {
   try {
-    const out = getSnapshots({ since: req.query.since, sport: req.query.sport, limit: req.query.limit });
+    const out = await getSnapshots({ since: req.query.since, sport: req.query.sport, limit: req.query.limit });
     res.json({ count: out.length, rows: out });
   } catch (err) {
     res.status(500).json({ error: err.message });

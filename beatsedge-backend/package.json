@@ -12,14 +12,16 @@
     "ingest:nba": "node scripts/fetch-hoopr-nba.js && node scripts/ingest-hoopr-nba.js",
     "test:dvp": "node scripts/test-dvp-engine.js",
     "test:settlement": "node scripts/test-settlement.js",
-    "test:data-paths": "node scripts/test-data-paths.js"
+    "test:data-paths": "node scripts/test-data-paths.js",
+    "migrate:snapshots-to-turso": "node scripts/migrate-snapshots-to-turso.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "cors": "^2.8.5",
     "better-sqlite3": "^11.10.0",
     "node-cron": "^3.0.3",
-    "csv-parse": "^5.5.6"
+    "csv-parse": "^5.5.6",
+    "@libsql/client": "^0.18.0"
   },
   "engines": {
     "node": "22.x"

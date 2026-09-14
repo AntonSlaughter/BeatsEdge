@@ -8,7 +8,7 @@
 // stat, and write `actual` / `result` ('over'|'under'|'push'|'dnp') /
 // `graded_at`.
 
-const { db } = require('../lib/snapshotDb');
+const store = require('../lib/snapshotStore');
 
 const RE_DIACRITICS = /[̀-ͯ]/g;
 const norm = (s) => String(s || '')
@@ -212,34 +212,36 @@ async function espnActualsForDate(sport, date) {
 // would leave it silently retried forever). Flag it invalid once instead.
 // This is sport-agnostic and date-only: it doesn't guess about any sport's
 // actual season calendar, just that "the future hasn't happened yet."
-const setInvalid = db.prepare(`
+const SET_INVALID_SQL = `
   UPDATE prop_snapshots
-  SET settlement_status='invalid', settlement_reason=@reason, settlement_source=NULL, graded_at=datetime('now')
-  WHERE id=@id
-`);
-function flagInvalidFutureDates() {
+  SET settlement_status='invalid', settlement_reason=?, settlement_source=NULL, graded_at=datetime('now')
+  WHERE id=?
+`;
+async function flagInvalidFutureDates() {
   const today = new Date().toISOString().slice(0, 10);
-  const rows = db.prepare(`
+  const rows = await store.query(`
     SELECT id, sport, snap_date FROM prop_snapshots
-    WHERE result IS NULL AND settlement_status IS NULL AND snap_date > @today
-  `).all({ today });
+    WHERE result IS NULL AND settlement_status IS NULL AND snap_date > ?
+  `, [today]);
   if (!rows.length) return { flagged: 0 };
-  const tx = db.transaction(() => {
+  await store.transaction(async (exec) => {
     for (const r of rows) {
-      setInvalid.run({ id: r.id, reason: `snap_date (${r.snap_date}) is after today (${today}) -- no completed game can ever exist for it; never fabricated, never retried as pending` });
+      await exec(SET_INVALID_SQL, [
+        `snap_date (${r.snap_date}) is after today (${today}) -- no completed game can ever exist for it; never fabricated, never retried as pending`,
+        r.id
+      ]);
     }
   });
-  tx();
   return { flagged: rows.length };
 }
 
-function pending(minAgeDays = 1) {
+async function pending(minAgeDays = 1) {
   const cutoff = new Date(Date.now() - minAgeDays * 864e5).toISOString().slice(0, 10);
-  return db.prepare(`
+  return store.query(`
     SELECT DISTINCT snap_date, sport FROM prop_snapshots
-    WHERE result IS NULL AND settlement_status IS NULL AND snap_date <= @cutoff
+    WHERE result IS NULL AND settlement_status IS NULL AND snap_date <= ?
     ORDER BY snap_date DESC
-  `).all({ cutoff });
+  `, [cutoff]);
 }
 
 const SETTLEMENT_SOURCE = { mlb: 'statsapi.mlb.com boxscore', nba: 'espn boxscore', nfl: 'espn boxscore', ncaaf: 'espn boxscore' };
@@ -255,29 +257,28 @@ const UNMAPPED_KICKER_STATS = new Set(['fgMade', 'kickingPts']);
 // attempt this row, and if it didn't resolve, why not -- so a later pass (or
 // a human) can tell "genuinely tried and the source has no answer" apart
 // from "never attempted yet" without re-deriving anything.
-const setResult = db.prepare(`
+const SET_RESULT_SQL = `
   UPDATE prop_snapshots
-  SET actual=@actual, result=@result, graded_at=datetime('now'),
-      settlement_status=@status, settlement_reason=@reason, settlement_source=@source
-  WHERE id=@id
-`);
-const setUnresolved = db.prepare(`
+  SET actual=?, result=?, graded_at=datetime('now'),
+      settlement_status=?, settlement_reason=?, settlement_source=?
+  WHERE id=?
+`;
+const SET_UNRESOLVED_SQL = `
   UPDATE prop_snapshots
-  SET settlement_status='unresolved', settlement_reason=@reason, settlement_source=@source, graded_at=datetime('now')
-  WHERE id=@id
-`);
+  SET settlement_status='unresolved', settlement_reason=?, settlement_source=?, graded_at=datetime('now')
+  WHERE id=?
+`;
 
 async function settleSlate(date, sport) {
-  const rows = db.prepare(`SELECT id, player, stat, line, dir FROM prop_snapshots WHERE snap_date=? AND sport=? AND result IS NULL`).all(date, sport);
+  const rows = await store.query(`SELECT id, player, stat, line, dir FROM prop_snapshots WHERE snap_date=? AND sport=? AND result IS NULL`, [date, sport]);
   if (!rows.length) return { date, sport, settled: 0, dnp: 0, unresolved: 0, skipped: 0 };
 
   if (!SUPPORTED_SPORTS.has(sport)) {
     // A permanent block, not a "try again later" one -- stamp it now so it's
     // distinguishable from a slate that just hasn't had its games finish yet.
-    const tx = db.transaction(() => {
-      for (const r of rows) setUnresolved.run({ id: r.id, reason: `sport not supported for settlement: ${sport}`, source: null });
+    await store.transaction(async (exec) => {
+      for (const r of rows) await exec(SET_UNRESOLVED_SQL, [`sport not supported for settlement: ${sport}`, null, r.id]);
     });
-    tx();
     return { date, sport, settled: 0, dnp: 0, unresolved: rows.length, skipped: 0, note: 'sport not supported' };
   }
 
@@ -306,11 +307,11 @@ async function settleSlate(date, sport) {
 
   const source = SETTLEMENT_SOURCE[sport];
   let settled = 0, dnp = 0, unresolved = 0;
-  const tx = db.transaction(() => {
+  await store.transaction(async (exec) => {
     for (const r of rows) {
       const entry = actuals[norm(r.player)];
       if (!entry) {
-        setResult.run({ id: r.id, actual: null, result: 'dnp', status: 'dnp', reason: 'player not found in completed-game box score', source });
+        await exec(SET_RESULT_SQL, [null, 'dnp', 'dnp', 'player not found in completed-game box score', source, r.id]);
         dnp++; continue;
       }
       let v;
@@ -326,22 +327,21 @@ async function settleSlate(date, sport) {
         const reason = UNMAPPED_KICKER_STATS.has(r.stat)
           ? 'Unresolved because ESPN kicker field mapping has not been empirically verified.'
           : unmapped ? `unmapped stat key: ${r.stat}` : `value extraction failed for stat: ${r.stat}`;
-        setUnresolved.run({ id: r.id, reason, source });
+        await exec(SET_UNRESOLVED_SQL, [reason, source, r.id]);
         unresolved++; continue;
       }
       const res = v > r.line ? 'over' : v < r.line ? 'under' : 'push';
-      setResult.run({ id: r.id, actual: v, result: res, status: 'settled', reason: null, source });
+      await exec(SET_RESULT_SQL, [v, res, 'settled', null, source, r.id]);
       settled++;
     }
   });
-  tx();
   return { date, sport, settled, dnp, unresolved, skipped: 0 };
 }
 
 async function runSettleSnapshots({ minAgeDays = 1 } = {}) {
-  const { flagged } = flagInvalidFutureDates();
+  const { flagged } = await flagInvalidFutureDates();
   if (flagged) console.log(`[settle] flagged ${flagged} row(s) with an impossible future snap_date as invalid`);
-  const slates = pending(minAgeDays);
+  const slates = await pending(minAgeDays);
   const results = [];
   for (const { snap_date, sport } of slates) {
     try { results.push(await settleSlate(snap_date, sport)); }
