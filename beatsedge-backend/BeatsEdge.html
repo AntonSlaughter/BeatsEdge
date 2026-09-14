@@ -8569,8 +8569,19 @@
             // Snapshot the day's real lines to the local archive (best-effort;
             // fires once real PropLine data has merged in). ~21 days retained —
             // the seed for a future real market backtest.
+            //
+            // Gated to TODAY's real date only — the date picker deliberately
+            // allows browsing any past/future date for research, but a
+            // snapshot is a record of "what did the model predict for the
+            // actual live slate," not a research view. Without this gate, a
+            // manually-picked (or mis-typed) past/future date sets
+            // userPickedDateRef and never self-corrects, so background
+            // refreshes on that stuck date would keep archiving it forever —
+            // this is how 322 real snapshot rows ended up dated 2027-01-15
+            // (root-caused during the Phase 1B.5 snapshot-integrity pass).
             useEffect(() => {
                 if (!Array.isArray(playersData)) return;
+                if (selectedDate !== todayEasternDate()) return;
                 const hasReal = playersData.some(p => Array.isArray(p.props) && p.props.some(pr => pr.lineSource && !pr.altLine && !pr.crossBook));
                 if (hasReal) {
                     archiveLines(selectedSport, selectedDate, playersData);

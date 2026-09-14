@@ -206,17 +206,49 @@ async function espnActualsForDate(sport, date) {
 }
 
 // ── driver ─────────────────────────────────────────────────────────────
+// A snap_date in the future (relative to right now) can never correspond to
+// a completed game -- no source will ever return a result for it, so it
+// must never be treated as a normal "pending, try again later" slate (that
+// would leave it silently retried forever). Flag it invalid once instead.
+// This is sport-agnostic and date-only: it doesn't guess about any sport's
+// actual season calendar, just that "the future hasn't happened yet."
+const setInvalid = db.prepare(`
+  UPDATE prop_snapshots
+  SET settlement_status='invalid', settlement_reason=@reason, settlement_source=NULL, graded_at=datetime('now')
+  WHERE id=@id
+`);
+function flagInvalidFutureDates() {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT id, sport, snap_date FROM prop_snapshots
+    WHERE result IS NULL AND settlement_status IS NULL AND snap_date > @today
+  `).all({ today });
+  if (!rows.length) return { flagged: 0 };
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      setInvalid.run({ id: r.id, reason: `snap_date (${r.snap_date}) is after today (${today}) -- no completed game can ever exist for it; never fabricated, never retried as pending` });
+    }
+  });
+  tx();
+  return { flagged: rows.length };
+}
+
 function pending(minAgeDays = 1) {
   const cutoff = new Date(Date.now() - minAgeDays * 864e5).toISOString().slice(0, 10);
   return db.prepare(`
     SELECT DISTINCT snap_date, sport FROM prop_snapshots
-    WHERE result IS NULL AND snap_date <= @cutoff
+    WHERE result IS NULL AND settlement_status IS NULL AND snap_date <= @cutoff
     ORDER BY snap_date DESC
   `).all({ cutoff });
 }
 
 const SETTLEMENT_SOURCE = { mlb: 'statsapi.mlb.com boxscore', nba: 'espn boxscore', nfl: 'espn boxscore', ncaaf: 'espn boxscore' };
 const SUPPORTED_SPORTS = new Set(['mlb', 'nba', 'nfl', 'ncaaf']);
+// Deliberately NOT in NFL_RESOLVE. ESPN's "kicking" boxscore category shape
+// (FG "makes/attempts" format, PTS field semantics) has not been checked
+// against a real completed game, so these stay unresolved rather than
+// guessed -- do not add resolvers for these without that verification first.
+const UNMAPPED_KICKER_STATS = new Set(['fgMade', 'kickingPts']);
 
 // `result` stays the objective over/under/push/dnp outcome used for grading.
 // settlement_status/reason/source are bookkeeping ONLY: did we actually
@@ -287,7 +319,13 @@ async function settleSlate(date, sport) {
         // Genuinely attempted (the player WAS found) but this stat couldn't
         // be extracted -- record why instead of leaving it silently null.
         const unmapped = sport === 'mlb' ? !MLB_RESOLVE[r.stat] : (sport === 'nba' ? !NBA_RESOLVE[r.stat] : !NFL_RESOLVE[r.stat]);
-        const reason = unmapped ? `unmapped stat key: ${r.stat}` : `value extraction failed for stat: ${r.stat}`;
+        // NFL/CFB kicker stats (fgMade, kickingPts) hit this path -- ESPN's
+        // boxscore "kicking" category shape has never been empirically
+        // verified against a completed game, so this is deliberately NOT
+        // guessed at. See UNMAPPED_KICKER_STATS below.
+        const reason = UNMAPPED_KICKER_STATS.has(r.stat)
+          ? 'Unresolved because ESPN kicker field mapping has not been empirically verified.'
+          : unmapped ? `unmapped stat key: ${r.stat}` : `value extraction failed for stat: ${r.stat}`;
         setUnresolved.run({ id: r.id, reason, source });
         unresolved++; continue;
       }
@@ -301,6 +339,8 @@ async function settleSlate(date, sport) {
 }
 
 async function runSettleSnapshots({ minAgeDays = 1 } = {}) {
+  const { flagged } = flagInvalidFutureDates();
+  if (flagged) console.log(`[settle] flagged ${flagged} row(s) with an impossible future snap_date as invalid`);
   const slates = pending(minAgeDays);
   const results = [];
   for (const { snap_date, sport } of slates) {
@@ -311,10 +351,10 @@ async function runSettleSnapshots({ minAgeDays = 1 } = {}) {
     settled: a.settled + (r.settled || 0), dnp: a.dnp + (r.dnp || 0), unresolved: a.unresolved + (r.unresolved || 0)
   }), { settled: 0, dnp: 0, unresolved: 0 });
   console.log(`[settle] ${slates.length} slate(s) → ${tot.settled} settled, ${tot.dnp} DNP, ${tot.unresolved} unresolved`);
-  return { slates: results, ...tot };
+  return { slates: results, invalidFlagged: flagged, ...tot };
 }
 
-module.exports = { runSettleSnapshots, settleSlate, pending };
+module.exports = { runSettleSnapshots, settleSlate, pending, flagInvalidFutureDates };
 
 if (require.main === module) {
   runSettleSnapshots().then(r => { console.log(JSON.stringify(r, null, 2)); process.exit(0); })
