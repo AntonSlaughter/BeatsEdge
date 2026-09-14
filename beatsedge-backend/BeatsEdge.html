@@ -8430,6 +8430,29 @@
             const [enrichTick, setEnrichTick] = useState(0);
             const slateMatchesSport = (list, sport) =>
                 Array.isArray(list) && list.every(p => !p || !p.sport || p.sport === sport);
+            // Request coalescing: the mount/sport-change effect below and the
+            // 90s silent-refresh interval can both want to fetch the SAME
+            // sport+date at close to the same moment (e.g. the interval fires
+            // just as a slow foreground load is still finishing). Without this,
+            // both fire their own full fetchData pipeline — duplicate ESPN/
+            // ParlayAPI/MLB-Stats-API traffic for identical data. Keyed by
+            // sport+date only (not by `silent`), since a silent and non-silent
+            // call for the same key are asking for the exact same underlying
+            // data — whichever started first satisfies both.
+            const fetchDataInFlightRef = React.useRef({});
+            const fetchDataCoalesced = (mySeq, silent) => {
+                const key = `${selectedSport}|${selectedDate}`;
+                const existing = fetchDataInFlightRef.current[key];
+                if (existing) {
+                    console.log(`[data-source] request coalesced for ${key} — reusing the in-flight fetch instead of firing a duplicate`);
+                    return existing;
+                }
+                const p = fetchData(mySeq, silent).finally(() => {
+                    if (fetchDataInFlightRef.current[key] === p) delete fetchDataInFlightRef.current[key];
+                });
+                fetchDataInFlightRef.current[key] = p;
+                return p;
+            };
             useEffect(() => {
                 isSilentRefreshRef.current = false;
                 const mySeq = ++loadSeqRef.current;
@@ -8454,7 +8477,7 @@
                     fetchSlateLineups(cached.players, staleNow).catch(() => {});
                     return;
                 }
-                fetchData(mySeq).catch(error => {
+                fetchDataCoalesced(mySeq).catch(error => {
                     console.error('Error in fetchData:', error);
                     if (loadSeqRef.current === mySeq) setLoading(false);
                 });
@@ -8483,7 +8506,7 @@
                     if (document.hidden || loadingRef.current) return;
                     isSilentRefreshRef.current = true;
                     const mySeq = ++loadSeqRef.current;
-                    fetchData(mySeq, true).catch(() => { });
+                    fetchDataCoalesced(mySeq, true).catch(() => { });
                 }, 90000);
                 return () => clearInterval(iv);
             }, [selectedSport, selectedDate, balldontlieKey, backendUrl, proplineKey, parlayApiKey]);
@@ -8597,6 +8620,21 @@
                 }
             }, [playersData, selectedSport, selectedDate, backendUrl]);
 
+            // Single source of truth for "is there an eligible live line
+            // provider right now" — every dispatch branch below calls this
+            // instead of independently re-testing parlayApiKey/backendUrl, so
+            // a future edit can't accidentally drift out of sync for just one
+            // sport. This is exactly the bug class that used to exist here:
+            // some sports' dispatch gate still checked the old PropLine key
+            // while the branch it guarded actually called ParlayAPI (see the
+            // "already fixed" comments throughout fetchData below) — that
+            // required fixing the same duplicated condition in five separate
+            // places. One helper means there is only one place to get right.
+            // ParlayAPI is currently the only live line provider wired in —
+            // returns null (no eligible provider) rather than fabricating a
+            // provider name that doesn't actually have working code behind it.
+            const getEligibleLineProvider = () => (parlayApiKey && backendUrl) ? 'parlayapi' : null;
+
             const fetchData = async (mySeq, silent) => {
                 // True once the user has navigated to a different sport/date (or
                 // the effect otherwise re-ran) while this call was awaiting.
@@ -8634,7 +8672,7 @@
                             if (!slate.slots.length) {
                                 setNflSlateSource('sample');
                                 players = generateMockPlayerData('nfl');
-                            } else if (!parlayApiKey || !backendUrl) {
+                            } else if (!getEligibleLineProvider()) {
                                 // NFL sources lines from ParlayAPI only (see
                                 // fetchNflPropLines's header comment) — this
                                 // gate was still checking the old PropLine key
@@ -8662,7 +8700,7 @@
                             if (!slate.slots.length) {
                                 if (!stale()) setCfbSlateSource('sample');
                                 players = generateMockPlayerData('ncaaf');
-                            } else if (!parlayApiKey || !backendUrl) {
+                            } else if (!getEligibleLineProvider()) {
                                 // fetchCfbPropLines is ParlayAPI-only (see its
                                 // header comment) — same stale-gate bug already
                                 // fixed for NFL/MLB this session. A ParlayAPI-
@@ -8686,7 +8724,7 @@
                     } else if (selectedSport === 'nba') {
                         setMlbSlateSource('checking');
                         try {
-                            if (!parlayApiKey || !backendUrl) {
+                            if (!getEligibleLineProvider()) {
                                 // fetchNbaPropLines is ParlayAPI-only — same
                                 // stale-gate bug already fixed for NFL/MLB/CFB.
                                 setNbaSlateSource('sample');
@@ -8712,7 +8750,7 @@
                     } else if (selectedSport === 'wnba') {
                         setMlbSlateSource('checking');
                         try {
-                            if (!parlayApiKey || !backendUrl) {
+                            if (!getEligibleLineProvider()) {
                                 // fetchWnbaPropLines is ParlayAPI-only — same
                                 // stale-gate bug already fixed for NFL/MLB/CFB/NBA.
                                 setWnbaSlateSource('sample');
@@ -8760,8 +8798,27 @@
                     // shown just never regresses to sample in the meantime.
                     const hadRealMlb = playersDataRef.current.some(p => p.sport === 'mlb' && p.realPropLine);
                     const skipSeedPublish = silent && selectedSport === 'mlb' && hadRealMlb;
+
+                    // Generalized to the other four live sports: the same rule
+                    // as skipSeedPublish above, but for their own failure mode.
+                    // Unlike MLB (which always seeds real players with
+                    // placeholder lines, then upgrades in place), NFL/CFB/
+                    // NBA/WNBA have only one fallback path — a full
+                    // generateMockPlayerData(sport) array (every player
+                    // tagged _mock:true) when that refresh's live fetch fails.
+                    // A silent background refresh must never let that replace
+                    // already-real props on screen — "live -> failure ->
+                    // sample" is forbidden regardless of which sport hits it.
+                    const hadRealForCurrentSport = selectedSport !== 'mlb' && playersDataRef.current.some(
+                        p => p.sport === selectedSport && Array.isArray(p.props) && p.props.some(pr => pr.lineSource)
+                    );
+                    const publishingMockFallback = Array.isArray(players) && players.length > 0 && players.every(p => p && p._mock);
+                    const skipMockPublish = silent && hadRealForCurrentSport && publishingMockFallback;
+
                     if (skipSeedPublish) {
                         console.log(`[DATA FLOW] silent MLB refresh — skipping seed-mode publish, ${playersDataRef.current.filter(p => p.sport === 'mlb' && p.realPropLine).length} real players already on screen preserved`);
+                    } else if (skipMockPublish) {
+                        console.log(`[DATA FLOW] silent ${selectedSport} refresh — skipping mock-fallback publish, real props already on screen preserved`);
                     } else {
                         setPlayersData(players);
                         setLoading(false);
@@ -8784,7 +8841,7 @@
                         //     before that migration, so a ParlayAPI-only user
                         //     (the normal MLB config now) never got real lines
                         //     at all — same class of bug already fixed for NFL.
-                        if (parlayApiKey) {
+                        if (getEligibleLineProvider()) {
                             await fetchMlbPropLines(players, stale).catch(e => {
                                 console.warn('ParlayAPI fetch failed, keeping sample lines:', e.message);
                                 if (stale()) return;
@@ -10546,6 +10603,16 @@
                             r = await fetch(url);
                             if (r.ok) { lastErr = null; break; }
                             lastErr = new Error('ParlayAPI HTTP ' + r.status);
+                            // 429 (ParlayAPI itself rate-limiting) or 503 (this
+                            // app's own backend already cooling this provider
+                            // down, see lib/dataSourceHealth.js) mean retrying
+                            // immediately is pointless and is exactly the
+                            // "keep hammering a rate-limited provider"
+                            // behavior that must not happen — stop now
+                            // instead of burning the remaining attempts
+                            // against a response that will not change in the
+                            // next second.
+                            if (r.status === 429 || r.status === 503) break;
                         } catch (fe) { lastErr = fe; }
                         if (attempt < 3) await new Promise(res => setTimeout(res, 250 * (attempt + 1)));
                     }
@@ -12721,7 +12788,7 @@
                 if (gone()) return [];
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
-                setProplineError(built.length ? null : 'PropLine reached but produced no WNBA props for this slate.');
+                setProplineError(built.length ? null : 'ParlayAPI reached but produced no WNBA props for this slate.');
                 return built;
             };
 

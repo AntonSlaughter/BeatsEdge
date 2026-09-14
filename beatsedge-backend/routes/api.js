@@ -13,6 +13,7 @@ const db = require('../lib/db');
 const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapshotDb');
 const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
+const dataSourceHealth = require('../lib/dataSourceHealth');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -368,33 +369,114 @@ router.get('/mlb/probable-pitcher/:team', async (req, res) => {
 });
 
 // ============================================================
+// Data-source health tracking (shared by both passthroughs below).
+//
+// Every request to a third-party prop-line provider goes through one of
+// these two passthroughs, so the backend genuinely observes every response
+// -- this is the one place that can track real health/cooldown state
+// without ever touching the caller's API key (dataSourceHealth.js takes
+// only a provider name + outcome, never the request itself). Never logs
+// the key or the query string.
+//
+//   [data-source] <provider> rate limited (429) -- cooling down Ns
+//   [data-source] <provider> in cooldown -- short-circuiting without calling upstream
+//   [data-source] <provider> recovered
+//
+// Parses a standard HTTP Retry-After header (either delta-seconds or an
+// HTTP-date) when the upstream sends one; falls back to bounded
+// exponential backoff (see lib/dataSourceHealth.js) otherwise.
+function parseRetryAfterSeconds(headerValue) {
+  if (!headerValue) return null;
+  const asSeconds = Number(headerValue);
+  if (Number.isFinite(asSeconds)) return Math.max(0, asSeconds);
+  const asDate = Date.parse(headerValue);
+  if (!Number.isNaN(asDate)) return Math.max(0, Math.round((asDate - Date.now()) / 1000));
+  return null;
+}
+
+let lastCooldownLogAt = {}; // provider -> ms timestamp, to avoid log spam during a long outage
+function logOncePerMinute(provider, msg) {
+  const now = Date.now();
+  if (!lastCooldownLogAt[provider] || now - lastCooldownLogAt[provider] > 60_000) {
+    lastCooldownLogAt[provider] = now;
+    console.log(msg);
+  }
+}
+
+// Thin, read-only GET forwarder shared by /propline/* and /parlayapi/* --
+// same behavior both had before (path/host, query-string passthrough,
+// 400 on a suspicious path, 502 on a network failure), now with health
+// tracking wrapped around the upstream call.
+function makePassthrough(provider, host, extraPassthroughHeaders = []) {
+  return async (req, res) => {
+    const upstreamPath = req.params[0];
+    if (!upstreamPath || upstreamPath.includes('..')) {
+      return res.status(400).json({ error: 'bad path' });
+    }
+
+    if (!dataSourceHealth.isEligible(provider)) {
+      const health = dataSourceHealth.getHealth(provider);
+      logOncePerMinute(provider, `[data-source] ${provider} in cooldown until ${health.cooldownUntil} -- short-circuiting without calling upstream`);
+      return res.status(503).json({
+        status: 'unavailable',
+        reason: `${provider} is cooling down after repeated failures (${health.status})`,
+        cooldownUntil: health.cooldownUntil
+      });
+    }
+
+    const qs = new URLSearchParams(req.query).toString();
+    const url = `https://${host}/${upstreamPath}${qs ? '?' + qs : ''}`;
+    try {
+      const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
+      const body = await upstream.text();
+
+      if (upstream.status === 429) {
+        const retryAfterSeconds = parseRetryAfterSeconds(upstream.headers.get('retry-after'));
+        dataSourceHealth.recordFailure(provider, { kind: 'rateLimited', reason: 'HTTP 429', retryAfterSeconds });
+        console.log(`[data-source] ${provider} rate limited (429)${retryAfterSeconds != null ? ` -- Retry-After ${retryAfterSeconds}s` : ''}`);
+      } else if (upstream.status === 401 || upstream.status === 403) {
+        dataSourceHealth.recordFailure(provider, { kind: 'authFailed', reason: `HTTP ${upstream.status}` });
+        console.log(`[data-source] ${provider} auth failure (HTTP ${upstream.status})`);
+      } else if (upstream.status >= 500) {
+        dataSourceHealth.recordFailure(provider, { kind: 'temporarilyUnavailable', reason: `HTTP ${upstream.status}` });
+        console.log(`[data-source] ${provider} upstream error (HTTP ${upstream.status})`);
+      } else if (upstream.status >= 200 && upstream.status < 300) {
+        const wasDown = dataSourceHealth.getHealth(provider).status !== 'healthy';
+        dataSourceHealth.recordSuccess(provider);
+        if (wasDown) console.log(`[data-source] ${provider} recovered`);
+      }
+      // Other 4xx (400/404/etc.) are request-shape problems, not provider
+      // health -- pass the response through without touching health state.
+
+      extraPassthroughHeaders.forEach(h => {
+        const v = upstream.headers.get(h);
+        if (v != null) res.set(h, v);
+      });
+      res.status(upstream.status)
+        .type(upstream.headers.get('content-type') || 'application/json')
+        .send(body);
+    } catch (err) {
+      const kind = /timeout|abort/i.test(err.message) ? 'timeout' : 'temporarilyUnavailable';
+      dataSourceHealth.recordFailure(provider, { kind, reason: err.message });
+      console.log(`[data-source] ${provider} unreachable (${kind}: ${err.message})`);
+      res.status(502).json({ error: `${provider} unreachable: ` + err.message });
+    }
+  };
+}
+
 // PropLine passthrough — api.prop-line.com sends no CORS headers, so a
-// static browser app (BeatsEdge.html) can't call it directly. This is a
-// thin, read-only forwarder that just adds this backend's CORS. The
-// caller supplies its own PropLine apiKey as a query param (same trust
-// model as every other key BeatsEdge.html holds). No key is stored here.
+// static browser app (BeatsEdge.html) can't call it directly. The caller
+// supplies its own PropLine apiKey as a query param (same trust model as
+// every other key BeatsEdge.html holds). No key is stored here.
 //
 //   GET /api/propline/v1/sports/baseball_mlb/events?apiKey=...
 //   GET /api/propline/v1/sports/baseball_mlb/events/:id/odds?apiKey=...&markets=...&bookmakers=...
 //
 // Only GET, only the prop-line.com host, query string forwarded verbatim.
-router.get('/propline/*', async (req, res) => {
-  const upstreamPath = req.params[0];
-  if (!upstreamPath || upstreamPath.includes('..')) {
-    return res.status(400).json({ error: 'bad path' });
-  }
-  const qs = new URLSearchParams(req.query).toString();
-  const url = `https://api.prop-line.com/${upstreamPath}${qs ? '?' + qs : ''}`;
-  try {
-    const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
-    const body = await upstream.text();
-    res.status(upstream.status)
-      .type(upstream.headers.get('content-type') || 'application/json')
-      .send(body);
-  } catch (err) {
-    res.status(502).json({ error: 'PropLine unreachable: ' + err.message });
-  }
-});
+// Note: as of this writing nothing in BeatsEdge.html actually calls this
+// route anymore (ParlayAPI replaced it as the live line source for every
+// sport) -- kept working/health-tracked in case that changes, not removed.
+router.get('/propline/*', makePassthrough('propline', 'api.prop-line.com'));
 
 // ParlayAPI passthrough — parlay-api.com also sends no CORS headers. Same
 // thin, read-only, GET-only forwarder as PropLine. The caller passes its
@@ -408,30 +490,26 @@ router.get('/propline/*', async (req, res) => {
 // Pagination metadata ParlayAPI reports via response headers (offset-based:
 // x-next-offset to advance, x-result-has-more to know when to stop, and
 // x-result-truncated when its own internal per-source row cap was hit and
-// pagination can't recover the rest). The passthrough only forwarded
-// status/content-type before, silently dropping all of this — the caller
-// had no way to know a response was incomplete.
+// pagination can't recover the rest) is forwarded through unchanged.
 const PARLAYAPI_PASSTHROUGH_HEADERS = ['x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count'];
-router.get('/parlayapi/*', async (req, res) => {
-  const upstreamPath = req.params[0];
-  if (!upstreamPath || upstreamPath.includes('..')) {
-    return res.status(400).json({ error: 'bad path' });
-  }
-  const qs = new URLSearchParams(req.query).toString();
-  const url = `https://parlay-api.com/${upstreamPath}${qs ? '?' + qs : ''}`;
-  try {
-    const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
-    const body = await upstream.text();
-    PARLAYAPI_PASSTHROUGH_HEADERS.forEach(h => {
-      const v = upstream.headers.get(h);
-      if (v != null) res.set(h, v);
-    });
-    res.status(upstream.status)
-      .type(upstream.headers.get('content-type') || 'application/json')
-      .send(body);
-  } catch (err) {
-    res.status(502).json({ error: 'ParlayAPI unreachable: ' + err.message });
-  }
+router.get('/parlayapi/*', makePassthrough('parlayapi', 'parlay-api.com', PARLAYAPI_PASSTHROUGH_HEADERS));
+
+// GET /api/data-sources/health — safe operational metadata only (status,
+// timestamps, cooldown) for every provider this backend proxies and can
+// therefore actually observe. NEVER includes API keys/tokens/auth headers
+// -- dataSourceHealth.js never receives them in the first place. ESPN,
+// the MLB Stats API, and BallDontLie are fetched directly by the browser
+// (not proxied here), so this backend has no visibility into their health
+// -- listed with serverObserved:false rather than guessed at.
+router.get('/data-sources/health', (req, res) => {
+  res.json({
+    providers: dataSourceHealth.getAllHealth(['parlayapi', 'propline']),
+    notServerObserved: [
+      { provider: 'espn', note: 'fetched directly by the browser, not proxied through this backend' },
+      { provider: 'mlbstatsapi', note: 'fetched directly by the browser, not proxied through this backend' },
+      { provider: 'balldontlie', note: 'fetched directly by the browser, not proxied through this backend' }
+    ]
+  });
 });
 
 // ── Prop snapshots ─────────────────────────────────────────────────────

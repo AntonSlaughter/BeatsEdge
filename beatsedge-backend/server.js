@@ -40,6 +40,7 @@ app.get('/', (req, res) => {
     endpoints: [
       'GET /api/health',
       'GET /api/data-health (non-sensitive DB path/persistence/row-count status)',
+      'GET /api/data-sources/health (provider status/cooldown for the ParlayAPI/PropLine passthroughs — no keys)',
       'GET /api/defense/overall/:sport/:season/:team',
       'GET /api/defense/by-position/:sport/:team?window=season|last10|last20',
       'GET /api/defense/combined/:sport/:season/:team?window=season|last10|last20',
