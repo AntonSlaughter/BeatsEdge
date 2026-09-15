@@ -5802,7 +5802,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaAvail, nbaAvailRunning, onRunAvail, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaAvail, nbaAvailRunning, onRunAvail, nflMatchup, nflMatchupRunning, onRunNflMatchup, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -7317,6 +7317,46 @@
                         })()}
 
                         {selectedSport === 'nfl' && isPro && (() => {
+                            const r = nflMatchup;
+                            const ok = r && !r.error && r.evaluated;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NFL · Matchup / Game-Context Validation (research phase 6)</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Observational only — buckets the model's OWN existing grade/hit output (WR receiving yards / RB rushing yards props) by a real, leak-safe, stat-specific opponent-allowed metric the model currently does NOT read for NFL (the existing NFL defense factor uses coarser points-allowed only). Nothing is injected into the model. Train = seasons before 2025, holdout = season 2025+, GRADE_CUTOFFS/PROB_CALIB never re-derived.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nflMatchupRunning || backtestRunning} onClick={onRunNflMatchup} style={{ marginTop: '0.6rem' }}>
+                                        {nflMatchupRunning ? 'Running…' : (ok ? 'Re-run matchup validation' : 'Run matchup validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Overall — TRAIN {r.overall.train.hitRate}% (n={r.overall.train.n.toLocaleString()}) · HOLDOUT {r.overall.holdout.hitRate}% (n={r.overall.holdout.n.toLocaleString()}) · {r.evaluated.toLocaleString()} graded sides evaluated · ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Opponent allowed-volume tercile</th>{['A', 'B', 'C', 'D'].map(g => <th key={g}>Grade {g} (train / holdout)</th>)}</tr></thead>
+                                                    <tbody>
+                                                        {[...new Set([...Object.keys(r.matchupBucket.train), ...Object.keys(r.matchupBucket.holdout)])].map(cat => (
+                                                            <tr key={cat}>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{cat}</td>
+                                                                {['A', 'B', 'C', 'D'].map(g => {
+                                                                    const t = r.matchupBucket.train[cat] && r.matchupBucket.train[cat][g];
+                                                                    const h = r.matchupBucket.holdout[cat] && r.matchupBucket.holdout[cat][g];
+                                                                    return <td key={g}>{t ? `${t.hitRate}% (n=${t.n})` : '—'} / {h ? `${h.hitRate}% (n=${h.n})` : '—'}</td>;
+                                                                })}
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nfl' && isPro && (() => {
                             const r = nflTemporal;
                             const ok = r && !r.error && r.overall && r.grades;
                             const g = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v;
@@ -8422,6 +8462,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_avail_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaAvailRunning, setNbaAvailRunning] = useState(false);
+            const [nflMatchup, setNflMatchup] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nfl_matchup_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nflMatchupRunning, setNflMatchupRunning] = useState(false);
             const [nbaFinalVal, setNbaFinalVal] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
             });
@@ -15460,6 +15504,185 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 }
             };
 
+            // ── NFL Matchup / Game-Context validation (Phase 6) ─────────────
+            // OBSERVATIONAL ONLY -- same discipline as Phase 5: the model's OWN
+            // existing grade/hit output (real, frozen calculateEdgeScore,
+            // called exactly once per pick) is bucketed by a REAL, leak-safe,
+            // stat-specific opponent-allowed metric that the model currently
+            // does NOT read for NFL (confirmed by audit: _calculateEdgeScoreImpl
+            // explicitly excludes NFL/CFB from the generic posDefense factor;
+            // the only NFL defensive input already in the model is `oppdef`,
+            // a coarser points-allowed number, not the stat-matched allowed
+            // volume this tests). Nothing is injected into the model. Uses
+            // BeatsEdge's OWN backend nfl_player_game_stats table for BOTH the
+            // player's own series and the opponent's matchup data (one
+            // consistent pipeline -- not mixed with the separate live-ESPN
+            // gamelog fetch used elsewhere in this file). Scoped to the two
+            // stat/position pairings with full, real historical depth back to
+            // 2022 (confirmed by audit): receivingYards for WR, rushingYards
+            // for RB. Train = season < 2025, holdout = season >= 2025 -- same
+            // real-data boundary Phase 4 already established for this table.
+            const NFL_MATCHUP_STAT_DEFS = {
+                receivingYards: { field: 'receiving_yards', position: 'WR' },
+                rushingYards: { field: 'rushing_yards', position: 'RB' },
+            };
+            const runNflMatchupValidation = async () => {
+                if (nflMatchupRunning || backtestRunning) return;
+                setNflMatchupRunning(true);
+                try {
+                    if (!backendUrl) { setNflMatchup({ error: 'No backend connected (Data Sources).', ranAt: Date.now() }); return; }
+                    let pool = [];
+                    try {
+                        const pr = await fetch(`${backendUrl}/api/nfl/backtest-pool?minGames=15&limit=300`);
+                        if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                    } catch (e) { /* */ }
+                    pool = pool.filter(p => p.position === 'WR' || p.position === 'RB');
+                    if (pool.length < 20) { setNflMatchup({ error: 'No NFL history pool available (need the backend + a populated nfl_player_game_stats table).', ranAt: Date.now() }); return; }
+
+                    const ids = [...new Set(pool.map(p => p.id))];
+                    let playerHist = {};
+                    for (const grp of chunk(ids, 200)) {
+                        try {
+                            const r = await fetch(`${backendUrl}/api/nfl/player-history?ids=${grp.join(',')}`);
+                            if (r.ok) { const j = await r.json(); Object.assign(playerHist, j.history || {}); }
+                        } catch (e) { /* */ }
+                    }
+
+                    const teams = [...new Set(pool.map(p => p.team).filter(Boolean))];
+                    let matchupHist = {};
+                    try {
+                        const r = await fetch(`${backendUrl}/api/nfl/matchup-history?teams=${teams.join(',')}&positions=WR,RB`);
+                        if (r.ok) { const j = await r.json(); matchupHist = j.history || {}; }
+                    } catch (e) { /* */ }
+                    if (!Object.keys(matchupHist).length) { setNflMatchup({ error: 'No NFL matchup history available from the backend.', ranAt: Date.now() }); return; }
+
+                    // Real, leak-safe "as of" trailing defense-allowed lookup --
+                    // strictly (season, week) before the target, same discipline
+                    // as lib/nflMatchupSignal.js's computeDefenseAllowedAsOf,
+                    // reimplemented here purely in-memory (no per-pick HTTP
+                    // round trip) over the already-bulk-fetched matchupHist.
+                    const defenseAllowedAsOf = (opponent, position, statField, season, week, games) => {
+                        const rows = matchupHist[opponent + '|' + position];
+                        if (!rows) return null;
+                        const prior = rows.filter(r => r.season < season || (r.season === season && r.week < week));
+                        if (prior.length < 2) return null;
+                        const recent = prior.slice(-games);
+                        const vals = recent.map(r => r[statField === 'receiving_yards' ? 'receivingYards' : 'rushingYards']).filter(v => v != null);
+                        if (vals.length < 2) return null;
+                        return vals.reduce((s, v) => s + v, 0) / vals.length;
+                    };
+
+                    // Fixed BEFORE looking at any result -- terciles of the
+                    // pool's OWN observed defense-allowed distribution aren't
+                    // computed here (that would be a form of tuning); instead
+                    // these are round, sport-plausible cut points for NFL
+                    // receiving/rushing yards allowed per game to one position,
+                    // never adjusted after seeing train/holdout results.
+                    const tercileOf = (val, lowMax, highMin) => val == null ? 'unknown' : val < lowMax ? 'low' : val <= highMin ? 'med' : 'high';
+                    const TERCILE_CUTS = { receivingYards: [55, 85], rushingYards: [70, 100] };
+
+                    const MIN = 10;
+                    const buckets = { train: {}, holdout: {} };
+                    const fileBucket = (timeBucket, category, grade, hit, probPct) => {
+                        const acc = buckets[timeBucket];
+                        const key = grade + '|' + category;
+                        const g = acc[key] || (acc[key] = { n: 0, hit: 0, sumProb: 0 });
+                        g.n++; if (hit) g.hit++; g.sumProb += (probPct || 0);
+                    };
+                    const overallAcc = { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() };
+                    let evaluated = 0;
+
+                    pool.forEach(p => {
+                        const statKey = p.position === 'WR' ? 'receivingYards' : 'rushingYards';
+                        const def = NFL_MATCHUP_STAT_DEFS[statKey];
+                        const rows = (playerHist[p.id] || []).filter(r => r.position === p.position);
+                        if (rows.length < MIN + 5) return;
+                        const vals = rows.map(r => r[def.field] || 0);
+                        if (vals.every(v => v === 0)) return;
+
+                        for (let i = MIN; i < vals.length; i++) {
+                            const row = rows[i];
+                            const timeBucket = row.season >= 2025 ? 'holdout' : 'train';
+                            const hv = vals.slice(0, i);
+                            const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                            if (seasonAvg <= 0) continue;
+                            let line = null, bestGap = 99;
+                            for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                                const over = hv.filter(v => v > cand).length / hv.length;
+                                const gap = Math.abs(over - 0.48);
+                                if (gap < bestGap) { bestGap = gap; line = cand; }
+                            }
+                            if (line == null || line <= 0) continue;
+                            const actual = vals[i];
+                            if (actual === line) continue;
+
+                            const opps = rows.slice(0, i).map(r => r.opponent || '');
+                            const w = btWindowsAsOf(hv, opps, row.opponent, line);
+                            const fake = { sport: 'nfl', position: p.position, opponent: row.opponent, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
+
+                            const allowedAvg = defenseAllowedAsOf(row.opponent, def.position, def.field, row.season, row.week, 5);
+                            const [lowMax, highMin] = TERCILE_CUTS[statKey];
+                            const matchupBucket = tercileOf(allowedAvg, lowMax, highMin);
+
+                            for (const dir of ['over', 'under']) {
+                                const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                                const hit = dir === 'over' ? actual > line : actual < line;
+                                const gO = overallAcc[timeBucket][e.grade] || (overallAcc[timeBucket][e.grade] = { n: 0, hit: 0 });
+                                gO.n++; if (hit) gO.hit++;
+                                overallAcc[timeBucket]._total.n++; if (hit) overallAcc[timeBucket]._total.hit++;
+                                fileBucket(timeBucket, matchupBucket, e.grade, hit, e.modelProbPct);
+                                evaluated++;
+                            }
+                        }
+                    });
+
+                    const rate = (o) => o && o.n ? Math.round((o.hit / o.n) * 1000) / 10 : null;
+                    const summarizeOverall = (acc) => ({
+                        n: acc._total.n, hitRate: rate(acc._total),
+                        byGrade: ['A', 'B', 'C', 'D'].reduce((o, g) => { o[g] = acc[g] ? { n: acc[g].n, hitRate: rate(acc[g]) } : null; return o; }, {})
+                    });
+                    const summarizeDim = (acc) => {
+                        const out = {};
+                        Object.keys(acc).forEach(key => {
+                            const [grade, category] = key.split('|');
+                            const b = acc[key];
+                            const hitPct = rate(b);
+                            const meanProb = b.n ? Math.round((b.sumProb / b.n) * 10) / 10 : null;
+                            out[category] = out[category] || {};
+                            out[category][grade] = { n: b.n, hitRate: hitPct, meanModelProb: meanProb, calibrationGap: (hitPct != null && meanProb != null) ? Math.round((hitPct - meanProb) * 10) / 10 : null };
+                        });
+                        return out;
+                    };
+
+                    const result = {
+                        ranAt: Date.now(), evaluated,
+                        overall: { train: summarizeOverall(overallAcc.train), holdout: summarizeOverall(overallAcc.holdout) },
+                        matchupBucket: { train: summarizeDim(buckets.train), holdout: summarizeDim(buckets.holdout) },
+                    };
+                    setNflMatchup(result);
+                    try { localStorage.setItem('beatsedge_nfl_matchup_v1', JSON.stringify(result)); } catch (e) { }
+
+                    console.log('%cNFL Matchup validation — observational only (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched)', 'font-weight:bold');
+                    console.log(`train N=${result.overall.train.n.toLocaleString()} (${result.overall.train.hitRate}%) · holdout N=${result.overall.holdout.n.toLocaleString()} (${result.overall.holdout.hitRate}%)`);
+                    const cats = [...new Set([...Object.keys(result.matchupBucket.train), ...Object.keys(result.matchupBucket.holdout)])];
+                    cats.forEach(cat => {
+                        const row = {};
+                        ['A', 'B', 'C', 'D'].forEach(g => {
+                            const t = result.matchupBucket.train[cat] && result.matchupBucket.train[cat][g];
+                            const h = result.matchupBucket.holdout[cat] && result.matchupBucket.holdout[cat][g];
+                            row[`train ${g}`] = t ? `${t.hitRate}% (n=${t.n}, gap=${t.calibrationGap})` : '—';
+                            row[`holdout ${g}`] = h ? `${h.hitRate}% (n=${h.n}, gap=${h.calibrationGap})` : '—';
+                        });
+                        console.log(`  ${cat}:`, row);
+                    });
+                } catch (e) {
+                    console.error('NFL Matchup validation failed:', e);
+                    setNflMatchup({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNflMatchupRunning(false);
+                }
+            };
+
             const fetchPlayerProps = () => {
                 // ⚠️ HONEST NOTE ON DATA SOURCES:
                 // Player prop LINES (the actual over/under numbers PrizePicks,
@@ -18670,6 +18893,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaAvail={nbaAvail}
                                 nbaAvailRunning={nbaAvailRunning}
                                 onRunAvail={runPlayerAvailabilityValidation}
+                                nflMatchup={nflMatchup}
+                                nflMatchupRunning={nflMatchupRunning}
+                                onRunNflMatchup={runNflMatchupValidation}
                                 nbaFinalVal={nbaFinalVal}
                                 nbaFinalValRunning={nbaFinalValRunning}
                                 onRunFinalVal={runFinalLockedValidation}

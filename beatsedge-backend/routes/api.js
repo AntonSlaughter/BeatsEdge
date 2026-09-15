@@ -18,6 +18,7 @@ const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
 const { buildAvailabilityRoleSignal } = require('../lib/playerAvailabilitySignal');
+const { computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool: nflBacktestPool } = require('../lib/nflMatchupSignal');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -386,6 +387,70 @@ router.get('/nfl/game-environment', (req, res) => {
     }
     const signal = buildNflGameEnvironmentSignal({ db: nflDb, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), season, week });
     res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', season, week, ...signal });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nfl/backtest-pool?minGames=&limit=
+// A real NFL skill-position player pool with enough historical games to
+// walk forward, sourced from nfl_player_game_stats — mirrors
+// /api/nba/backtest-pool. Research-only, for the Phase 6 backtest.
+router.get('/nfl/backtest-pool', (req, res) => {
+  try {
+    const minGames = Math.max(5, Math.min(50, parseInt(req.query.minGames, 10) || 15));
+    const limit = Math.max(10, Math.min(500, parseInt(req.query.limit, 10) || 300));
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', pool: nflBacktestPool(nflDb, { minGames, limit }) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nfl/player-history?ids=...
+// Bulk real per-player-per-game rows from nfl_player_game_stats — the SAME
+// backend table lib/nflMatchupSignal.js's defense-allowed data comes from,
+// so the Phase 6 backtest sources both from one consistent pipeline.
+router.get('/nfl/player-history', (req, res) => {
+  try {
+    const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 400);
+    if (!ids.length) return res.status(400).json({ error: 'pass ?ids=id,id,...' });
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', history: bulkPlayerHistory(nflDb, ids) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nfl/matchup-history?teams=DAL,SF,...&positions=WR,RB
+// Bulk real per-team-week nfl_player_game_stats rows (stat-specific defense
+// allowed, from Phase 6's audit) for a set of defenses/positions — lets a
+// caller (the backtest) build its own as-of trailing windows in memory.
+// SEPARATE, ADDITIVE research signal — see lib/nflMatchupSignal.js's header.
+router.get('/nfl/matchup-history', (req, res) => {
+  try {
+    const teams = String(req.query.teams || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 60);
+    const positions = String(req.query.positions || 'WR,RB').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    if (!teams.length) return res.status(400).json({ error: 'pass ?teams=DAL,SF,...' });
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats rows, research-only)', history: bulkDefenseAllowedHistory(nflDb, teams, positions) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nfl/defense-allowed?team=DAL&position=WR&statKey=receivingYards&season=2025&week=3
+// SEPARATE, ADDITIVE research signal — real, leak-safe, as-of trailing
+// stat-specific defense-allowed for one team/position/stat. Research-only;
+// NOT read by calculateEdgeScore (see lib/nflMatchupSignal.js's header for
+// the full audit of why this exists and what it does not do).
+router.get('/nfl/defense-allowed', (req, res) => {
+  try {
+    const { team, position, statKey } = req.query;
+    const season = parseInt(req.query.season, 10);
+    const week = parseInt(req.query.week, 10);
+    if (!team || !position || !statKey || !Number.isFinite(season) || !Number.isFinite(week)) {
+      return res.status(400).json({ error: 'team, position, statKey, season, and week are all required' });
+    }
+    const signal = computeDefenseAllowedAsOf(nflDb, String(team).toUpperCase(), String(position).toUpperCase(), statKey, season, week);
+    res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', team: String(team).toUpperCase(), position, statKey, season, week, ...signal });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
