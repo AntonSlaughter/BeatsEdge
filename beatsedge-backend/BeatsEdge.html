@@ -666,6 +666,7 @@
         .opportunity-tag,
         .b2b-tag,
         .rest-tag,
+        .sample-tag,
         .out-tag {
             padding: 0.25rem 0.6rem;
             border-radius: 4px;
@@ -736,6 +737,11 @@
         .out-tag {
             background: var(--bg-raised);
             color: var(--text-muted);
+        }
+
+        .sample-tag {
+            background: rgba(245, 166, 35, 0.16);
+            color: #F5A623;
         }
 
         .opportunity-tag {
@@ -4034,6 +4040,13 @@
             const rows = [];
             (players || []).forEach(player => {
                 if (player.status === 'OUT' || !Array.isArray(player.props) || !player.props.length) return;
+                // Phase 10E: a mock/sample fallback player (generateMockPlayerData,
+                // tagged _mock:true) must never be promoted into "Today's
+                // BeatsEdge Research" — that panel claims to be live, real
+                // research, and a hardcoded demo player (fixed Feb-2024 game
+                // log, no real book) computed through the real grading engine
+                // would look indistinguishable from a genuine pick otherwise.
+                if (player._mock) return;
                 // Mirror the Browse "live lines only" filter so every top pick
                 // is a card that actually renders (and its modal can open).
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
@@ -4072,6 +4085,10 @@
             const rows = [];
             (players || []).forEach(player => {
                 if (player.status === 'OUT' || !Array.isArray(player.props)) return;
+                // Phase 10E: same mock-exclusion as findTopPicks/findPrimePicks
+                // above -- +EV is a market-derived signal, meaningless (and
+                // misleading) on a hardcoded demo player with no real line.
+                if (player._mock) return;
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
                 player.props.forEach((prop, idx) => {
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
@@ -4112,6 +4129,10 @@
             const rows = [];
             (players || []).forEach(player => {
                 if (player.status === 'OUT' || !Array.isArray(player.props) || !player.props.length) return;
+                // Phase 10E: same mock-exclusion as findTopPicks above -- Prime
+                // Plays must never surface a hardcoded demo player as if it
+                // were the model's real, live highest-conviction pick.
+                if (player._mock) return;
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
                 let best = null;
                 player.props.forEach((prop, idx) => {
@@ -17326,6 +17347,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             <div className="player-info">
                                 <div className="player-name-row">
                                     <div className="player-name">{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}</div>
+                                    {player._mock && (
+                                        <span className="sample-tag" title="No live slate/line found for this sport and date — this card is hardcoded sample data, not a real player, game, or line. See the SAMPLE banner above.">SAMPLE</span>
+                                    )}
                                     {player.status === 'PROBABLE' && (
                                         <span className="probable-tag" title={player.injuryDetail || 'Probable'}>P</span>
                                     )}
@@ -17515,7 +17539,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                           <div className="modal-overlay" onClick={() => setDetailModal(null)}>
                             <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
                               <div className="modal-header">
-                                <div className="modal-title">{player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
+                                <div className="modal-title">{player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}{player._mock && <span className="sample-tag" title="No live slate/line found for this sport and date — this is hardcoded sample data, not a real player, game, or line.">SAMPLE</span>} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
                                 <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
                               </div>
                               <div className="modal-body player-details">
