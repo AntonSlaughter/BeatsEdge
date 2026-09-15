@@ -11594,6 +11594,21 @@
                 const evMeta = gl.events || {};
                 const out = [];
                 (gl.seasonTypes || []).forEach(st => {
+                    // Phase 10C: preseason must never enter a player's
+                    // normal competitive-game history (L5/L10/L15/L20/
+                    // Last40/Season/Vs Opponent). ESPN's real gamelog
+                    // response separates seasonTypes by a real
+                    // `displayName` string -- verified live against real
+                    // players/seasons: "2021-22 Preseason" (excluded here),
+                    // "2021-22 Play In Regular Season" and "2021-22
+                    // Postseason" (both real competitive games, kept) and
+                    // "2021-22 Regular Season" (kept). Matching on
+                    // "preseason" alone (never "regular season"/"postseason"/
+                    // "play in") is deliberately a blocklist, not an
+                    // allowlist, since it's robust to real label wording
+                    // this app hasn't observed rather than needing to
+                    // anticipate every possible real seasonType label.
+                    if (/preseason/i.test(st.displayName || '')) return;
                     (st.categories || []).forEach(cat => {
                         (cat.events || []).forEach(ev => {
                             const meta = evMeta[ev.eventId] || {};
