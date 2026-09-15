@@ -5914,21 +5914,31 @@
                                         ? <span className="prop-pill-unavail" title="No live book posts this stat — there is no real sportsbook/PrizePicks line. See Model Projection in the breakdown.">Line unavailable</span>
                                         : p.prop.line}
                                     {(() => {
-                                        // Every Prime pick shows a sportsbook, on every sport. If this
-                                        // prop wasn't matched to a specific live book line (a sample/
-                                        // offseason slate, or a computed line PropLine has no market
-                                        // for), fall back to the platform tab you're viewing — same
-                                        // book scope the rest of the app already uses — and say so.
+                                        // Line-integrity fix: a prop with no confirmed live book
+                                        // (prop.book unset -- a sample/offseason line, or a stat
+                                        // PropLine/ParlayAPI has no market for) must NEVER be
+                                        // labeled with a real book name. Falling back to whatever
+                                        // platform tab the viewer happened to be on previously
+                                        // produced the literal, misleading string
+                                        // "PrizePicks (est.)" for a line PrizePicks never actually
+                                        // posted. Mirrors the detail modal's already-correct
+                                        // real / model-projection / sample-line three-way label
+                                        // (see activeProp.lineSource / isProjection below) instead
+                                        // of guessing a book.
                                         const confirmed = bookLabel(p.prop.book);
-                                        const label = confirmed || platformName || 'DFS';
-                                        const title = confirmed
-                                            ? (p.prop.lineSource || confirmed)
-                                            : `Estimated — no confirmed live ${label} line for this prop`;
+                                        if (confirmed) {
+                                            return (
+                                                <span className="prime-book" title={p.prop.lineSource || confirmed}>
+                                                    {p.prop.crossBook ? `${confirmed} · cross-book` : confirmed}
+                                                </span>
+                                            );
+                                        }
+                                        const label = p.prop.isProjection ? 'Model projection' : 'Sample line';
+                                        const title = p.prop.isProjection
+                                            ? 'No live book posts this stat -- this number is BeatsEdge’s own estimate, not a real PrizePicks/sportsbook line.'
+                                            : 'No confirmed live line for this prop -- anchored to the player’s own season rate, not a real PrizePicks/sportsbook line.';
                                         return (
-                                            <span className={`prime-book ${confirmed ? '' : 'prime-book-unconfirmed'}`} title={title}>
-                                                {p.prop.crossBook ? `${label} · cross-book` : label}
-                                                {!confirmed && <span className="prime-book-est"> (est.)</span>}
-                                            </span>
+                                            <span className="prime-book prime-book-unconfirmed" title={title}>{label}</span>
                                         );
                                     })()}
                                 </div>
@@ -10371,11 +10381,19 @@
                 book = book || 'prizepicks';
                 const hasAnyReal = Object.keys(allLines).length > 0;
                 const seedK = (k, line) => { if (!statsByKey[k]) statsByKey[k] = mlbSeedWindows(seasonStat, isPitcher, k, line); return statsByKey[k]; };
+                // Line-integrity fix: odds must reflect exactly what the source
+                // supplied -- never a fabricated -110. A DFS platform (PrizePicks/
+                // Underdog/Sleeper) has no real per-side price at all, so extra.odds
+                // is genuinely absent for the vast majority of real live props here;
+                // that must render as "no odds," never as an invented sportsbook
+                // number. Downstream rendering already only shows odds when
+                // `typeof prop.odds === 'number'`, so null is the correct absence
+                // value, not a display bug waiting to happen.
                 const pushPair = (k, def, line, extra) => {
                     const oHR = estHitRate(seedK(k, line).season.avg, line);
                     const base = { type: def.type, statKey: k, line, ...extra };
-                    props.push({ ...base, direction: 'over', odds: extra.odds ?? -110, oppOdds: extra.oppOdds ?? -110, hitRate: oHR });
-                    props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? -110, oppOdds: extra.odds ?? -110, hitRate: Math.max(2, 100 - oHR) });
+                    props.push({ ...base, direction: 'over', odds: extra.odds ?? null, oppOdds: extra.oppOdds ?? null, hitRate: oHR });
+                    props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? null, oppOdds: extra.odds ?? null, hitRate: Math.max(2, 100 - oHR) });
                 };
                 // A line PropLine only prices on ONE side — on PrizePicks/
                 // Underdog/Sleeper that's a Goblin (easier) or Demon (harder),
@@ -10384,7 +10402,7 @@
                     const oHR = estHitRate(seedK(k, line).season.avg, line);
                     props.push({
                         type: def.type, statKey: k, line, ...extra, direction: side, oneWay: true,
-                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? -110, oppOdds: null,
+                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? null, oppOdds: null,
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
@@ -11838,19 +11856,19 @@
                     // Always alt-style — never the standard board, even when it's
                     // the only rung for the stat.
                     if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
+                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? null, oppOdds: null, hitRate: oHR });
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
                     if (hasO && hasU) {
-                        props.push({ ...base, direction: 'over', odds: extra.odds ?? -110, oppOdds: extra.oppOdds ?? -110, hitRate: oHR });
-                        props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? -110, oppOdds: extra.odds ?? -110, hitRate: Math.max(2, 100 - oHR) });
+                        props.push({ ...base, direction: 'over', odds: extra.odds ?? null, oppOdds: extra.oppOdds ?? null, hitRate: oHR });
+                        props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? null, oppOdds: extra.odds ?? null, hitRate: Math.max(2, 100 - oHR) });
                         return;
                     }
                     const side = hasO ? 'over' : 'under'; // one-way sportsbook rung
                     props.push({
                         ...base, direction: side, oneWay: true, ppKind: null,
-                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? -110, oppOdds: null,
+                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? null, oppOdds: null,
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
@@ -12803,19 +12821,19 @@
                     if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
                         // Alt-style pick, never the standard board — force altLine
                         // even when it's the only rung for this stat.
-                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? -110, oppOdds: null, hitRate: oHR });
+                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? null, oppOdds: null, hitRate: oHR });
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
                     if (hasO && hasU) {
-                        props.push({ ...base, direction: 'over', odds: extra.odds ?? -110, oppOdds: extra.oppOdds ?? -110, hitRate: oHR });
-                        props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? -110, oppOdds: extra.odds ?? -110, hitRate: Math.max(2, 100 - oHR) });
+                        props.push({ ...base, direction: 'over', odds: extra.odds ?? null, oppOdds: extra.oppOdds ?? null, hitRate: oHR });
+                        props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? null, oppOdds: extra.odds ?? null, hitRate: Math.max(2, 100 - oHR) });
                         return;
                     }
                     const side = hasO ? 'over' : 'under';
                     props.push({
                         ...base, direction: side, oneWay: true, ppKind: null,
-                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? -110, oppOdds: null,
+                        odds: (side === 'over' ? extra.odds : extra.oppOdds) ?? null, oppOdds: null,
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
