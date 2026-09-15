@@ -5802,7 +5802,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaAvail, nbaAvailRunning, onRunAvail, nflMatchup, nflMatchupRunning, onRunNflMatchup, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaAvail, nbaAvailRunning, onRunAvail, nflMatchup, nflMatchupRunning, onRunNflMatchup, nbaOpportunity, nbaOpportunityRunning, onRunNbaOpportunity, nflOpportunity, nflOpportunityRunning, onRunNflOpportunity, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -6964,6 +6964,67 @@
                                 </div>
                             );
                         })()}
+                        {selectedSport === 'nba' && isPro && (() => {
+                            const r = nbaOpportunity;
+                            const ok = r && !r.error && r.evaluated;
+                            const dims = [
+                                ['opportunityLevel', 'Shot-volume density (attempts/min, recent 3 games)'],
+                                ['opportunityChange', 'Shot-volume trend (own trailing attempts)'],
+                                ['minutesXOpportunity', 'Minutes level x opportunity level (critical redundancy test — does opportunity separate outcomes once minutes is held constant?)'],
+                                ['roleChangeXOpportunity', 'Role change (minutes) x opportunity change'],
+                                ['nextManUpXOpportunity', 'Next Man Up signal x opportunity level'],
+                                ['projStabilityXOpportunity', 'Projection Stability volatility x opportunity level'],
+                            ];
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Opportunity / Usage / Workload Validation (research phase 7)</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Observational only — buckets the model's OWN existing grade/hit output by real, leak-safe shot-attempt volume (FGA + 0.44*FTA), a metric Model A does not read (its only opportunity-adjacent input is the sign-only Minutes Trend factor). Nothing is injected into the model. The minutesXOpportunity breakdown is the critical test: if opportunity stops separating outcomes once minutes is held constant, the feature is redundant with the existing minutes signal, not a new one. Walk-forward, train/holdout split, GRADE_CUTOFFS/PROB_CALIB never re-derived.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nbaOpportunityRunning || backtestRunning || nbaFamStabilityRunning || nbaGameEnvRunning || nbaAvailRunning} onClick={onRunNbaOpportunity} style={{ marginTop: '0.6rem' }}>
+                                        {nbaOpportunityRunning ? 'Running…' : (ok ? 'Re-run opportunity validation' : 'Run opportunity validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Overall — TRAIN {r.overall.train.hitRate}% (n={r.overall.train.n.toLocaleString()}) · HOLDOUT {r.overall.holdout.hitRate}% (n={r.overall.holdout.n.toLocaleString()}) · {r.evaluated.toLocaleString()} graded sides evaluated · attempts/min cuts {r.attPerMinCuts && r.attPerMinCuts.join(' / ')} · ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                            {dims.map(([dim, label]) => {
+                                                const cats = [...new Set([...Object.keys(r[dim].train), ...Object.keys(r[dim].holdout)])];
+                                                return (
+                                                    <div key={dim} style={{ overflowX: 'auto', marginTop: '0.7rem' }}>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.78rem' }}>{label}</div>
+                                                        <table className="backtest-calib-tbl">
+                                                            <thead><tr><th>Category</th>{['A', 'B', 'C', 'D'].map(g => <th key={'th' + g}>Grade {g} (train / holdout)</th>)}</tr></thead>
+                                                            <tbody>
+                                                                {cats.map(cat => (
+                                                                    <tr key={cat}>
+                                                                        <td style={{ whiteSpace: 'nowrap' }}>{cat}</td>
+                                                                        {['A', 'B', 'C', 'D'].map(g => {
+                                                                            const t = r[dim].train[cat] && r[dim].train[cat][g];
+                                                                            const h = r[dim].holdout[cat] && r[dim].holdout[cat][g];
+                                                                            return (
+                                                                                <td key={g}>
+                                                                                    {t ? `${t.hitRate}% (n=${t.n})` : '—'} / {h ? `${h.hitRate}% (n=${h.n})` : '—'}
+                                                                                </td>
+                                                                            );
+                                                                        })}
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                );
+                                            })}
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.7rem', color: 'var(--text-muted)' }}>
+                                                Projection-miss diagnostic (actual - line, by opportunity trend; never fed back into the model): increased n={r.projectionMissByOpportunityChange.increased.n}, avg {r.projectionMissByOpportunityChange.increased.avgMiss ?? '—'} · decreased n={r.projectionMissByOpportunityChange.decreased.n}, avg {r.projectionMissByOpportunityChange.decreased.avgMiss ?? '—'} · unchanged n={r.projectionMissByOpportunityChange.unchanged.n}, avg {r.projectionMissByOpportunityChange.unchanged.avgMiss ?? '—'}.
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
                         {selectedSport === 'mlb' && isPro && (() => {
                             const r = mlbTemporal;
                             const ok = r && !r.error && r.n;
@@ -7344,6 +7405,46 @@
                                                                 {['A', 'B', 'C', 'D'].map(g => {
                                                                     const t = r.matchupBucket.train[cat] && r.matchupBucket.train[cat][g];
                                                                     const h = r.matchupBucket.holdout[cat] && r.matchupBucket.holdout[cat][g];
+                                                                    return <td key={g}>{t ? `${t.hitRate}% (n=${t.n})` : '—'} / {h ? `${h.hitRate}% (n=${h.n})` : '—'}</td>;
+                                                                })}
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nfl' && isPro && (() => {
+                            const r = nflOpportunity;
+                            const ok = r && !r.error && r.evaluated;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NFL · Opportunity / Target-Share Validation (research phase 7)</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Observational only — buckets the model's OWN existing grade/hit output (WR receiving yards props) by real, leak-safe target-volume trend (own trailing targets, recent 3 games vs prior 7), a metric Model A does not read. RB carries/touches are not tested (no reliable historical rush-attempts column before 2025). Nothing is injected into the model. Train = seasons before 2025, holdout = season 2025+, GRADE_CUTOFFS/PROB_CALIB never re-derived.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nflOpportunityRunning || backtestRunning} onClick={onRunNflOpportunity} style={{ marginTop: '0.6rem' }}>
+                                        {nflOpportunityRunning ? 'Running…' : (ok ? 'Re-run opportunity validation' : 'Run opportunity validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Overall — TRAIN {r.overall.train.hitRate}% (n={r.overall.train.n.toLocaleString()}) · HOLDOUT {r.overall.holdout.hitRate}% (n={r.overall.holdout.n.toLocaleString()}) · {r.evaluated.toLocaleString()} graded sides evaluated · ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                            <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                                <table className="backtest-calib-tbl">
+                                                    <thead><tr><th>Target-share trend</th>{['A', 'B', 'C', 'D'].map(g => <th key={g}>Grade {g} (train / holdout)</th>)}</tr></thead>
+                                                    <tbody>
+                                                        {[...new Set([...Object.keys(r.targetTrend.train), ...Object.keys(r.targetTrend.holdout)])].map(cat => (
+                                                            <tr key={cat}>
+                                                                <td style={{ whiteSpace: 'nowrap' }}>{cat}</td>
+                                                                {['A', 'B', 'C', 'D'].map(g => {
+                                                                    const t = r.targetTrend.train[cat] && r.targetTrend.train[cat][g];
+                                                                    const h = r.targetTrend.holdout[cat] && r.targetTrend.holdout[cat][g];
                                                                     return <td key={g}>{t ? `${t.hitRate}% (n=${t.n})` : '—'} / {h ? `${h.hitRate}% (n=${h.n})` : '—'}</td>;
                                                                 })}
                                                             </tr>
@@ -8466,6 +8567,14 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nfl_matchup_v1') || 'null'); } catch (e) { return null; }
             });
             const [nflMatchupRunning, setNflMatchupRunning] = useState(false);
+            const [nbaOpportunity, setNbaOpportunity] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nba_opportunity_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nbaOpportunityRunning, setNbaOpportunityRunning] = useState(false);
+            const [nflOpportunity, setNflOpportunity] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nfl_opportunity_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nflOpportunityRunning, setNflOpportunityRunning] = useState(false);
             const [nbaFinalVal, setNbaFinalVal] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
             });
@@ -13437,6 +13546,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     opponent: g.o,
                                     vsLabel: (g.h ? 'vs ' : '@ ') + g.o,
                                     starter: g.st, // 1/0/undefined -- real box-score starter flag, Phase 5 (player availability/role) only; Model A never reads this
+                                    fga: g.fga, fta: g.fta, tpa: g.tpa, // real shot-attempt volume, Phase 7 (opportunity/workload) only; Model A never reads this
                                     row: {
                                         minutes: g.m, points: g.pts, totalRebounds: g.reb, assists: g.ast,
                                         steals: g.stl, blocks: g.blk, turnovers: g.tov, [NBA_3PM_KEY]: g.tpm
@@ -15680,6 +15790,467 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     setNflMatchup({ error: String(e && e.message || e), ranAt: Date.now() });
                 } finally {
                     setNflMatchupRunning(false);
+                }
+            };
+
+            // ── NBA Opportunity / Usage / Workload validation (Phase 7) ─────
+            // OBSERVATIONAL ONLY -- same discipline as Phase 5/6: the model's
+            // OWN existing grade/hit output (real, frozen calculateEdgeScore,
+            // called exactly once per direction per pick) is bucketed by REAL,
+            // leak-safe shot-VOLUME metrics (FGA/FTA-derived "attempts",
+            // attempts-per-minute) that the model currently does NOT read --
+            // confirmed by direct audit of _calculateEdgeScoreImpl's
+            // projection formula (a blend of raw stat-VALUE windows only) and
+            // its "Minutes Trend" confluence factor (a sign-only minutes
+            // delta, never attempts/usage-based). Nothing is injected into the
+            // model.
+            //
+            // CRITICAL (Phase 7 spec, step 6): minutes and opportunity must be
+            // tested SEPARATELY. Phase 5 already found and locked a Grade B
+            // minutes-level signal (4418ebd) -- this function does not retest
+            // that finding. It reimplements Phase 5's IDENTICAL minutes-level
+            // tercile categorical scheme (recent-3-game minutes avg: <15 low,
+            // <=25 med, >25 high -- same cutoffs, same magnitude, copied
+            // verbatim) purely as a CONTROL dimension to interact against, and
+            // computes it directly from real minutes history rather than
+            // reusing Phase 5's own closure-local variable (Phase 5's
+            // validation isn't an importable function -- it's inline JS in
+            // its own closure, so nothing there can literally be called from
+            // here; this is a fresh, correct reimplementation of the same
+            // fixed categorical scheme, not a modification of the locked
+            // lib/playerAvailabilitySignal.js file or its committed backtest,
+            // which are both untouched by this diff). Likewise reimplements
+            // Phase 5's role-change/absent-teammate categorical logic (same
+            // fixed constants) and reuses Phase 3's seriesStats/volBucketOf
+            // helpers UNMODIFIED (those are real shared functions, not
+            // per-closure code) so opportunity can be interacted against
+            // role-change, Next Man Up, and projection-stability without
+            // altering any of those three locked phases.
+            const runNbaOpportunityValidation = async () => {
+                if (nbaOpportunityRunning || backtestRunning || nbaFamStabilityRunning || nbaGameEnvRunning || nbaAvailRunning) return;
+                setNbaOpportunityRunning(true);
+                try {
+                    let pool = [];
+                    if (backendUrl) {
+                        try {
+                            const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
+                            if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                        } catch (e) { /* */ }
+                    }
+                    if (pool.length < 20) { setNbaOpportunity({ error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() }); return; }
+
+                    const ids = [...new Set(pool.map(p => p.id))];
+                    const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2]);
+                    const teamById = {}; pool.forEach(p => { teamById[p.id] = p.team; });
+                    const playersByTeam = {};
+                    pool.forEach(p => { (playersByTeam[p.team] = playersByTeam[p.team] || []).push(p.id); });
+
+                    // Same real, leak-safe trailing-minutes / team-roster pass
+                    // Phase 5 uses, reimplemented here (Next Man Up interaction
+                    // control -- observational only, lib/nextManUpSignal.js
+                    // untouched).
+                    const playerTrail = {};
+                    const teamGameRoster = {};
+                    pool.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        const team = teamById[p.id];
+                        const arr = [];
+                        for (let i = 0; i < rows.length; i++) {
+                            const prior = rows.slice(Math.max(0, i - 5), i).map(r => r.row && r.row.minutes).filter(m => m != null);
+                            arr.push({ ts: rows[i].ts, trail5: prior.length >= 3 ? prior.reduce((s, v) => s + v, 0) / prior.length : null });
+                            if (team) { const key = team + '|' + rows[i].ts; (teamGameRoster[key] = teamGameRoster[key] || new Set()).add(p.id); }
+                        }
+                        playerTrail[p.id] = arr;
+                    });
+                    const trailAsOf = (playerId, beforeTs) => {
+                        const arr = playerTrail[playerId];
+                        if (!arr) return null;
+                        for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].ts < beforeTs) return arr[i].trail5; }
+                        return null;
+                    };
+
+                    // Fixed BEFORE looking at any result:
+                    // - RC_MIN_ABS/RC_MIN_REL/RC_BASELINE_MIN_GAMES/RC_RECENT_MIN_GAMES
+                    //   copied verbatim from Phase 5's role-change thresholds.
+                    // - OPP_MIN_ABS_ATT/OPP_MIN_REL_ATT: attempts-trend thresholds,
+                    //   scaled the same way (2 attempts/game absolute, 20%
+                    //   relative -- a typical role player attempts ~8-12
+                    //   true-shooting-attempts/game, so 2 is a comparable
+                    //   fixed magnitude to Phase 5's 6-minute cut on a ~25-
+                    //   minute baseline).
+                    // - ATT_PER_MIN_CUTS: round, sport-plausible attempts-per-
+                    //   minute cut points (low <0.35, high >0.50), same
+                    //   "fixed, round, never adjusted after seeing results"
+                    //   discipline Phase 6 used for its own matchup terciles.
+                    const RC_MIN_ABS = 6, RC_MIN_REL = 0.20, RC_BASELINE_MIN_GAMES = 8, RC_RECENT_MIN_GAMES = 3;
+                    const ABSENT_TEAMMATE_MIN_MINUTES = 15;
+                    const OPP_MIN_ABS_ATT = 2, OPP_MIN_REL_ATT = 0.20;
+                    const ATT_PER_MIN_CUTS = [0.35, 0.50];
+                    const MIN = 14;
+                    const _allTs = [];
+                    Object.values(glMap).forEach(rows => rows.forEach(r => { if (r.ts) _allTs.push(r.ts); }));
+                    _allTs.sort((a, b) => a - b);
+                    const holdoutTs = _allTs.length ? _allTs[_allTs.length - 1] - 540 * 864e5 : 0;
+
+                    const mkAcc = () => ({});
+                    const buckets = {
+                        overall: { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() },
+                        opportunityLevel: { train: mkAcc(), holdout: mkAcc() },
+                        opportunityChange: { train: mkAcc(), holdout: mkAcc() },
+                        minutesXOpportunity: { train: mkAcc(), holdout: mkAcc() },
+                        roleChangeXOpportunity: { train: mkAcc(), holdout: mkAcc() },
+                        nextManUpXOpportunity: { train: mkAcc(), holdout: mkAcc() },
+                        projStabilityXOpportunity: { train: mkAcc(), holdout: mkAcc() },
+                    };
+                    const fileBucket = (dim, timeBucket, category, grade, hit, probPct) => {
+                        const acc = buckets[dim][timeBucket];
+                        const key = grade + '|' + category;
+                        const g = acc[key] || (acc[key] = { n: 0, hit: 0, sumProb: 0 });
+                        g.n++; if (hit) g.hit++; g.sumProb += (probPct || 0);
+                    };
+                    // Step 14 (diagnostic only -- never fed back into the
+                    // model): does rising attempts-volume correspond to the
+                    // model's line (its own implied ~48%-over expectation)
+                    // systematically under- or over-shooting the actual
+                    // result? Grouped by opportunityChange, not injected
+                    // anywhere.
+                    const missAcc = { increased: [], decreased: [], unchanged: [], insufficient_evidence: [] };
+                    let evaluated = 0;
+
+                    pool.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        if (rows.length < 20) return;
+                        const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                        const opps = rows.map(r => r.opponent || '');
+                        const myTeam = teamById[p.id] || '';
+                        const tss = rows.map(r => r.ts || 0);
+                        const mins = rows.map(r => (r.row && r.row.minutes) || null);
+                        const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
+                        // Real true-shooting-attempts proxy (fga + 0.44*fta),
+                        // null when either component is missing rather than
+                        // silently treated as a real zero-attempt game.
+                        const attempts = rows.map(r => (r.fga != null && r.fta != null) ? (r.fga + 0.44 * r.fta) : null);
+
+                        nbaAllKeys.forEach(k => {
+                            const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
+                            if (vals.every(v => v === 0)) return;
+
+                            for (let i = MIN; i < vals.length; i++) {
+                                const gTs = tss[i] || 0;
+                                if (!gTs) continue;
+                                const timeBucket = gTs >= holdoutTs ? 'holdout' : 'train';
+                                const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                                const ha = attempts.slice(0, i);
+                                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                                if (seasonAvg <= 0) continue;
+                                let line = null, bestGap = 99;
+                                for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                                    const over = hv.filter(v => v > cand).length / hv.length;
+                                    const gap = Math.abs(over - 0.48);
+                                    if (gap < bestGap) { bestGap = gap; line = cand; }
+                                }
+                                if (line == null || line <= 0) continue;
+                                const actual = vals[i], tonightOpp = opps[i];
+                                if (actual === line) continue;
+
+                                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                                const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
+                                const glHist = hv.map((v, j) => ({
+                                    points: v, line, opponent: ho[j], vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
+                                    dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null, oppRank: null,
+                                    rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
+                                }));
+                                const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
+                                const projMin = nbaProjMinutes(hm.map(m => ({ row: { minutes: m } })));
+                                const fake = {
+                                    sport: 'nba', position: group, opponent: tonightOpp,
+                                    statsByKey: { [k]: w }, gameLogByKey: { [k]: glHist },
+                                    opponentDefense: null, oppRank: null,
+                                    gameDow: Number.isFinite(tss[i]) && tss[i] > 0 ? new Date(tss[i]).getDay() : null,
+                                    b2b: tRest != null ? { restDays: tRest, tonight: tRest <= 1 ? 'second' : null, first: null } : null,
+                                    isHomeTonight: !!homes[i], minutesTrend: nbaMinutesTrend(hm.map(m => ({ row: { minutes: m } }))),
+                                    projMin, opponentContext: null, oppDef: null, situational: null
+                                };
+
+                                // -- Control dimensions (reimplemented Phase 5 logic, unmodified constants) --
+                                const recentMinArr3 = hm.slice(-RC_RECENT_MIN_GAMES).filter(m => m != null);
+                                const recentMinAvg = recentMinArr3.length ? recentMinArr3.reduce((s, v) => s + v, 0) / recentMinArr3.length : null;
+                                const minutesLevel = recentMinAvg == null ? 'insufficient_evidence' : recentMinAvg < 15 ? 'low' : recentMinAvg <= 25 ? 'med' : 'high';
+
+                                const baselineMinArr = hm.slice(-15, -(RC_RECENT_MIN_GAMES)).filter(m => m != null);
+                                let roleChangeCat = 'insufficient_evidence';
+                                if (baselineMinArr.length >= RC_BASELINE_MIN_GAMES && recentMinArr3.length >= RC_RECENT_MIN_GAMES) {
+                                    const baseAvg = baselineMinArr.reduce((s, v) => s + v, 0) / baselineMinArr.length;
+                                    const delta = recentMinAvg - baseAvg, deltaPct = baseAvg > 0 ? delta / baseAvg : null;
+                                    if (delta >= RC_MIN_ABS && (deltaPct == null || deltaPct >= RC_MIN_REL)) roleChangeCat = 'increased';
+                                    else if (delta <= -RC_MIN_ABS && (deltaPct == null || deltaPct <= -RC_MIN_REL)) roleChangeCat = 'decreased';
+                                    else roleChangeCat = 'unchanged';
+                                }
+
+                                let nextManUpBucket = 'no_signal';
+                                if (myTeam) {
+                                    const gameKey = myTeam + '|' + gTs;
+                                    const roster = teamGameRoster[gameKey];
+                                    const teammates = (playersByTeam[myTeam] || []).filter(id => id !== p.id);
+                                    for (const otherId of teammates) {
+                                        if (roster && roster.has(otherId)) continue;
+                                        const otherTrail = trailAsOf(otherId, gTs);
+                                        if (otherTrail != null && otherTrail >= ABSENT_TEAMMATE_MIN_MINUTES) { nextManUpBucket = 'absent_teammate_signal'; break; }
+                                    }
+                                }
+
+                                const volBucket = volBucketOf(seriesStats(hv).coefficientOfVariation) || 'unknown';
+
+                                // -- Opportunity dimensions (new, Phase 7) --
+                                const recentAttArr = ha.slice(-RC_RECENT_MIN_GAMES).filter(v => v != null);
+                                const recentAttAvg = recentAttArr.length ? recentAttArr.reduce((s, v) => s + v, 0) / recentAttArr.length : null;
+                                const recentMinForDensity = recentMinAvg; // same 3-game window, real minutes
+                                const attemptsPerMin = (recentAttAvg != null && recentMinForDensity != null && recentMinForDensity > 0)
+                                    ? recentAttAvg / recentMinForDensity : null;
+                                const opportunityLevel = attemptsPerMin == null ? 'insufficient_evidence'
+                                    : attemptsPerMin < ATT_PER_MIN_CUTS[0] ? 'low'
+                                    : attemptsPerMin <= ATT_PER_MIN_CUTS[1] ? 'med' : 'high';
+
+                                const baselineAttArr = ha.slice(-15, -(RC_RECENT_MIN_GAMES)).filter(v => v != null);
+                                let opportunityChange = 'insufficient_evidence';
+                                if (baselineAttArr.length >= RC_BASELINE_MIN_GAMES && recentAttArr.length >= RC_RECENT_MIN_GAMES) {
+                                    const baseAtt = baselineAttArr.reduce((s, v) => s + v, 0) / baselineAttArr.length;
+                                    const delta = recentAttAvg - baseAtt, deltaPct = baseAtt > 0 ? delta / baseAtt : null;
+                                    if (delta >= OPP_MIN_ABS_ATT && (deltaPct == null || deltaPct >= OPP_MIN_REL_ATT)) opportunityChange = 'increased';
+                                    else if (delta <= -OPP_MIN_ABS_ATT && (deltaPct == null || deltaPct <= -OPP_MIN_REL_ATT)) opportunityChange = 'decreased';
+                                    else opportunityChange = 'unchanged';
+                                }
+
+                                const e = calculateEdgeScore(fake, { statKey: k, type: k, line, direction: 'over', lineSource: 'backtest' });
+                                const hitOver = actual > line;
+                                const eUnder = calculateEdgeScore(fake, { statKey: k, type: k, line, direction: 'under', lineSource: 'backtest' });
+                                const hitUnder = actual < line;
+
+                                [[e, hitOver], [eUnder, hitUnder]].forEach(([edge, hit]) => {
+                                    const gO = buckets.overall[timeBucket][edge.grade] || (buckets.overall[timeBucket][edge.grade] = { n: 0, hit: 0 });
+                                    gO.n++; if (hit) gO.hit++;
+                                    buckets.overall[timeBucket]._total.n++; if (hit) buckets.overall[timeBucket]._total.hit++;
+                                    fileBucket('opportunityLevel', timeBucket, opportunityLevel, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('opportunityChange', timeBucket, opportunityChange, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('minutesXOpportunity', timeBucket, minutesLevel + '::' + opportunityLevel, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('roleChangeXOpportunity', timeBucket, roleChangeCat + '::' + opportunityChange, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('nextManUpXOpportunity', timeBucket, nextManUpBucket + '::' + opportunityLevel, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('projStabilityXOpportunity', timeBucket, volBucket + '::' + opportunityLevel, edge.grade, hit, edge.modelProbPct);
+                                    evaluated++;
+                                });
+                                if (missAcc[opportunityChange]) missAcc[opportunityChange].push(actual - line);
+                            }
+                        });
+                    });
+
+                    const rate = (o) => o && o.n ? Math.round((o.hit / o.n) * 1000) / 10 : null;
+                    const summarizeOverall = (acc) => ({
+                        n: acc._total.n, hitRate: rate(acc._total),
+                        byGrade: ['A', 'B', 'C', 'D'].reduce((o, g) => { o[g] = acc[g] ? { n: acc[g].n, hitRate: rate(acc[g]) } : null; return o; }, {})
+                    });
+                    const summarizeDim = (acc) => {
+                        const out = {};
+                        Object.keys(acc).forEach(key => {
+                            const [grade, category] = key.split('|');
+                            const b = acc[key];
+                            const hitPct = rate(b);
+                            const meanProb = b.n ? Math.round((b.sumProb / b.n) * 10) / 10 : null;
+                            out[category] = out[category] || {};
+                            out[category][grade] = {
+                                n: b.n, hitRate: hitPct, meanModelProb: meanProb,
+                                calibrationGap: (hitPct != null && meanProb != null) ? Math.round((hitPct - meanProb) * 10) / 10 : null
+                            };
+                        });
+                        return out;
+                    };
+                    const summarizeMiss = (arr) => arr.length ? { n: arr.length, avgMiss: Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 100) / 100 } : { n: 0, avgMiss: null };
+
+                    const result = {
+                        ranAt: Date.now(), evaluated, holdoutTs,
+                        attPerMinCuts: ATT_PER_MIN_CUTS,
+                        overall: { train: summarizeOverall(buckets.overall.train), holdout: summarizeOverall(buckets.overall.holdout) },
+                        opportunityLevel: { train: summarizeDim(buckets.opportunityLevel.train), holdout: summarizeDim(buckets.opportunityLevel.holdout) },
+                        opportunityChange: { train: summarizeDim(buckets.opportunityChange.train), holdout: summarizeDim(buckets.opportunityChange.holdout) },
+                        minutesXOpportunity: { train: summarizeDim(buckets.minutesXOpportunity.train), holdout: summarizeDim(buckets.minutesXOpportunity.holdout) },
+                        roleChangeXOpportunity: { train: summarizeDim(buckets.roleChangeXOpportunity.train), holdout: summarizeDim(buckets.roleChangeXOpportunity.holdout) },
+                        nextManUpXOpportunity: { train: summarizeDim(buckets.nextManUpXOpportunity.train), holdout: summarizeDim(buckets.nextManUpXOpportunity.holdout) },
+                        projStabilityXOpportunity: { train: summarizeDim(buckets.projStabilityXOpportunity.train), holdout: summarizeDim(buckets.projStabilityXOpportunity.holdout) },
+                        projectionMissByOpportunityChange: {
+                            increased: summarizeMiss(missAcc.increased), decreased: summarizeMiss(missAcc.decreased),
+                            unchanged: summarizeMiss(missAcc.unchanged), insufficient_evidence: summarizeMiss(missAcc.insufficient_evidence),
+                        },
+                    };
+                    setNbaOpportunity(result);
+                    try { localStorage.setItem('beatsedge_nba_opportunity_v1', JSON.stringify(result)); } catch (e) { }
+
+                    console.log('%cNBA Opportunity/Workload validation — observational only (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched)', 'font-weight:bold');
+                    console.log(`train N=${result.overall.train.n.toLocaleString()} (${result.overall.train.hitRate}%) · holdout N=${result.overall.holdout.n.toLocaleString()} (${result.overall.holdout.hitRate}%)`);
+                    ['opportunityLevel', 'opportunityChange', 'minutesXOpportunity', 'roleChangeXOpportunity', 'nextManUpXOpportunity', 'projStabilityXOpportunity'].forEach(dim => {
+                        console.log(`%c${dim}`, 'font-weight:bold');
+                        const cats = [...new Set([...Object.keys(result[dim].train), ...Object.keys(result[dim].holdout)])];
+                        cats.forEach(cat => {
+                            const row = {};
+                            ['A', 'B', 'C', 'D'].forEach(g => {
+                                const t = result[dim].train[cat] && result[dim].train[cat][g];
+                                const h = result[dim].holdout[cat] && result[dim].holdout[cat][g];
+                                row[`train ${g}`] = t ? `${t.hitRate}% (n=${t.n}, gap=${t.calibrationGap})` : '—';
+                                row[`holdout ${g}`] = h ? `${h.hitRate}% (n=${h.n}, gap=${h.calibrationGap})` : '—';
+                            });
+                            console.log(`  ${cat}:`, row);
+                        });
+                    });
+                    console.log('%cprojection miss by opportunityChange (diagnostic only, never fed back into the model)', 'font-weight:bold', result.projectionMissByOpportunityChange);
+                } catch (e) {
+                    console.error('NBA Opportunity validation failed:', e);
+                    setNbaOpportunity({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNbaOpportunityRunning(false);
+                }
+            };
+
+            // ── NFL Opportunity / Target-Share validation (Phase 7) ─────────
+            // Same observational discipline, scoped to WR targets (the one
+            // stat/position pairing with full real historical depth back to
+            // 2022 for BOTH the outcome (receiving_yards) and the opportunity
+            // metric (targets) -- confirmed by Phase 6's audit of
+            // nfl_player_game_stats. RB carries/touches are NOT available as
+            // a distinct column (only rushing_yards is stored -- no
+            // rush_attempts with reliable historical depth before 2025 per
+            // Phase 4/6's finding), so RB is out of scope here rather than
+            // fabricated.
+            const runNflOpportunityValidation = async () => {
+                if (nflOpportunityRunning || backtestRunning) return;
+                setNflOpportunityRunning(true);
+                try {
+                    if (!backendUrl) { setNflOpportunity({ error: 'No backend connected (Data Sources).', ranAt: Date.now() }); return; }
+                    let pool = [];
+                    try {
+                        const pr = await fetch(`${backendUrl}/api/nfl/backtest-pool?minGames=15&limit=300`);
+                        if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                    } catch (e) { /* */ }
+                    pool = pool.filter(p => p.position === 'WR');
+                    if (pool.length < 20) { setNflOpportunity({ error: 'No NFL WR history pool available (need the backend + a populated nfl_player_game_stats table).', ranAt: Date.now() }); return; }
+
+                    const ids = [...new Set(pool.map(p => p.id))];
+                    let playerHist = {};
+                    for (const grp of chunk(ids, 200)) {
+                        try {
+                            const r = await fetch(`${backendUrl}/api/nfl/player-history?ids=${grp.join(',')}`);
+                            if (r.ok) { const j = await r.json(); Object.assign(playerHist, j.history || {}); }
+                        } catch (e) { /* */ }
+                    }
+
+                    // Fixed BEFORE looking at any result -- round, sport-
+                    // plausible target-share cut points, same discipline as
+                    // Phase 6's TERCILE_CUTS.
+                    const TARGET_TREND_MIN_ABS = 1.5, TARGET_TREND_MIN_REL = 0.20;
+                    const MIN = 10;
+                    const buckets = { train: {}, holdout: {} };
+                    const fileBucket = (timeBucket, category, grade, hit, probPct) => {
+                        const acc = buckets[timeBucket];
+                        const key = grade + '|' + category;
+                        const g = acc[key] || (acc[key] = { n: 0, hit: 0, sumProb: 0 });
+                        g.n++; if (hit) g.hit++; g.sumProb += (probPct || 0);
+                    };
+                    const overallAcc = { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() };
+                    let evaluated = 0;
+
+                    pool.forEach(p => {
+                        const rows = (playerHist[p.id] || []).filter(r => r.position === 'WR');
+                        if (rows.length < MIN + 5) return;
+                        const vals = rows.map(r => r.receiving_yards || 0);
+                        if (vals.every(v => v === 0)) return;
+                        const targets = rows.map(r => r.targets != null ? r.targets : null);
+
+                        for (let i = MIN; i < vals.length; i++) {
+                            const row = rows[i];
+                            const timeBucket = row.season >= 2025 ? 'holdout' : 'train';
+                            const hv = vals.slice(0, i);
+                            const ht = targets.slice(0, i);
+                            const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                            if (seasonAvg <= 0) continue;
+                            let line = null, bestGap = 99;
+                            for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                                const over = hv.filter(v => v > cand).length / hv.length;
+                                const gap = Math.abs(over - 0.48);
+                                if (gap < bestGap) { bestGap = gap; line = cand; }
+                            }
+                            if (line == null || line <= 0) continue;
+                            const actual = vals[i];
+                            if (actual === line) continue;
+
+                            const opps = rows.slice(0, i).map(r => r.opponent || '');
+                            const w = btWindowsAsOf(hv, opps, row.opponent, line);
+                            const fake = { sport: 'nfl', position: 'WR', opponent: row.opponent, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
+
+                            const recentT = ht.slice(-3).filter(v => v != null);
+                            const baseT = ht.slice(-10, -3).filter(v => v != null);
+                            let targetTrendBucket = 'insufficient_evidence';
+                            if (recentT.length >= 2 && baseT.length >= 4) {
+                                const recentAvg = recentT.reduce((s, v) => s + v, 0) / recentT.length;
+                                const baseAvg = baseT.reduce((s, v) => s + v, 0) / baseT.length;
+                                const delta = recentAvg - baseAvg, deltaPct = baseAvg > 0 ? delta / baseAvg : null;
+                                if (delta >= TARGET_TREND_MIN_ABS && (deltaPct == null || deltaPct >= TARGET_TREND_MIN_REL)) targetTrendBucket = 'increased';
+                                else if (delta <= -TARGET_TREND_MIN_ABS && (deltaPct == null || deltaPct <= -TARGET_TREND_MIN_REL)) targetTrendBucket = 'decreased';
+                                else targetTrendBucket = 'unchanged';
+                            }
+
+                            for (const dir of ['over', 'under']) {
+                                const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', line, direction: dir, lineSource: 'backtest' });
+                                const hit = dir === 'over' ? actual > line : actual < line;
+                                const gO = overallAcc[timeBucket][e.grade] || (overallAcc[timeBucket][e.grade] = { n: 0, hit: 0 });
+                                gO.n++; if (hit) gO.hit++;
+                                overallAcc[timeBucket]._total.n++; if (hit) overallAcc[timeBucket]._total.hit++;
+                                fileBucket(timeBucket, targetTrendBucket, e.grade, hit, e.modelProbPct);
+                                evaluated++;
+                            }
+                        }
+                    });
+
+                    const rate = (o) => o && o.n ? Math.round((o.hit / o.n) * 1000) / 10 : null;
+                    const summarizeOverall = (acc) => ({
+                        n: acc._total.n, hitRate: rate(acc._total),
+                        byGrade: ['A', 'B', 'C', 'D'].reduce((o, g) => { o[g] = acc[g] ? { n: acc[g].n, hitRate: rate(acc[g]) } : null; return o; }, {})
+                    });
+                    const summarizeDim = (acc) => {
+                        const out = {};
+                        Object.keys(acc).forEach(key => {
+                            const [grade, category] = key.split('|');
+                            const b = acc[key];
+                            const hitPct = rate(b);
+                            const meanProb = b.n ? Math.round((b.sumProb / b.n) * 10) / 10 : null;
+                            out[category] = out[category] || {};
+                            out[category][grade] = { n: b.n, hitRate: hitPct, meanModelProb: meanProb, calibrationGap: (hitPct != null && meanProb != null) ? Math.round((hitPct - meanProb) * 10) / 10 : null };
+                        });
+                        return out;
+                    };
+
+                    const result = {
+                        ranAt: Date.now(), evaluated,
+                        overall: { train: summarizeOverall(overallAcc.train), holdout: summarizeOverall(overallAcc.holdout) },
+                        targetTrend: { train: summarizeDim(buckets.train), holdout: summarizeDim(buckets.holdout) },
+                    };
+                    setNflOpportunity(result);
+                    try { localStorage.setItem('beatsedge_nfl_opportunity_v1', JSON.stringify(result)); } catch (e) { }
+
+                    console.log('%cNFL Opportunity (WR target trend) validation — observational only (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched)', 'font-weight:bold');
+                    console.log(`train N=${result.overall.train.n.toLocaleString()} (${result.overall.train.hitRate}%) · holdout N=${result.overall.holdout.n.toLocaleString()} (${result.overall.holdout.hitRate}%)`);
+                    const cats = [...new Set([...Object.keys(result.targetTrend.train), ...Object.keys(result.targetTrend.holdout)])];
+                    cats.forEach(cat => {
+                        const row = {};
+                        ['A', 'B', 'C', 'D'].forEach(g => {
+                            const t = result.targetTrend.train[cat] && result.targetTrend.train[cat][g];
+                            const h = result.targetTrend.holdout[cat] && result.targetTrend.holdout[cat][g];
+                            row[`train ${g}`] = t ? `${t.hitRate}% (n=${t.n}, gap=${t.calibrationGap})` : '—';
+                            row[`holdout ${g}`] = h ? `${h.hitRate}% (n=${h.n}, gap=${h.calibrationGap})` : '—';
+                        });
+                        console.log(`  ${cat}:`, row);
+                    });
+                } catch (e) {
+                    console.error('NFL Opportunity validation failed:', e);
+                    setNflOpportunity({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNflOpportunityRunning(false);
                 }
             };
 
@@ -18896,6 +19467,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nflMatchup={nflMatchup}
                                 nflMatchupRunning={nflMatchupRunning}
                                 onRunNflMatchup={runNflMatchupValidation}
+                                nbaOpportunity={nbaOpportunity}
+                                nbaOpportunityRunning={nbaOpportunityRunning}
+                                onRunNbaOpportunity={runNbaOpportunityValidation}
+                                nflOpportunity={nflOpportunity}
+                                nflOpportunityRunning={nflOpportunityRunning}
+                                onRunNflOpportunity={runNflOpportunityValidation}
                                 nbaFinalVal={nbaFinalVal}
                                 nbaFinalValRunning={nbaFinalValRunning}
                                 onRunFinalVal={runFinalLockedValidation}
