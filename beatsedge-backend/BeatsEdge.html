@@ -13398,10 +13398,19 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         if (volBucket) {
-                            const vg = acc.volByGrade[e.grade + '|' + volBucket] || (acc.volByGrade[e.grade + '|' + volBucket] = { n: 0, hit: 0 });
-                            vg.n++; if (hit) vg.hit++;
-                            const vo = acc.volOnly[volBucket] || (acc.volOnly[volBucket] = { n: 0, hit: 0 });
-                            vo.n++; if (hit) vo.hit++;
+                            // Same Brier/log-loss math already used by calibVal's cvT()
+                            // above (y=outcome, p=model's own probability estimate) --
+                            // added here so the volatility breakdown can report
+                            // calibration gap/MAE/Brier/logloss, not just hit rate.
+                            const y = hit ? 1 : 0;
+                            const p = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 0) / 100));
+                            const brier = (p - y) * (p - y);
+                            const logloss = -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+                            const vgKey = e.grade + '|' + volBucket;
+                            const vg = acc.volByGrade[vgKey] || (acc.volByGrade[vgKey] = { n: 0, hit: 0, sumProb: 0, sumBrier: 0, sumLogLoss: 0 });
+                            vg.n++; if (hit) vg.hit++; vg.sumProb += (e.modelProbPct || 0); vg.sumBrier += brier; vg.sumLogLoss += logloss;
+                            const vo = acc.volOnly[volBucket] || (acc.volOnly[volBucket] = { n: 0, hit: 0, sumProb: 0, sumBrier: 0, sumLogLoss: 0 });
+                            vo.n++; if (hit) vo.hit++; vo.sumProb += (e.modelProbPct || 0); vo.sumBrier += brier; vo.sumLogLoss += logloss;
                         }
                         // Prime cohort (high confluence + large edge) broken out by
                         // stat — is the corner's hit rate uniform, or is one market
@@ -14796,27 +14805,50 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     // HOLDOUT-ish REFERENCE = windows inside that period (W4-5).
                     // GRADE_CUTOFFS/PROB_CALIB are NOT re-derived anywhere in
                     // this function — Model A stays exactly as currently frozen.
-                    const poolVolByGrade = (wins) => {
+                    const poolByKey = (wins, field) => {
                         const out = {};
-                        wins.forEach(w => Object.keys(w.volByGrade || {}).forEach(key => {
-                            const src = w.volByGrade[key];
-                            const dst = out[key] || (out[key] = { n: 0, hit: 0 });
+                        wins.forEach(w => Object.keys(w[field] || {}).forEach(key => {
+                            const src = w[field][key];
+                            const dst = out[key] || (out[key] = { n: 0, hit: 0, sumProb: 0, sumBrier: 0, sumLogLoss: 0 });
                             dst.n += src.n; dst.hit += src.hit;
+                            dst.sumProb += (src.sumProb || 0); dst.sumBrier += (src.sumBrier || 0); dst.sumLogLoss += (src.sumLogLoss || 0);
                         }));
                         return out;
                     };
-                    const trainPooled = poolVolByGrade(windows.filter(w => !w.seen));
-                    const refPooled = poolVolByGrade(windows.filter(w => w.seen));
-                    const gradesUsed = [...new Set(Object.keys({ ...trainPooled, ...refPooled }).map(k => k.split('|')[0]))].sort();
-                    console.log('%cProjection Stability validation — hit rate by grade × volatility bucket (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched by this run)', 'font-weight:bold');
-                    (console.table || console.log).call(console, gradesUsed.reduce((o, g) => {
-                        const row = {};
-                        ['low', 'med', 'high'].forEach(b => {
-                            const t = trainPooled[g + '|' + b], r = refPooled[g + '|' + b];
-                            row[`train ${b} (n)`] = t ? `${Math.round(t.hit / t.n * 100)}% (${t.n})` : '—';
-                            row[`ref ${b} (n)`] = r ? `${Math.round(r.hit / r.n * 100)}% (${r.n})` : '—';
-                        });
-                        o[`Grade ${g}`] = row;
+                    // Full metric row for one pooled bucket: n, hit rate, mean model
+                    // probability, calibration gap (hit% - meanProb%, the same
+                    // definition used by gapBefore/gapAfter above), MAE (here:
+                    // |gap|, the single-bucket case of the same calibration-error
+                    // idea), Brier, log loss.
+                    const metricRow = (b) => {
+                        if (!b || !b.n) return null;
+                        const hitPct = Math.round((b.hit / b.n) * 1000) / 10;
+                        const meanProb = Math.round((b.sumProb / b.n) * 10) / 10;
+                        const gap = Math.round((hitPct - meanProb) * 10) / 10;
+                        return {
+                            n: b.n, hitRate: hitPct, meanModelProb: meanProb, calibrationGap: gap, mae: Math.abs(gap),
+                            brier: Math.round((b.sumBrier / b.n) * 10000) / 10000, logLoss: Math.round((b.sumLogLoss / b.n) * 10000) / 10000
+                        };
+                    };
+                    const trainWins = windows.filter(w => !w.seen), refWins = windows.filter(w => w.seen);
+                    const trainByGrade = poolByKey(trainWins, 'volByGrade'), refByGrade = poolByKey(refWins, 'volByGrade');
+                    const trainByBucket = poolByKey(trainWins, 'volOnly'), refByBucket = poolByKey(refWins, 'volOnly');
+                    const gradesUsed = [...new Set(Object.keys({ ...trainByGrade, ...refByGrade }).map(k => k.split('|')[0]))].sort();
+
+                    console.log('%cProjection Stability validation — grade × volatility bucket, full metrics (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched by this run)', 'font-weight:bold');
+                    console.log(`train N (windows never seen by FAMILY_CALIB): ${trainWins.reduce((s, w) => s + w.n, 0).toLocaleString()} · reference N (windows inside that period): ${refWins.reduce((s, w) => s + w.n, 0).toLocaleString()}`);
+                    gradesUsed.forEach(g => {
+                        console.log(`%cGrade ${g}`, 'font-weight:bold');
+                        (console.table || console.log).call(console, ['low', 'med', 'high'].reduce((o, b) => {
+                            o[`train ${b}`] = metricRow(trainByGrade[g + '|' + b]) || '—';
+                            o[`ref ${b}`] = metricRow(refByGrade[g + '|' + b]) || '—';
+                            return o;
+                        }, {}));
+                    });
+                    console.log('%cVolatility bucket alone (no grade control) — sample sizes and low/medium/high performance', 'font-weight:bold');
+                    (console.table || console.log).call(console, ['low', 'med', 'high'].reduce((o, b) => {
+                        o[`train ${b}`] = metricRow(trainByBucket[b]) || '—';
+                        o[`ref ${b}`] = metricRow(refByBucket[b]) || '—';
                         return o;
                     }, {}));
                 } catch (e) {

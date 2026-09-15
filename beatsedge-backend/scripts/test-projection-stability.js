@@ -113,5 +113,40 @@ ok(emptySummary.trend === null && emptySummary.consistency === null && emptySumm
 const shortSeries = seriesStats([1, 2, 3, 4, 5, 6, 7]);
 ok(shortSeries.sampleSize === 7, 'a 7-game array reports sampleSize 7 (never padded/mislabeled as 10)', shortSeries.sampleSize);
 
+// 13-16. Exact L5/L10/L15/L20 window lengths -- each reports the real
+// sampleSize matching the array actually given (mirrors how nbaComputeWindows'
+// windowOf(n) calls seriesStats(vals.slice(-n)) for n=5/10/15/20).
+const mkSeq = (n) => Array.from({ length: n }, (_, i) => 10 + i);
+[5, 10, 15, 20].forEach(n => {
+  const s = seriesStats(mkSeq(n));
+  ok(s.sampleSize === n && s.floor === 10 && s.ceiling === 10 + n - 1,
+    `exact L${n} window (${n} games) -> correct sampleSize/floor/ceiling`, s);
+});
+
+// 17. Deterministic output -- calling seriesStats twice on the same input
+// (including a fresh array with identical values) must produce identical
+// results. No hidden state, no randomness, no ordering-dependent side effects.
+const detInput = [7, 3, 9, 3, 5, 8, 2, 6];
+const detA = seriesStats([...detInput]);
+const detB = seriesStats([...detInput]);
+ok(JSON.stringify(detA) === JSON.stringify(detB), 'seriesStats is deterministic -- identical input produces identical output', { detA, detB });
+const summA = projectionStabilitySummary([...detInput], detInput.slice(-5));
+const summB = projectionStabilitySummary([...detInput], detInput.slice(-5));
+ok(JSON.stringify(summA) === JSON.stringify(summB), 'projectionStabilitySummary is deterministic', { summA, summB });
+
+// 18. No mutation of source game rows -- seriesStats must not sort, reverse,
+// or otherwise alter the caller's array in place (nbaComputeWindows/
+// nflComputeWindows pass `vals`/`arr` slices that other code in those
+// functions reads afterward -- an in-place sort would corrupt chronological
+// ordering for every window computed after this one).
+const original = [9, 2, 7, 4, 1, 8, 3];
+const originalCopy = [...original];
+seriesStats(original);
+ok(JSON.stringify(original) === JSON.stringify(originalCopy), 'seriesStats does not mutate its input array (order/values unchanged)', original);
+const originalForSummary = [5, 5, 5, 12, 12, 12, 3, 3, 3];
+const originalForSummaryCopy = [...originalForSummary];
+projectionStabilitySummary(originalForSummary, originalForSummary.slice(-3));
+ok(JSON.stringify(originalForSummary) === JSON.stringify(originalForSummaryCopy), 'projectionStabilitySummary does not mutate its input array', originalForSummary);
+
 console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===`);
 if (fail > 0) process.exit(1);
