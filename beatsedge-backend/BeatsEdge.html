@@ -9533,12 +9533,18 @@
                     // posGroup via the live NBA roster cache — never guess an id,
                     // and require the roster hit's own team to match the injury
                     // report's team (a name collision across teams should not
-                    // silently misattribute an absence).
+                    // silently misattribute an absence). Phase 10A: byNorm[name]
+                    // is now an array of every real slate candidate sharing that
+                    // normalized name (never overwritten) -- find the one whose
+                    // own team matches the injury report's team, same corroboration
+                    // this code already intended, now correct even when 2+ real
+                    // players share a name.
                     const sidelinedByTeam = {};
                     (liveInjuries || []).forEach(i => {
                         if (!SIDELINED_LIKELIHOOD[i.status]) return;
-                        const hit = byNorm[nflNormName(i.player || '')];
-                        if (!hit || hit.team !== i.team) return;
+                        const candidates = byNorm[nflNormName(i.player || '')] || [];
+                        const hit = candidates.find(c => c.team === i.team);
+                        if (!hit) return;
                         (sidelinedByTeam[i.team] = sidelinedByTeam[i.team] || []).push({
                             athleteId: hit.id, athleteName: i.player, posGroup: hit.pos || nbaPosGroup(i.position)
                         });
@@ -11118,6 +11124,91 @@
                 });
             };
 
+            // ============================================================
+            // Phase 10A -- shared player-identity resolver.
+            //
+            // Same decision tree as MLB's own proven collision guard
+            // (fetchMlbPropLines below, "Bug D" -- untouched, still its own
+            // inline implementation since it already works in live
+            // production and doesn't need migrating). NFL/CFB/NBA/WNBA's
+            // roster caches used to build `byNorm[normName] = rec`, a plain
+            // object assignment -- a same-normalized-name collision between
+            // two real slate players silently let whichever roster fetch
+            // ran last overwrite the other, so a real market line could
+            // attach to the wrong player with no signal anywhere that it
+            // happened. Fixed by making each sport's roster build push
+            // every candidate for a name into an array (never overwrite),
+            // then resolving the array against the SPECIFIC prop's own
+            // real game context (ParlayAPI's home_team/away_team, present
+            // on every fetchParlayProps row for every sport) at match time.
+            //
+            // Never guesses: a collision the game context cannot uniquely
+            // resolve returns chosen:null (unresolved) rather than picking
+            // one candidate. For the overwhelming common case (a unique
+            // name on the slate) this changes nothing -- same candidate,
+            // same result, same real line, matching Step 19's requirement
+            // that unique-name output stay byte-identical.
+            //
+            // `candidates`: real slate roster records sharing one
+            //   normalized name, each carrying its own real `team`
+            //   abbreviation.
+            // `gameTeamAbbrs`: real team abbreviations for the game THIS
+            //   prop actually belongs to (may be [] when that context
+            //   isn't available -- never treated as a mismatch, only as
+            //   weaker evidence).
+            const resolvePlayerIdentity = (candidates, gameTeamAbbrs) => {
+                if (!candidates || !candidates.length) return { chosen: null, reason: 'noCandidates' };
+                const teams = gameTeamAbbrs || [];
+                if (candidates.length === 1) {
+                    const c = candidates[0];
+                    if (!teams.length) return { chosen: c, reason: 'nameOnlyNoTeamData' };
+                    return teams.includes(c.team) ? { chosen: c, reason: 'teamCorroborated' } : { chosen: null, reason: 'teamMismatch' };
+                }
+                const teamMatches = candidates.filter(c => teams.includes(c.team));
+                if (teamMatches.length === 1) return { chosen: teamMatches[0], reason: 'teamCorroborated' };
+                return { chosen: null, reason: 'collision' };
+            };
+
+            // Real home/away team names for a ParlayAPI byStat group, from
+            // whichever row happens to carry them (every fetchParlayProps
+            // row does, any sport) -- same extraction MLB's own join already
+            // does inline. `nameToAbbr` is sport-specific (see below); this
+            // helper itself is sport-agnostic.
+            const extractGameTeamAbbrs = (byStat, nameToAbbr) => {
+                let repHome = null, repAway = null;
+                Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => {
+                    if (e.homeTeam || e.awayTeam) { repHome = e.homeTeam; repAway = e.awayTeam; return true; }
+                    return false;
+                })));
+                return [repHome, repAway].map(nameToAbbr).filter(Boolean);
+            };
+
+            // NFL/CFB: teamMeta carries the real ESPN displayName (e.g.
+            // "Kansas City Chiefs"), same full-name shape MLB's own
+            // fullNameToAbbr matches against -- exact match, no new fetch.
+            const nameToAbbrFromDisplayName = (teamMeta) => (fullName) => {
+                if (!fullName) return null;
+                for (const tid in teamMeta) { if (teamMeta[tid] && teamMeta[tid].name === fullName) return teamMeta[tid].abbr; }
+                return null;
+            };
+            // NBA/WNBA: teamMeta only carries the nickname (NBA_TEAMS/
+            // WNBA_TEAMS' 3rd element, e.g. "Lakers", not the full
+            // "Los Angeles Lakers") -- no live-verified confirmation of
+            // ParlayAPI's exact NBA/WNBA home_team/away_team string format
+            // exists, and Step 31 forbids spending quota just to check. A
+            // substring match on the nickname is robust to that formatting
+            // uncertainty (the nickname is common to any reasonable full-
+            // name spelling) and degrades safely: if it ever fails to
+            // match, resolvePlayerIdentity treats that exactly like "no
+            // team data" for a unique candidate (unaffected) or "collision"
+            // for a real one (rejected, never guessed) -- never a wrong pick.
+            const nameToAbbrFromNickname = (teamsArr) => (fullName) => {
+                if (!fullName) return null;
+                const low = fullName.toLowerCase();
+                for (const [, abbr, nick] of teamsArr) { if (nick && low.includes(nick.toLowerCase())) return abbr; }
+                return null;
+            };
+
             const fetchMlbPropLines = async (players, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 if (gone()) return;
@@ -11851,7 +11942,12 @@
                             oppDef: defByTeam[oppId] || null,
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
-                        byNorm[nflNormName(a.fullName)] = rec;
+                        // Phase 10A: push every candidate for this normalized
+                        // name -- never overwrite (a same-name collision
+                        // between two real slate players used to silently
+                        // let whichever roster fetch ran last win).
+                        const nn = nflNormName(a.fullName);
+                        (byNorm[nn] = byNorm[nn] || []).push(rec);
                         slots.push(rec);
                     });
                 });
@@ -11890,9 +11986,25 @@
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
-                const bySlot = nflCache.current.byNorm || {};
+                // Phase 10A: resolve, never guess. rosterCandidates[nn] is
+                // an array (every real slate player sharing this normalized
+                // name); bySlot[nn] ends up holding only the ONE candidate
+                // real game context (ParlayAPI's own home_team/away_team on
+                // this prop) actually corroborates. A collision the game
+                // context can't uniquely resolve is dropped here, not
+                // guessed -- same fail-closed rule MLB's own join already
+                // proved live.
+                const rosterCandidates = nflCache.current.byNorm || {};
+                const nflNameToAbbr = nameToAbbrFromDisplayName(nflCache.current.teamMeta || {});
                 const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
-                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (bySlot[nn]) linesByName[nn] = byStat; });
+                const bySlot = {};
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    const candidates = rosterCandidates[nn];
+                    if (!candidates || !candidates.length) return;
+                    const gameTeamAbbrs = extractGameTeamAbbrs(byStat, nflNameToAbbr);
+                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
@@ -12154,7 +12266,10 @@
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
                         byId[rec.id] = rec;
-                        byNorm[nflNormName(rec.name)] = rec;
+                        // Phase 10A: push, never overwrite (see NFL's
+                        // identical comment above resolvePlayerIdentity).
+                        const nn = nflNormName(rec.name);
+                        (byNorm[nn] = byNorm[nn] || []).push(rec);
                         slots.push(rec);
                     });
                 });
@@ -12181,13 +12296,23 @@
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
-                const byNorm = cfbCache.current.byNorm || {};
+                // Phase 10A: resolve, never guess (see NFL's identical
+                // comment above resolvePlayerIdentity).
+                const rosterCandidates = cfbCache.current.byNorm || {};
+                const cfbNameToAbbr = nameToAbbrFromDisplayName(cfbCache.current.teamMeta || {});
                 const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary,ppType}]
-                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (byNorm[nn]) linesByName[nn] = byStat; });
+                const resolvedByNorm = {};
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    const candidates = rosterCandidates[nn];
+                    if (!candidates || !candidates.length) return;
+                    const gameTeamAbbrs = extractGameTeamAbbrs(byStat, cfbNameToAbbr);
+                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (chosen) { linesByName[nn] = byStat; resolvedByNorm[nn] = chosen; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
-                const matched = Object.keys(linesByName).map(nn => ({ nn, slot: byNorm[nn] })).filter(x => x.slot);
+                const matched = Object.keys(linesByName).map(nn => ({ nn, slot: resolvedByNorm[nn] })).filter(x => x.slot);
                 if (!matched.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no CFB lines matched this slate\'s roster scan (name join).'); return []; }
 
                 const glMap = await cfbGamelogs(matched.map(x => x.slot.id));
@@ -12739,7 +12864,10 @@
                             b2b, isBackToBackTonight: !!(b2b && b2b.tonight === 'second'),
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
-                        byNorm[nflNormName(a.fullName)] = rec;
+                        // Phase 10A: push, never overwrite (see NFL's
+                        // identical comment above resolvePlayerIdentity).
+                        const nn = nflNormName(a.fullName);
+                        (byNorm[nn] = byNorm[nn] || []).push(rec);
                         slots.push(rec);
                     });
                 });
@@ -12766,9 +12894,19 @@
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
-                const bySlot = nbaCache.current.byNorm || {};
+                // Phase 10A: resolve, never guess (see NFL's identical
+                // comment above resolvePlayerIdentity).
+                const rosterCandidates = nbaCache.current.byNorm || {};
+                const nbaNameToAbbr = nameToAbbrFromNickname(NBA_TEAMS);
                 const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
-                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (bySlot[nn]) linesByName[nn] = byStat; });
+                const bySlot = {};
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    const candidates = rosterCandidates[nn];
+                    if (!candidates || !candidates.length) return;
+                    const gameTeamAbbrs = extractGameTeamAbbrs(byStat, nbaNameToAbbr);
+                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
@@ -13094,7 +13232,10 @@
                             b2b, isBackToBackTonight: !!(b2b && b2b.tonight === 'second'),
                             gamePk: g.gameId, isHome, gameTime: g.gameTime, gameState: g.state
                         };
-                        byNorm[nflNormName(a.fullName)] = rec;
+                        // Phase 10A: push, never overwrite (see NFL's
+                        // identical comment above resolvePlayerIdentity).
+                        const nn = nflNormName(a.fullName);
+                        (byNorm[nn] = byNorm[nn] || []).push(rec);
                         slots.push(rec);
                     });
                 });
@@ -13120,9 +13261,19 @@
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
-                const bySlot = wnbaCache.current.byNorm || {};
+                // Phase 10A: resolve, never guess (see NFL's identical
+                // comment above resolvePlayerIdentity).
+                const rosterCandidates = wnbaCache.current.byNorm || {};
+                const wnbaNameToAbbr = nameToAbbrFromNickname(WNBA_TEAMS);
                 const linesByName = {};
-                Object.entries(pa.byNorm).forEach(([nn, byStat]) => { if (bySlot[nn]) linesByName[nn] = byStat; });
+                const bySlot = {};
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    const candidates = rosterCandidates[nn];
+                    if (!candidates || !candidates.length) return;
+                    const gameTeamAbbrs = extractGameTeamAbbrs(byStat, wnbaNameToAbbr);
+                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
