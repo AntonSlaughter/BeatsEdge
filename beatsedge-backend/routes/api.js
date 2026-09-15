@@ -14,6 +14,7 @@ const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapsho
 const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
 const dataSourceHealth = require('../lib/dataSourceHealth');
+const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -293,6 +294,44 @@ router.get('/nba/dvp', (req, res) => {
     const asOf = db.prepare(`SELECT MAX(game_date) d FROM nba_player_box${since ? ' WHERE game_date >= ?' : ''}`).get(...(since ? [since] : []));
     res.json({ since, asOf: asOf && asOf.d, source: 'BeatsEdge computed (hoopR box scores)', grid: nbaHist.dvpGrid({ since }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/nba/next-man-up
+// Body: { asOfDate: 'YYYY-MM-DD', players: [{ athleteId, athleteName, team,
+//   posGroup, unavailableTeammates: [{athleteId,athleteName,posGroup}] }, ...] }
+// SEPARATE, ADDITIVE research signal — see lib/nextManUpSignal.js's header.
+// Does not read or write anything from calculateEdgeScore/grade/Prime/
+// confluence (that logic lives entirely client-side in BeatsEdge.html and is
+// untouched here). `unavailableTeammates` is supplied by the CALLER — in
+// production BeatsEdge.html supplies it from its own existing live ESPN
+// injury fetch (fetchLiveInjuries/sidelinedByTeam), not from anything this
+// route looks up itself. Response never fabricates: any player with
+// insufficient real history gets active:false with null impact fields.
+router.post('/nba/next-man-up', (req, res) => {
+  try {
+    const { asOfDate, players } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '')) return res.status(400).json({ error: 'asOfDate must be YYYY-MM-DD' });
+    if (!Array.isArray(players) || !players.length) return res.status(400).json({ error: 'players must be a non-empty array' });
+    if (players.length > 500) return res.status(400).json({ error: 'too many players (max 500 per request)' });
+
+    const signals = {};
+    for (const p of players) {
+      if (!p || !p.athleteId) continue;
+      signals[p.athleteId] = buildNextManUpSignal({
+        db,
+        athleteId: String(p.athleteId),
+        athleteName: p.athleteName || null,
+        team: p.team || null,
+        posGroup: p.posGroup || null,
+        asOfDate,
+        unavailableTeammates: Array.isArray(p.unavailableTeammates) ? p.unavailableTeammates : [],
+        dataFreshness: p.dataFreshness || null,
+      });
+    }
+    res.json({ source: 'BeatsEdge computed (real nba_player_box history, research-only, not part of the graded model)', asOfDate, signals });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ============================================================

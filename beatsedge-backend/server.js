@@ -55,6 +55,7 @@ app.get('/', (req, res) => {
       'GET /api/nba/backtest-pool?season=&minGames=&limit=',
       'GET /api/nba/gamelogs?athletes=id,id&since=YYYY-MM-DD',
       'GET /api/nba/dvp?since=YYYY-MM-DD',
+      'POST /api/nba/next-man-up  { asOfDate, players: [{athleteId,athleteName,team,posGroup,unavailableTeammates:[...]}] } (research-only, not part of the graded model)',
       'POST /api/snapshots  { date, sport, rows: [...] }',
       'GET /api/snapshots/summary',
       'GET /api/snapshots?since=YYYY-MM-DD&sport=&limit=',

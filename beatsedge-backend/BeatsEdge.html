@@ -8472,7 +8472,9 @@
                     // strip are sport/date-specific — without this they'd still
                     // show the tab we came FROM. Cheap, async, non-blocking.
                     const staleNow = () => loadSeqRef.current !== mySeq;
-                    fetchLiveInjuries(cached.players, staleNow).catch(() => {});
+                    fetchLiveInjuries(cached.players, staleNow)
+                        .then(liveInjuries => fetchNextManUpSignals(cached.players, liveInjuries, staleNow))
+                        .catch(() => {});
                     fetchLiveScoreboard(staleNow).catch(() => {});
                     fetchSlateLineups(cached.players, staleNow).catch(() => {});
                     return;
@@ -8859,8 +8861,9 @@
                     //    genuinely free with no signup. If ESPN is unreachable
                     //    (network/CORS in this browser), we fall back to sample
                     //    data and say so honestly in the UI.
-                    await fetchLiveInjuries(players, stale);
+                    const liveInjuriesResult = await fetchLiveInjuries(players, stale);
                     if (stale()) return;
+                    fetchNextManUpSignals(players, liveInjuriesResult, stale).catch(() => {});
                     await fetchLiveScoreboard(stale);
                     if (stale()) return;
                     await fetchSlateLineups(players, stale);
@@ -9183,6 +9186,7 @@
                         }
                         return next;
                     }));
+                    return liveInjuries;
                 } catch (err) {
                     console.warn('Live ESPN injury fetch failed, using sample injury data:', err.message);
                     setInjuryDataSource('sample');
@@ -9192,6 +9196,72 @@
                         { id: 1, player: 'LeBron James', team: 'LAL', status: 'QUESTIONABLE', injury: 'Ankle', update: "Game-time decision", timestamp: 'sample data' },
                         { id: 2, player: 'Kevin Durant', team: 'PHX', status: 'OUT', injury: 'Calf', update: 'Ruled out', timestamp: 'sample data' }
                     ]);
+                }
+            };
+
+            // Next Man Up / role-change RESEARCH signal (NBA only) — a
+            // SEPARATE, additive layer. It never feeds calculateEdgeScore,
+            // confidence, grade, or confluence; it only attaches
+            // player.nextManUpSignal for a standalone "WHY" callout in the
+            // UI. See lib/nextManUpSignal.js (backend) for the full design
+            // note, leakage protection, and backtest.
+            //
+            // NOTE: deliberately does NOT reuse the shared cross-sport
+            // posBucket()/player.opportunity mechanism above — posBucket('G')
+            // returns 'NONSKILL' (it's read as the NFL offensive-line
+            // position), which silently zeroes out NBA Guards, the most
+            // common NBA position. That's a pre-existing bug in the general
+            // injury-ticker feature, out of scope to fix here; this NBA-only
+            // path uses its own G/F/C normalizer (the same one nbaCache's own
+            // slate builder already uses) instead of posBucket().
+            const fetchNextManUpSignals = async (players, liveInjuries, isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                if (selectedSport !== 'nba' || !backendUrl) return;
+                try {
+                    const nbaPosGroup = (raw) => /^(PG|SG|G)$/i.test(raw || '') ? 'G' : /^(SF|PF|F)$/i.test(raw || '') ? 'F' : 'C';
+                    const byNorm = (nbaCache.current && nbaCache.current.byNorm) || {};
+
+                    // Resolve each sidelined-likely player to a REAL athleteId +
+                    // posGroup via the live NBA roster cache — never guess an id,
+                    // and require the roster hit's own team to match the injury
+                    // report's team (a name collision across teams should not
+                    // silently misattribute an absence).
+                    const sidelinedByTeam = {};
+                    (liveInjuries || []).forEach(i => {
+                        if (!SIDELINED_LIKELIHOOD[i.status]) return;
+                        const hit = byNorm[nflNormName(i.player || '')];
+                        if (!hit || hit.team !== i.team) return;
+                        (sidelinedByTeam[i.team] = sidelinedByTeam[i.team] || []).push({
+                            athleteId: hit.id, athleteName: i.player, posGroup: hit.pos || nbaPosGroup(i.position)
+                        });
+                    });
+                    if (!Object.keys(sidelinedByTeam).length) return; // nothing sidelined -- nothing to check, skip the request
+
+                    const nbaPlayers = (players || []).filter(p => p && p.sport === 'nba' && p.id && p.team);
+                    const reqPlayers = nbaPlayers
+                        .filter(p => (sidelinedByTeam[p.team] || []).length)
+                        .map(p => ({
+                            athleteId: p.id, athleteName: p.name, team: p.team, posGroup: p.position,
+                            unavailableTeammates: sidelinedByTeam[p.team] || []
+                        }));
+                    if (!reqPlayers.length) return;
+
+                    const resp = await fetch(`${backendUrl}/api/nba/next-man-up`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ asOfDate: selectedDate, players: reqPlayers })
+                    });
+                    if (!resp.ok || gone()) return;
+                    const data = await resp.json();
+                    if (gone() || !data || !data.signals) return;
+                    setPlayersData(prev => prev.map(p => {
+                        const sig = data.signals[p.id];
+                        return (sig && p.sport === 'nba') ? { ...p, nextManUpSignal: sig } : p;
+                    }));
+                } catch (err) {
+                    // Research-only and additive -- a failure here must never
+                    // block or affect the graded slate, so it's swallowed
+                    // (logged only), same as the other best-effort fetches above.
+                    console.warn('Next-Man-Up signal fetch failed (research-only, non-fatal):', err.message);
                 }
             };
 
@@ -16046,6 +16116,26 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         <div className="projection-value edge-neutral">{edge.impliedProbPct}%{edge.hasRealPrice && edge.vigPct > 0 ? <span style={{ fontSize: '0.7rem', display: 'block', color: 'var(--text-muted)' }}>vig {edge.vigPct}%</span> : null}</div>
                                                     </div>
                                                 </div>
+
+                                                {player.sport === 'nba' && player.nextManUpSignal && player.nextManUpSignal.active && (
+                                                    <div style={{
+                                                        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                                                        borderRadius: '8px', padding: '0.7rem 0.9rem', margin: '0 0 1rem', fontSize: '0.8rem',
+                                                        color: 'var(--text-secondary)'
+                                                    }}>
+                                                        <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                                            🔬 Research signal: Next Man Up
+                                                            <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.72rem' }}> — separate from the model/grade/confluence above; not used in any of it</span>
+                                                        </div>
+                                                        <div>{player.nextManUpSignal.reason}</div>
+                                                        <div style={{ marginTop: '0.3rem', color: 'var(--text-muted)' }}>
+                                                            Confidence {Math.round((player.nextManUpSignal.confidence || 0) * 100)}%
+                                                            {' '}· from {player.nextManUpSignal.evidenceGames} of this player's own recent games
+                                                            {player.nextManUpSignal.minutesImpact != null && <>{' '}· minutes {player.nextManUpSignal.minutesImpact >= 0 ? '+' : ''}{player.nextManUpSignal.minutesImpact}/g vs baseline</>}
+                                                            {player.nextManUpSignal.opportunityImpact != null && player.nextManUpSignal.unavailableTeammate && <>{' '}· ~{player.nextManUpSignal.opportunityImpact} min/g vacated by {player.nextManUpSignal.unavailableTeammate}</>}
+                                                        </div>
+                                                    </div>
+                                                )}
 
                                                 <details className="prob-breakdown research-master">
                                                     <summary>🧠 How this {edge.modelProbPct}% was calculated</summary>
