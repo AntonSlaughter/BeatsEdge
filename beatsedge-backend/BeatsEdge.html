@@ -4533,7 +4533,59 @@
                 }
             }
         }
-        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {}, primeProb: {}, primeFamProb: {}, primeTotal: { n: 0, hit: 0 } }; }
+        function emptyBacktestAcc() { return { _total: { n: 0, hit: 0 }, factors: {}, score: {}, prob: {}, probRaw: {}, align: {}, gradeConf: {}, confEdge: {}, gce: {}, primeByStat: {}, primeFam: {}, primeFamCell: {}, primeFamGrade: {}, primeFamEdge: {}, primeFamGradeEdge: {}, primeProb: {}, primeFamProb: {}, primeTotal: { n: 0, hit: 0 }, volByGrade: {}, volOnly: {} }; }
+        // Fixed BEFORE looking at any train/holdout result (Projection
+        // Stability validation) -- typical box-score coefficient-of-variation
+        // ranges, not derived from this dataset. Never adjusted afterward.
+        function volBucketOf(cv) { return cv == null ? null : cv < 0.25 ? 'low' : cv < 0.45 ? 'med' : 'high'; }
+
+        // ── Projection Stability / Uncertainty — SEPARATE, additive research
+        // layer. Pure functions only; nothing here is read by calculateEdgeScore,
+        // grade, Prime, or confluence. Callers attach the result as a sibling
+        // `stability` field on an existing window object (last5/last10/season/...)
+        // -- never overwrites avg/hitRate/games, so it's inert to Model A by
+        // construction (same principle as nextManUpSignal.js on the backend).
+        //
+        // Never silently substitutes one window for another: the CALLER already
+        // reports requestedGames/availableGames/complete (see nbaComputeWindows'
+        // windowOf()) -- this function just adds floor/median/mean/ceiling/
+        // stdDev/CV for whatever array it's actually given, honestly reflecting
+        // however many games that is.
+        function seriesStats(arr) {
+            const clean = (arr || []).filter(v => v != null && Number.isFinite(v));
+            if (!clean.length) return { floor: null, median: null, mean: null, ceiling: null, stdDev: null, coefficientOfVariation: null, sampleSize: 0 };
+            const sorted = [...clean].sort((a, b) => a - b);
+            const mid = sorted.length >> 1;
+            const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            const mean = clean.reduce((s, v) => s + v, 0) / clean.length;
+            // Sample stdev (n-1) -- undefined (null, never 0) below 2 points.
+            const stdDev = clean.length >= 2 ? Math.sqrt(clean.reduce((s, v) => s + (v - mean) * (v - mean), 0) / (clean.length - 1)) : null;
+            const coefficientOfVariation = (stdDev != null && mean !== 0) ? Math.abs(stdDev / mean) : null;
+            return {
+                floor: sorted[0], ceiling: sorted[sorted.length - 1],
+                mean: Math.round(mean * 100) / 100, median: Math.round(median * 100) / 100,
+                stdDev: stdDev != null ? Math.round(stdDev * 100) / 100 : null,
+                coefficientOfVariation: coefficientOfVariation != null ? Math.round(coefficientOfVariation * 1000) / 1000 : null,
+                sampleSize: clean.length
+            };
+        }
+        // Combines a full-history series with its most-recent slice into the
+        // composite research fields the spec asks for by name: recentVolatility,
+        // seasonVolatility, trend, consistency, projectionStability (alias of
+        // consistency), volatilityScore (alias of season CV). All null (never
+        // fabricated) when the underlying stat is undefined -- e.g. consistency
+        // requires season mean != 0, trend requires a real season mean.
+        function projectionStabilitySummary(seasonArr, recentArr) {
+            const seasonS = seriesStats(seasonArr), recentS = seriesStats(recentArr);
+            const trend = (recentS.mean != null && seasonS.mean) ? Math.round(((recentS.mean - seasonS.mean) / seasonS.mean) * 1000) / 1000 : null;
+            const consistency = seasonS.coefficientOfVariation != null ? Math.round(Math.max(0, Math.min(1, 1 - seasonS.coefficientOfVariation)) * 1000) / 1000 : null;
+            return {
+                recentVolatility: recentS.stdDev, seasonVolatility: seasonS.stdDev,
+                trend, consistency,
+                projectionStability: consistency,
+                volatilityScore: seasonS.coefficientOfVariation
+            };
+        }
 
         // MLB sub-1.0-line floor diagnostic (Step 1 of the floor investigation).
         // Candidate OUTPUT floors to sweep for compressed target-stat overs, the
@@ -11124,7 +11176,7 @@
                         const hitRateOf = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
                         const windowOf = (n) => {
                             const arr = vals.slice(-n);
-                            return { avg: mean(arr), hitRate: hitRateOf(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n };
+                            return { avg: mean(arr), hitRate: hitRateOf(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, stability: seriesStats(arr) };
                         };
                         const sorted = [...vals].sort((a, b) => a - b);
                         const oppVals = withVal.filter(g => g.opponent === p.opponent).map(g => getV(g.stat) || 0);
@@ -11137,16 +11189,22 @@
                         // — for the analytics tab labeled "Season"; the model
                         // never reads it.
                         const trueSeasonVals = withVal.filter(g => g.season === MLB_SEASON).map(g => getV(g.stat) || 0);
+                        // Projection Stability / Uncertainty research layer — see
+                        // the shared seriesStats/projectionStabilitySummary helpers.
+                        const stabilitySummary = projectionStabilitySummary(vals, vals.slice(-5));
+                        const seasonStats = seriesStats(vals);
                         nextByKey[k] = {
                             last5: windowOf(5),
                             last10: windowOf(10),
                             last15: windowOf(15),
                             last20: windowOf(20),
                             last40: windowOf(40),
-                            season: { avg: mean(vals), hitRate: hitRateOf(vals), games: vals.length },
-                            trueSeason: { avg: mean(trueSeasonVals), hitRate: hitRateOf(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true },
-                            vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true } : nextByKey[k].vsOpp,
-                            recent: { avg: mean(vals.slice(-10)), hitRate: hitRateOf(vals.slice(-10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                            season: { avg: mean(vals), hitRate: hitRateOf(vals), games: vals.length, stability: seasonStats },
+                            trueSeason: { avg: mean(trueSeasonVals), hitRate: hitRateOf(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, stability: seriesStats(trueSeasonVals) },
+                            vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, stability: seriesStats(oppVals) } : nextByKey[k].vsOpp,
+                            recent: { avg: mean(vals.slice(-10)), hitRate: hitRateOf(vals.slice(-10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length },
+                            sampleSize: seasonStats.sampleSize, floor: seasonStats.floor, median: seasonStats.median,
+                            mean: seasonStats.mean, ceiling: seasonStats.ceiling, ...stabilitySummary
                         };
                         // full recent series (up to 40) so the chart can widen
                         // to L20 / season when the window selector changes
@@ -11349,7 +11407,7 @@
                     const rate = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
                     const windowOf = (n) => {
                         const arr = vals.slice(-n);
-                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n };
+                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, stability: seriesStats(arr) };
                     };
                     const sorted = [...vals].sort((a, b) => a - b);
                     const oppVals = withVal.filter(g => g.opponent === oppAbbr).map(g => getV(g.row) || 0);
@@ -11362,16 +11420,22 @@
                     // never reads it.
                     const trueSeasonRows = seasonYear != null ? withVal.filter(g => g.season === seasonYear) : withVal;
                     const trueSeasonVals = trueSeasonRows.map(g => getV(g.row) || 0);
+                    // Projection Stability / Uncertainty research layer — see the
+                    // shared seriesStats/projectionStabilitySummary helpers.
+                    const stabilitySummary = projectionStabilitySummary(vals, vals.slice(-5));
+                    const seasonStats = seriesStats(vals);
                     statsByKey[k] = {
                         last5: windowOf(5),
                         last10: windowOf(10),
                         last15: windowOf(15),
                         last20: windowOf(20),
                         last40: windowOf(40),
-                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length },
-                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true },
-                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true } : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true },
-                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length }
+                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length, stability: seasonStats },
+                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, stability: seriesStats(trueSeasonVals) },
+                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, stability: seriesStats(oppVals) } : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true, stability: seriesStats([]) },
+                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length },
+                        sampleSize: seasonStats.sampleSize, floor: seasonStats.floor, median: seasonStats.median,
+                        mean: seasonStats.mean, ceiling: seasonStats.ceiling, ...stabilitySummary
                     };
                     gameLogByKey[k] = withVal.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line, season: g.season }));
                 });
@@ -12245,20 +12309,32 @@
                     const trueSeasonMinOf = trueSeasonRows.map(g => (g.row && g.row.minutes) || null);
                     const windowOf = (n) => {
                         const arr = vals.slice(-n);
-                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, minAvg: minN(n) };
+                        return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, minAvg: minN(n), stability: seriesStats(arr) };
                     };
+                    // Projection Stability / Uncertainty research layer — SEPARATE
+                    // from the model (see seriesStats/projectionStabilitySummary
+                    // above). floor/median/mean/ceiling/sampleSize below reflect
+                    // the SAME `vals` the model's own `season` window already uses
+                    // (full available history, never a calendar season), so they
+                    // describe the same population the model reads without
+                    // changing anything the model reads.
+                    const stabilitySummary = projectionStabilitySummary(vals, vals.slice(-5));
+                    const seasonStats = seriesStats(vals);
                     statsByKey[k] = {
                         last5: windowOf(5),
                         last10: windowOf(10),
                         last15: windowOf(15),
                         last20: windowOf(20),
                         last40: windowOf(40),
-                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length, minAvg: minMean(minOf) },
-                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, minAvg: minMean(trueSeasonMinOf) },
+                        season: { avg: mean(vals), hitRate: rate(vals), games: vals.length, minAvg: minMean(minOf), stability: seasonStats },
+                        trueSeason: { avg: mean(trueSeasonVals), hitRate: rate(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, minAvg: minMean(trueSeasonMinOf), stability: seriesStats(trueSeasonVals) },
                         vsOpp: oppVals.length
-                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, minAvg: minMean(oppIdx.map(i => minOf[i])) }
-                            : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true, minAvg: minMean(minOf) },
-                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length, minAvg: minN(5) }
+                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, minAvg: minMean(oppIdx.map(i => minOf[i])), stability: seriesStats(oppVals) }
+                            : { avg: mean(vals), hitRate: rate(vals), games: 0, requestedGames: null, availableGames: 0, complete: true, minAvg: minMean(minOf), stability: seriesStats([]) },
+                        recent: { avg: mean(vals.slice(-5)), hitRate: rate(vals.slice(-5)), median: sorted[sorted.length >> 1] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length, minAvg: minN(5) },
+                        // Research-only composite fields (never read by calculateEdgeScore):
+                        sampleSize: seasonStats.sampleSize, floor: seasonStats.floor, median: seasonStats.median,
+                        mean: seasonStats.mean, ceiling: seasonStats.ceiling, ...stabilitySummary
                     };
                     // Each row carries minutes played, day-of-week, that
                     // opponent's defensive rank, and days of rest before it.
@@ -13303,6 +13379,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         projMin,
                         opponentContext: null, oppDef: null, situational: null
                     };
+                    // Projection Stability validation — SEPARATE, additive
+                    // accumulator only. Computed from `hv`, the exact same
+                    // leak-safe trailing series calculateEdgeScore itself was
+                    // just fed (nothing new fetched, nothing re-derived); never
+                    // read by calculateEdgeScore, never changes e.grade/e.hit/
+                    // any existing accumulator entry above or below this block.
+                    const volBucket = volBucketOf(seriesStats(hv).coefficientOfVariation);
                     for (const dir of ['over', 'under']) {
                         const e = calculateEdgeScore(fake, { statKey, type: statKey, line, direction: dir, lineSource: 'backtest' });
                         const hit = dir === 'over' ? actual > line : actual < line;
@@ -13314,6 +13397,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
                         btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
                         btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        if (volBucket) {
+                            const vg = acc.volByGrade[e.grade + '|' + volBucket] || (acc.volByGrade[e.grade + '|' + volBucket] = { n: 0, hit: 0 });
+                            vg.n++; if (hit) vg.hit++;
+                            const vo = acc.volOnly[volBucket] || (acc.volOnly[volBucket] = { n: 0, hit: 0 });
+                            vo.n++; if (hit) vo.hit++;
+                        }
                         // Prime cohort (high confluence + large edge) broken out by
                         // stat — is the corner's hit rate uniform, or is one market
                         // carrying it?
@@ -14663,7 +14752,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 core_individual: famRow(cv.byFam.core_individual),
                                 volatile_counting: famRow(cv.byFam.volatile_counting),
                             },
-                            primeFam
+                            primeFam,
+                            // Projection Stability validation — does hit rate vary
+                            // by (grade × volatility bucket)? SEPARATE from
+                            // everything above; reads acc.volByGrade/volOnly,
+                            // which are filed additively inside nbaBacktestSeries
+                            // from the same leak-safe series, never touching grade/
+                            // probability/Prime. Model A is not retuned by this —
+                            // GRADE_CUTOFFS/PROB_CALIB are never reassigned here
+                            // (unlike runBacktest's train/apply flow above).
+                            volByGrade: acc.volByGrade, volOnly: acc.volOnly
                         };
                     });
 
@@ -14685,6 +14783,42 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             return { window: w.label, n: x.n, meanProbBefore: x.meanProbBefore, actualHit: x.hitRate, gapBefore: x.gapBefore, meanFamAdj: x.meanFamAdj, gapAfter: x.gapAfter, primeHit: pf.rate, primeN: pf.n };
                         }));
                     });
+
+                    // ── Projection Stability validation ─────────────────────
+                    // Does hit rate vary by volatility bucket WITHIN the same
+                    // grade? If grade/edge/confluence already fully explain
+                    // outcomes, hit rate should be roughly flat across low/med/
+                    // high volatility for a fixed grade. A real, consistent gap
+                    // (same direction in both TRAIN and the held-out windows)
+                    // would mean volatility carries information the model
+                    // doesn't already have. Pooled TRAIN = windows never seen by
+                    // FAMILY_CALIB's construction (W1-3, pre-2024-12-19); pooled
+                    // HOLDOUT-ish REFERENCE = windows inside that period (W4-5).
+                    // GRADE_CUTOFFS/PROB_CALIB are NOT re-derived anywhere in
+                    // this function — Model A stays exactly as currently frozen.
+                    const poolVolByGrade = (wins) => {
+                        const out = {};
+                        wins.forEach(w => Object.keys(w.volByGrade || {}).forEach(key => {
+                            const src = w.volByGrade[key];
+                            const dst = out[key] || (out[key] = { n: 0, hit: 0 });
+                            dst.n += src.n; dst.hit += src.hit;
+                        }));
+                        return out;
+                    };
+                    const trainPooled = poolVolByGrade(windows.filter(w => !w.seen));
+                    const refPooled = poolVolByGrade(windows.filter(w => w.seen));
+                    const gradesUsed = [...new Set(Object.keys({ ...trainPooled, ...refPooled }).map(k => k.split('|')[0]))].sort();
+                    console.log('%cProjection Stability validation — hit rate by grade × volatility bucket (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched by this run)', 'font-weight:bold');
+                    (console.table || console.log).call(console, gradesUsed.reduce((o, g) => {
+                        const row = {};
+                        ['low', 'med', 'high'].forEach(b => {
+                            const t = trainPooled[g + '|' + b], r = refPooled[g + '|' + b];
+                            row[`train ${b} (n)`] = t ? `${Math.round(t.hit / t.n * 100)}% (${t.n})` : '—';
+                            row[`ref ${b} (n)`] = r ? `${Math.round(r.hit / r.n * 100)}% (${r.n})` : '—';
+                        });
+                        o[`Grade ${g}`] = row;
+                        return o;
+                    }, {}));
                 } catch (e) {
                     console.error('Family stability run failed:', e);
                     setNbaFamStability({ error: String(e && e.message || e), ranAt: Date.now() });
