@@ -17,6 +17,7 @@ const dataSourceHealth = require('../lib/dataSourceHealth');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
+const { buildAvailabilityRoleSignal } = require('../lib/playerAvailabilitySignal');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -385,6 +386,41 @@ router.get('/nfl/game-environment', (req, res) => {
     }
     const signal = buildNflGameEnvironmentSignal({ db: nflDb, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), season, week });
     res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', season, week, ...signal });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/nba/player-availability
+// Body: { asOfDate: 'YYYY-MM-DD', players: [{ athleteId, team,
+//   targetGameStarter }] }
+// SEPARATE, ADDITIVE research signal — see lib/playerAvailabilitySignal.js's
+// header. Distinct from /nba/next-man-up (teammate absence, already
+// locked) -- this is the player's OWN availability/role. `targetGameStarter`
+// (1/0/omitted) is supplied by the CALLER for the SPECIFIC game being
+// evaluated -- this route never looks it up itself (no live NBA starting-
+// lineup source exists; a historical caller passes the completed box
+// score's own starter flag). availabilityStatus/minutesRestriction are
+// always null here (no reconstructable source) -- never fabricated.
+router.post('/nba/player-availability', (req, res) => {
+  try {
+    const { asOfDate, players } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '')) return res.status(400).json({ error: 'asOfDate must be YYYY-MM-DD' });
+    if (!Array.isArray(players) || !players.length) return res.status(400).json({ error: 'players must be a non-empty array' });
+    if (players.length > 500) return res.status(400).json({ error: 'too many players (max 500 per request)' });
+
+    const signals = {};
+    for (const p of players) {
+      if (!p || !p.athleteId) continue;
+      signals[p.athleteId] = buildAvailabilityRoleSignal({
+        db,
+        athleteId: String(p.athleteId),
+        team: p.team || null,
+        asOfDate,
+        targetGameStarter: p.targetGameStarter === 1 || p.targetGameStarter === 0 ? p.targetGameStarter : null,
+      });
+    }
+    res.json({ source: 'BeatsEdge computed (real nba_player_box history, research-only, not part of the graded model)', asOfDate, signals });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

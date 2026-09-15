@@ -5802,7 +5802,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaAvail, nbaAvailRunning, onRunAvail, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -6902,6 +6902,64 @@
                                                 Gap threshold {r.gapThreshold} net-rating points (fixed before this run, never tuned against holdout) · {r.evaluated.toLocaleString()} graded sides evaluated on the exact same paired subset in both columns · ran {new Date(r.ranAt).toLocaleString()}.
                                             </div>
                                         </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nba' && isPro && (() => {
+                            const r = nbaAvail;
+                            const ok = r && !r.error && r.evaluated;
+                            const dims = [
+                                ['starterStatus', 'Starter / bench (target game)'],
+                                ['roleChange', 'Role change (own trailing minutes)'],
+                                ['returnStatus', 'Returning after a real gap (>= 8 days since own last game)'],
+                                ['minutesLevel', 'Recent minutes level'],
+                                ['nextManUp', 'Pool-scoped absent-teammate signal (simplified Next Man Up proxy)'],
+                                ['projStability', 'Projection Stability volatility bucket'],
+                            ];
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Player Availability &amp; Role Validation (research phase 5)</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Observational only — buckets the model's OWN existing grade/hit output by real, leak-safe availability/role categories. Nothing is injected into the model. No historical OUT/QUESTIONABLE/PROBABLE/DOUBTFUL archive exists anywhere in this repo (live-only, ESPN) — not tested here. Walk-forward, train/holdout split, GRADE_CUTOFFS/PROB_CALIB never re-derived.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nbaAvailRunning || backtestRunning || nbaFamStabilityRunning || nbaGameEnvRunning} onClick={onRunAvail} style={{ marginTop: '0.6rem' }}>
+                                        {nbaAvailRunning ? 'Running…' : (ok ? 'Re-run availability validation' : 'Run availability validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <React.Fragment>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem' }}>
+                                                Overall — TRAIN {r.overall.train.hitRate}% (n={r.overall.train.n.toLocaleString()}) · HOLDOUT {r.overall.holdout.hitRate}% (n={r.overall.holdout.n.toLocaleString()}) · {r.evaluated.toLocaleString()} graded sides evaluated · ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                            {dims.map(([dim, label]) => {
+                                                const cats = [...new Set([...Object.keys(r[dim].train), ...Object.keys(r[dim].holdout)])];
+                                                return (
+                                                    <div key={dim} style={{ overflowX: 'auto', marginTop: '0.7rem' }}>
+                                                        <div className="backtest-calib-title" style={{ fontSize: '0.78rem' }}>{label}</div>
+                                                        <table className="backtest-calib-tbl">
+                                                            <thead><tr><th>Category</th>{['A', 'B', 'C', 'D'].map(g => <th key={'th' + g}>Grade {g} (train / holdout)</th>)}</tr></thead>
+                                                            <tbody>
+                                                                {cats.map(cat => (
+                                                                    <tr key={cat}>
+                                                                        <td style={{ whiteSpace: 'nowrap' }}>{cat}</td>
+                                                                        {['A', 'B', 'C', 'D'].map(g => {
+                                                                            const t = r[dim].train[cat] && r[dim].train[cat][g];
+                                                                            const h = r[dim].holdout[cat] && r[dim].holdout[cat][g];
+                                                                            return (
+                                                                                <td key={g}>
+                                                                                    {t ? `${t.hitRate}% (n=${t.n})` : '—'} / {h ? `${h.hitRate}% (n=${h.n})` : '—'}
+                                                                                </td>
+                                                                            );
+                                                                        })}
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                );
+                                            })}
+                                        </React.Fragment>
                                     )}
                                 </div>
                             );
@@ -8360,6 +8418,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_gameenv_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaGameEnvRunning, setNbaGameEnvRunning] = useState(false);
+            const [nbaAvail, setNbaAvail] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nba_avail_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nbaAvailRunning, setNbaAvailRunning] = useState(false);
             const [nbaFinalVal, setNbaFinalVal] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
             });
@@ -13330,6 +13392,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     ts: Date.parse(g.d) || 0,
                                     opponent: g.o,
                                     vsLabel: (g.h ? 'vs ' : '@ ') + g.o,
+                                    starter: g.st, // 1/0/undefined -- real box-score starter flag, Phase 5 (player availability/role) only; Model A never reads this
                                     row: {
                                         minutes: g.m, points: g.pts, totalRebounds: g.reb, assists: g.ast,
                                         steals: g.stl, blocks: g.blk, turnovers: g.tov, [NBA_3PM_KEY]: g.tpm
@@ -15105,6 +15168,295 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     setNbaGameEnv({ error: String(e && e.message || e), ranAt: Date.now() });
                 } finally {
                     setNbaGameEnvRunning(false);
+                }
+            };
+
+            // ── Player Availability & Game-Day Role validation (Phase 5) ────
+            // OBSERVATIONAL ONLY -- buckets the model's OWN existing grade/hit
+            // output (the real, frozen calculateEdgeScore, called exactly
+            // once per pick, never twice) by real, leak-safe availability/
+            // role categories. Nothing is injected into the model's input --
+            // this measures whether hit rate already varies by these
+            // categories WITHIN a fixed grade, not whether adding them would
+            // change anything. GRADE_CUTOFFS/PROB_CALIB are never re-derived.
+            //
+            // Deliberately narrower than a naive reading of "availability"
+            // might suggest -- see lib/playerAvailabilitySignal.js's header
+            // for the full audit. No historical OUT/QUESTIONABLE/PROBABLE/
+            // DOUBTFUL archive exists anywhere in this repo (confirmed) --
+            // that vocabulary is live-only and cannot be backtested. What IS
+            // real and tested here: starter/bench status for the TARGET game
+            // (from the completed box score's own `starter` flag -- treated
+            // as pregame-knowable per real NBA convention, a documented
+            // assumption, not a leakage-free guarantee), a role-change
+            // classification (increased/decreased/unchanged, symmetric
+            // extension of Next Man Up's own thresholds -- NOT a
+            // modification of detectRoleChange), a real "returning after an
+            // unusually long gap since this player's own last game" proxy
+            // (simpler than lib/playerAvailabilitySignal.js's team-schedule-
+            // aware computeReturnStatus, chosen here so this backtest needs
+            // no new bulk endpoint -- documented simplification), a minutes-
+            // level tercile, and two cross-tabs: does a real, pool-scoped
+            // absent-teammate signal (a SIMPLIFIED, pool-only approximation
+            // of Next Man Up's own findAbsentRotationPlayers -- NOT a re-run
+            // of the already-locked Next Man Up backtest) or a Projection-
+            // Stability volatility bucket (reusing seriesStats/volBucketOf
+            // from that already-locked phase, unmodified) change anything.
+            const runPlayerAvailabilityValidation = async () => {
+                if (nbaAvailRunning || backtestRunning || nbaFamStabilityRunning || nbaGameEnvRunning) return;
+                setNbaAvailRunning(true);
+                try {
+                    let pool = [];
+                    if (backendUrl) {
+                        try {
+                            const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
+                            if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                        } catch (e) { /* */ }
+                    }
+                    if (pool.length < 20) { setNbaAvail({ error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() }); return; }
+
+                    const ids = [...new Set(pool.map(p => p.id))];
+                    const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2]);
+                    const teamById = {}; pool.forEach(p => { teamById[p.id] = p.team; });
+                    const playersByTeam = {};
+                    pool.forEach(p => { (playersByTeam[p.team] = playersByTeam[p.team] || []).push(p.id); });
+
+                    // PASS 1 -- real, leak-safe trailing-5-game minutes per
+                    // pool player at each of their OWN games (for the
+                    // absent-teammate check below), and a real team-game
+                    // roster keyed by `${team}|${ts}` (gamelog rows have no
+                    // game_id -- same team + same real date/ts is a safe,
+                    // unique-enough game key at this scale).
+                    const playerTrail = {}; // playerId -> [{ts, trail5}] aligned to glMap[playerId]
+                    const teamGameRoster = {}; // `${team}|${ts}` -> Set(playerId)
+                    pool.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        const team = teamById[p.id];
+                        const arr = [];
+                        for (let i = 0; i < rows.length; i++) {
+                            const prior = rows.slice(Math.max(0, i - 5), i).map(r => r.row && r.row.minutes).filter(m => m != null);
+                            arr.push({ ts: rows[i].ts, trail5: prior.length >= 3 ? prior.reduce((s, v) => s + v, 0) / prior.length : null });
+                            if (team) { const key = team + '|' + rows[i].ts; (teamGameRoster[key] = teamGameRoster[key] || new Set()).add(p.id); }
+                        }
+                        playerTrail[p.id] = arr;
+                    });
+                    const trailAsOf = (playerId, beforeTs) => {
+                        const arr = playerTrail[playerId];
+                        if (!arr) return null;
+                        for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].ts < beforeTs) return arr[i].trail5; }
+                        return null;
+                    };
+
+                    // Fixed BEFORE looking at any result -- same magnitude as
+                    // Next Man Up's own thresholds (6 min / 20%), a real gap
+                    // requiring >=8 days without this player's own last game
+                    // (NBA teams play every 2-4 days; 8 is a conservative cut
+                    // clear of normal rest), and 15 real trailing minutes as
+                    // the "rotation-relevant" bar (matches Next Man Up's own
+                    // findAbsentRotationPlayers default). Never tuned after.
+                    const RC_MIN_ABS = 6, RC_MIN_REL = 0.20, RC_BASELINE_MIN_GAMES = 8, RC_RECENT_MIN_GAMES = 3;
+                    const RETURN_GAP_DAYS = 8;
+                    const ABSENT_TEAMMATE_MIN_MINUTES = 15;
+                    const MIN = 14;
+                    const _allTs = [];
+                    Object.values(glMap).forEach(rows => rows.forEach(r => { if (r.ts) _allTs.push(r.ts); }));
+                    _allTs.sort((a, b) => a - b);
+                    const holdoutTs = _allTs.length ? _allTs[_allTs.length - 1] - 540 * 864e5 : 0;
+
+                    const mkAcc = () => ({});
+                    const buckets = {
+                        overall: { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() },
+                        starterStatus: { train: mkAcc(), holdout: mkAcc() },
+                        roleChange: { train: mkAcc(), holdout: mkAcc() },
+                        returnStatus: { train: mkAcc(), holdout: mkAcc() },
+                        minutesLevel: { train: mkAcc(), holdout: mkAcc() },
+                        nextManUp: { train: mkAcc(), holdout: mkAcc() },
+                        projStability: { train: mkAcc(), holdout: mkAcc() },
+                    };
+                    const fileBucket = (dim, timeBucket, category, grade, hit, probPct) => {
+                        const acc = buckets[dim][timeBucket];
+                        const key = grade + '|' + category;
+                        const g = acc[key] || (acc[key] = { n: 0, hit: 0, sumProb: 0 });
+                        g.n++; if (hit) g.hit++; g.sumProb += (probPct || 0);
+                    };
+                    let evaluated = 0;
+
+                    pool.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        if (rows.length < 20) return;
+                        const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                        const opps = rows.map(r => r.opponent || '');
+                        const myTeam = teamById[p.id] || '';
+                        const tss = rows.map(r => r.ts || 0);
+                        const mins = rows.map(r => (r.row && r.row.minutes) || null);
+                        const starters = rows.map(r => r.starter);
+                        const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
+
+                        nbaAllKeys.forEach(k => {
+                            const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
+                            if (vals.every(v => v === 0)) return;
+
+                            for (let i = MIN; i < vals.length; i++) {
+                                const gTs = tss[i] || 0;
+                                if (!gTs) continue;
+                                const timeBucket = gTs >= holdoutTs ? 'holdout' : 'train';
+                                const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                                if (seasonAvg <= 0) continue;
+                                let line = null, bestGap = 99;
+                                for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                                    const over = hv.filter(v => v > cand).length / hv.length;
+                                    const gap = Math.abs(over - 0.48);
+                                    if (gap < bestGap) { bestGap = gap; line = cand; }
+                                }
+                                if (line == null || line <= 0) continue;
+                                const actual = vals[i], tonightOpp = opps[i];
+                                if (actual === line) continue;
+
+                                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                                const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
+                                w.last5.minAvg = mMean(hm.slice(-5)); w.last10.minAvg = mMean(hm.slice(-10));
+                                w.last20.minAvg = mMean(hm.slice(-20)); w.season.minAvg = mMean(hm);
+                                w.vsOpp.minAvg = w.season.minAvg; w.recent.minAvg = w.last5.minAvg;
+                                const glHist = hv.map((v, j) => ({
+                                    points: v, line, opponent: ho[j], vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
+                                    dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null, oppRank: null,
+                                    rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
+                                }));
+                                const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
+                                const projMin = nbaProjMinutes(hm.map(m => ({ row: { minutes: m } })));
+                                const fake = {
+                                    sport: 'nba', position: group, opponent: tonightOpp,
+                                    statsByKey: { [k]: w }, gameLogByKey: { [k]: glHist },
+                                    opponentDefense: null, oppRank: null,
+                                    gameDow: Number.isFinite(tss[i]) && tss[i] > 0 ? new Date(tss[i]).getDay() : null,
+                                    b2b: tRest != null ? { restDays: tRest, tonight: tRest <= 1 ? 'second' : null, first: null } : null,
+                                    isHomeTonight: !!homes[i], minutesTrend: nbaMinutesTrend(hm.map(m => ({ row: { minutes: m } }))),
+                                    projMin, opponentContext: null, oppDef: null, situational: null
+                                };
+
+                                // -- Real, leak-safe categorical features, computed from hv/hm/ht only --
+                                const baselineArr = hm.slice(-15, -(RC_RECENT_MIN_GAMES)).filter(m => m != null);
+                                const recentArr = hm.slice(-RC_RECENT_MIN_GAMES).filter(m => m != null);
+                                let roleChangeCat = 'insufficient_evidence';
+                                if (baselineArr.length >= RC_BASELINE_MIN_GAMES && recentArr.length >= RC_RECENT_MIN_GAMES) {
+                                    const baseAvg = baselineArr.reduce((s, v) => s + v, 0) / baselineArr.length;
+                                    const recAvg = recentArr.reduce((s, v) => s + v, 0) / recentArr.length;
+                                    const delta = recAvg - baseAvg, deltaPct = baseAvg > 0 ? delta / baseAvg : null;
+                                    if (delta >= RC_MIN_ABS && (deltaPct == null || deltaPct >= RC_MIN_REL)) roleChangeCat = 'increased';
+                                    else if (delta <= -RC_MIN_ABS && (deltaPct == null || deltaPct <= -RC_MIN_REL)) roleChangeCat = 'decreased';
+                                    else roleChangeCat = 'unchanged';
+                                }
+
+                                const starterVal = starters[i];
+                                const starterStatus = starterVal === 1 ? 'starter' : starterVal === 0 ? 'bench' : 'unknown';
+
+                                const gapDays = (ht.length && Number.isFinite(gTs) && Number.isFinite(ht[ht.length - 1])) ? (gTs - ht[ht.length - 1]) / 864e5 : null;
+                                let returnStatus = 'insufficient_evidence';
+                                if (gapDays != null) {
+                                    if (gapDays >= RETURN_GAP_DAYS) returnStatus = 'returning_after_gap';
+                                    else if (recentArr.length >= RC_RECENT_MIN_GAMES) returnStatus = 'established';
+                                }
+
+                                const recentMinAvg = w.recent && w.recent.avg != null ? w.recent.avg : (recentArr.length ? recentArr.reduce((s, v) => s + v, 0) / recentArr.length : null);
+                                const minutesLevel = recentMinAvg == null ? 'insufficient_evidence' : recentMinAvg < 15 ? 'low' : recentMinAvg <= 25 ? 'med' : 'high';
+
+                                // Pool-scoped, simplified absent-rotation-teammate check
+                                // (same position group, real trailing minutes >= 15,
+                                // absent from THIS specific real team-game).
+                                let nextManUpBucket = 'no_signal';
+                                if (myTeam) {
+                                    const gameKey = myTeam + '|' + gTs;
+                                    const roster = teamGameRoster[gameKey];
+                                    const teammates = (playersByTeam[myTeam] || []).filter(id => id !== p.id);
+                                    for (const otherId of teammates) {
+                                        if (roster && roster.has(otherId)) continue; // played, not absent
+                                        const otherTrail = trailAsOf(otherId, gTs);
+                                        if (otherTrail != null && otherTrail >= ABSENT_TEAMMATE_MIN_MINUTES) { nextManUpBucket = 'absent_teammate_signal'; break; }
+                                    }
+                                }
+
+                                const volBucket = volBucketOf(seriesStats(hv).coefficientOfVariation) || 'unknown';
+
+                                const e = calculateEdgeScore(fake, { statKey: k, type: k, line, direction: 'over', lineSource: 'backtest' });
+                                const hitOver = actual > line;
+                                const eUnder = calculateEdgeScore(fake, { statKey: k, type: k, line, direction: 'under', lineSource: 'backtest' });
+                                const hitUnder = actual < line;
+
+                                [[e, hitOver], [eUnder, hitUnder]].forEach(([edge, hit]) => {
+                                    const gO = buckets.overall[timeBucket][edge.grade] || (buckets.overall[timeBucket][edge.grade] = { n: 0, hit: 0 });
+                                    gO.n++; if (hit) gO.hit++;
+                                    buckets.overall[timeBucket]._total.n++; if (hit) buckets.overall[timeBucket]._total.hit++;
+                                    fileBucket('starterStatus', timeBucket, starterStatus, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('roleChange', timeBucket, roleChangeCat, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('returnStatus', timeBucket, returnStatus, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('minutesLevel', timeBucket, minutesLevel, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('nextManUp', timeBucket, nextManUpBucket, edge.grade, hit, edge.modelProbPct);
+                                    fileBucket('projStability', timeBucket, volBucket, edge.grade, hit, edge.modelProbPct);
+                                    evaluated++;
+                                });
+                            }
+                        });
+                    });
+
+                    const rate = (o) => o && o.n ? Math.round((o.hit / o.n) * 1000) / 10 : null;
+                    const summarizeOverall = (acc) => ({
+                        n: acc._total.n, hitRate: rate(acc._total),
+                        byGrade: ['A', 'B', 'C', 'D'].reduce((o, g) => { o[g] = acc[g] ? { n: acc[g].n, hitRate: rate(acc[g]) } : null; return o; }, {})
+                    });
+                    // Pool a dimension's train/holdout accumulator into
+                    // { [category]: { [grade]: {n, hitRate, meanProb, calibrationGap} } }
+                    const summarizeDim = (acc) => {
+                        const out = {};
+                        Object.keys(acc).forEach(key => {
+                            const [grade, category] = key.split('|');
+                            const b = acc[key];
+                            const hitPct = rate(b);
+                            const meanProb = b.n ? Math.round((b.sumProb / b.n) * 10) / 10 : null;
+                            out[category] = out[category] || {};
+                            out[category][grade] = {
+                                n: b.n, hitRate: hitPct, meanModelProb: meanProb,
+                                calibrationGap: (hitPct != null && meanProb != null) ? Math.round((hitPct - meanProb) * 10) / 10 : null
+                            };
+                        });
+                        return out;
+                    };
+
+                    const result = {
+                        ranAt: Date.now(), evaluated, holdoutTs,
+                        gapDaysThreshold: RETURN_GAP_DAYS, absentTeammateMinMinutes: ABSENT_TEAMMATE_MIN_MINUTES,
+                        overall: { train: summarizeOverall(buckets.overall.train), holdout: summarizeOverall(buckets.overall.holdout) },
+                        starterStatus: { train: summarizeDim(buckets.starterStatus.train), holdout: summarizeDim(buckets.starterStatus.holdout) },
+                        roleChange: { train: summarizeDim(buckets.roleChange.train), holdout: summarizeDim(buckets.roleChange.holdout) },
+                        returnStatus: { train: summarizeDim(buckets.returnStatus.train), holdout: summarizeDim(buckets.returnStatus.holdout) },
+                        minutesLevel: { train: summarizeDim(buckets.minutesLevel.train), holdout: summarizeDim(buckets.minutesLevel.holdout) },
+                        nextManUp: { train: summarizeDim(buckets.nextManUp.train), holdout: summarizeDim(buckets.nextManUp.holdout) },
+                        projStability: { train: summarizeDim(buckets.projStability.train), holdout: summarizeDim(buckets.projStability.holdout) },
+                    };
+                    setNbaAvail(result);
+                    try { localStorage.setItem('beatsedge_nba_avail_v1', JSON.stringify(result)); } catch (e) { }
+
+                    console.log('%cPlayer Availability & Role validation — observational only (NOT part of Model A; GRADE_CUTOFFS/PROB_CALIB untouched)', 'font-weight:bold');
+                    console.log(`train N=${result.overall.train.n.toLocaleString()} (${result.overall.train.hitRate}%) · holdout N=${result.overall.holdout.n.toLocaleString()} (${result.overall.holdout.hitRate}%)`);
+                    ['starterStatus', 'roleChange', 'returnStatus', 'minutesLevel', 'nextManUp', 'projStability'].forEach(dim => {
+                        console.log(`%c${dim}`, 'font-weight:bold');
+                        const cats = [...new Set([...Object.keys(result[dim].train), ...Object.keys(result[dim].holdout)])];
+                        cats.forEach(cat => {
+                            const row = {};
+                            ['A', 'B', 'C', 'D'].forEach(g => {
+                                const t = result[dim].train[cat] && result[dim].train[cat][g];
+                                const h = result[dim].holdout[cat] && result[dim].holdout[cat][g];
+                                row[`train ${g}`] = t ? `${t.hitRate}% (n=${t.n}, gap=${t.calibrationGap})` : '—';
+                                row[`holdout ${g}`] = h ? `${h.hitRate}% (n=${h.n}, gap=${h.calibrationGap})` : '—';
+                            });
+                            console.log(`  ${cat}:`, row);
+                        });
+                    });
+                } catch (e) {
+                    console.error('Player Availability validation failed:', e);
+                    setNbaAvail({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNbaAvailRunning(false);
                 }
             };
 
@@ -18315,6 +18667,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaGameEnv={nbaGameEnv}
                                 nbaGameEnvRunning={nbaGameEnvRunning}
                                 onRunGameEnv={runGameEnvironmentValidation}
+                                nbaAvail={nbaAvail}
+                                nbaAvailRunning={nbaAvailRunning}
+                                onRunAvail={runPlayerAvailabilityValidation}
                                 nbaFinalVal={nbaFinalVal}
                                 nbaFinalValRunning={nbaFinalValRunning}
                                 onRunFinalVal={runFinalLockedValidation}

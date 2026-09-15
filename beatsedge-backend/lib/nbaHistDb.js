@@ -20,7 +20,11 @@ function hasData() {
 
 // Per-game rows for a set of ESPN athlete ids, oldest first. Compact keys —
 // the frontend reshapes them into its gamelog format.
-//   { "<athleteId>": [ { d, o, h, m, pts, reb, ast, tpm, stl, blk, tov, pm }, ... ] }
+//   { "<athleteId>": [ { d, o, h, m, pts, reb, ast, tpm, stl, blk, tov, pm, st }, ... ] }
+// `st` (starter, 1/0) added for the Phase 5 player-availability/role
+// backtest, which needs each historical game's own starter flag -- purely
+// additive, every existing consumer of this function already ignores
+// unknown keys on each row.
 function gamelogs(ids, { since = null, playedOnly = true } = {}) {
   const list = [...new Set((ids || []).map(String))].filter(Boolean);
   if (!list.length) return {};
@@ -32,7 +36,7 @@ function gamelogs(ids, { since = null, playedOnly = true } = {}) {
   if (since) { clauses.push(`game_date >= ?`); args.push(since); }
   const rows = db.prepare(`
     SELECT athlete_id, game_date, opponent, home_away, minutes, points, rebounds, assists,
-           threes, steals, blocks, turnovers, plus_minus
+           threes, steals, blocks, turnovers, plus_minus, starter
     FROM nba_player_box
     WHERE ${clauses.join(' AND ')}
     ORDER BY athlete_id, game_date
@@ -42,6 +46,7 @@ function gamelogs(ids, { since = null, playedOnly = true } = {}) {
       d: r.game_date, o: r.opponent, h: r.home_away === 'home',
       m: r.minutes, pts: r.points, reb: r.rebounds, ast: r.assists,
       tpm: r.threes, stl: r.steals, blk: r.blocks, tov: r.turnovers, pm: r.plus_minus,
+      st: r.starter,
     });
   }
   return out;

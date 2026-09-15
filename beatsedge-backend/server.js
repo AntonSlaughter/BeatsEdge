@@ -59,6 +59,7 @@ app.get('/', (req, res) => {
       'GET /api/nba/game-environment?team=&opponent=&asOfDate= (research-only, not part of the graded model)',
       'GET /api/nba/team-advanced-history?teams=BOS,LAL,...',
       'GET /api/nfl/game-environment?team=&opponent=&season=&week= (research-only, not part of the graded model)',
+      'POST /api/nba/player-availability  { asOfDate, players: [{athleteId,team,targetGameStarter}] } (research-only, not part of the graded model)',
       'POST /api/snapshots  { date, sport, rows: [...] }',
       'GET /api/snapshots/summary',
       'GET /api/snapshots?since=YYYY-MM-DD&sport=&limit=',
