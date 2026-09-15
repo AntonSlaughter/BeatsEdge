@@ -15,6 +15,8 @@ const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
 const dataSourceHealth = require('../lib/dataSourceHealth');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
+const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
+const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -329,6 +331,60 @@ router.post('/nba/next-man-up', (req, res) => {
       });
     }
     res.json({ source: 'BeatsEdge computed (real nba_player_box history, research-only, not part of the graded model)', asOfDate, signals });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nba/game-environment?team=BOS&opponent=LAL&asOfDate=YYYY-MM-DD
+// SEPARATE, ADDITIVE research signal — see lib/gameEnvironment.js's header.
+// Real per-game pace/offensive_rating/defensive_rating from team_game_advanced
+// (Kaggle-seeded, 2023-10-24 through 2026-06-13). asOfDate defaults to today
+// if omitted. Never writes to or reads from player.paceRating/paceDetail —
+// those are existing fields the frozen model already reads; this is a
+// distinct `gameEnvironment` field the caller attaches separately.
+router.get('/nba/game-environment', (req, res) => {
+  try {
+    const { team, opponent } = req.query;
+    const asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.asOfDate || '') ? req.query.asOfDate : new Date().toISOString().slice(0, 10);
+    if (!team || !opponent) return res.status(400).json({ error: 'team and opponent are required' });
+    const signal = buildGameEnvironmentSignal({ db, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), asOfDate });
+    res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', asOfDate, ...signal });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nba/team-advanced-history?teams=BOS,LAL,...
+// Bulk real per-game team_game_advanced rows for a set of teams — lets a
+// caller (the backtest script/tool) build its own as-of trailing windows
+// in memory instead of one request per prediction point. Read-only.
+router.get('/nba/team-advanced-history', (req, res) => {
+  try {
+    const teams = String(req.query.teams || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 60);
+    if (!teams.length) return res.status(400).json({ error: 'pass ?teams=BOS,LAL,...' });
+    res.json({ source: 'BeatsEdge computed (real team_game_advanced rows, research-only)', history: bulkTeamHistory(db, teams) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/nfl/game-environment?team=KC&opponent=BUF&season=2026&week=2
+// SEPARATE, ADDITIVE research signal — see lib/nflGameEnvironment.js's
+// header. Real play-volume/pass-rate/rush-rate from nfl_player_game_stats,
+// season 2025+ only (2022-2024 rows carry unpopulated zeros for these
+// columns). No real game_date exists for this table, so this endpoint is
+// ordered by season/week, not date.
+router.get('/nfl/game-environment', (req, res) => {
+  try {
+    const { team, opponent } = req.query;
+    const season = parseInt(req.query.season, 10);
+    const week = parseInt(req.query.week, 10);
+    if (!team || !opponent || !Number.isFinite(season) || !Number.isFinite(week)) {
+      return res.status(400).json({ error: 'team, opponent, season, and week are all required' });
+    }
+    const signal = buildNflGameEnvironmentSignal({ db: nflDb, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), season, week });
+    res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', season, week, ...signal });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

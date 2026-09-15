@@ -5802,7 +5802,7 @@
             );
         }
 
-        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
+        function TopPicksView({ playersData, loading, selectedSport, onSwitchSport, onOpenPick, backtest, onRunBacktest, backtestRunning, isPro, onUnlock, dataUpdatedAt, backendUrl, nbaFreshVal, nbaFreshValRunning, onRunFreshVal, nbaFamStability, nbaFamStabilityRunning, onRunFamStability, nbaGameEnv, nbaGameEnvRunning, onRunGameEnv, nbaFinalVal, nbaFinalValRunning, onRunFinalVal, mlbTemporal, mlbTemporalRunning, onRunMlbTemporal, nflTemporal, nflTemporalRunning, onRunNflTemporal, platformName }) {
             const research = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
@@ -6865,6 +6865,43 @@
                                                 Gap = actual hit rate − mean stated probability (points). MAE = sample-weighted mean |bucket gap| (buckets n≥25). Frozen: GRADE_CUTOFFS / PROB_CALIB / FAMILY_CALIB / Prime / confluence / edge / ranking. Grade & Prime hit rates are the same before and after by construction. Ran {new Date(st.ranAt).toLocaleString()}.
                                             </div>
                                         </React.Fragment>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                        {selectedSport === 'nba' && isPro && (() => {
+                            const r = nbaGameEnv;
+                            const ok = r && !r.error && r.evaluated;
+                            const rateCell = (o) => !o || o.n == null ? '—' : `${o.hitRate == null ? '—' : o.hitRate + '%'} (n=${o.n.toLocaleString()})`;
+                            return (
+                                <div className="backtest-calib" style={{ marginTop: '1.1rem', borderTop: '2px solid var(--border-hairline, #2a2f3a)', paddingTop: '1rem' }}>
+                                    <div className="backtest-calib-title" style={{ fontSize: '0.9rem' }}>NBA · Game Environment Validation (research phase 4)</div>
+                                    <div className="backtest-panel-note" style={{ marginTop: '0.2rem' }}>
+                                        Tests whether a real, computed pace/net-rating differential (from team_game_advanced) adds incremental value if fed into the model's existing-but-currently-unused pace factor. BASELINE = today's real production behavior (paceRating always neutral for live players). PACE-INJECTED = the exact same frozen model, only fed a real computed pace signal — a research simulation only, never applied to any live player. Walk-forward, train/holdout split, GRADE_CUTOFFS/PROB_CALIB never re-derived.
+                                    </div>
+                                    <button className="backtest-run-btn" disabled={nbaGameEnvRunning || backtestRunning || nbaFamStabilityRunning} onClick={onRunGameEnv} style={{ marginTop: '0.6rem' }}>
+                                        {nbaGameEnvRunning ? 'Running…' : (ok ? 'Re-run game environment validation' : 'Run game environment validation')}
+                                    </button>
+                                    {r && r.error && <div className="backtest-panel-note" style={{ color: 'var(--danger-red)' }}>{r.error}</div>}
+                                    {ok && (
+                                        <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                                            <table className="backtest-calib-tbl">
+                                                <thead><tr><th></th><th>Baseline (no pace info)</th><th>Pace-injected (research only)</th></tr></thead>
+                                                <tbody>
+                                                    <tr><td>TRAIN — overall</td><td>{rateCell(r.baseline.train)}</td><td>{rateCell(r.paceInjected.train)}</td></tr>
+                                                    {['A', 'B', 'C', 'D'].map(g => (
+                                                        <tr key={'train' + g}><td style={{ paddingLeft: '1rem', color: 'var(--text-muted)' }}>Grade {g}</td><td>{rateCell(r.baseline.train.byGrade[g])}</td><td>{rateCell(r.paceInjected.train.byGrade[g])}</td></tr>
+                                                    ))}
+                                                    <tr><td>HOLDOUT — overall</td><td>{rateCell(r.baseline.holdout)}</td><td>{rateCell(r.paceInjected.holdout)}</td></tr>
+                                                    {['A', 'B', 'C', 'D'].map(g => (
+                                                        <tr key={'holdout' + g}><td style={{ paddingLeft: '1rem', color: 'var(--text-muted)' }}>Grade {g}</td><td>{rateCell(r.baseline.holdout.byGrade[g])}</td><td>{rateCell(r.paceInjected.holdout.byGrade[g])}</td></tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            <div className="backtest-panel-note" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                                                Gap threshold {r.gapThreshold} net-rating points (fixed before this run, never tuned against holdout) · {r.evaluated.toLocaleString()} graded sides evaluated on the exact same paired subset in both columns · ran {new Date(r.ranAt).toLocaleString()}.
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                             );
@@ -8319,6 +8356,10 @@
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_famstab_v1') || 'null'); } catch (e) { return null; }
             });
             const [nbaFamStabilityRunning, setNbaFamStabilityRunning] = useState(false);
+            const [nbaGameEnv, setNbaGameEnv] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('beatsedge_nba_gameenv_v1') || 'null'); } catch (e) { return null; }
+            });
+            const [nbaGameEnvRunning, setNbaGameEnvRunning] = useState(false);
             const [nbaFinalVal, setNbaFinalVal] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_nba_finalval_v1') || 'null'); } catch (e) { return null; }
             });
@@ -14859,6 +14900,214 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 }
             };
 
+            // ── Game Environment validation (research phase 4) ──────────────
+            // Tests whether a REAL, computed game-environment signal (pace +
+            // net-rating differential, from team_game_advanced) would add
+            // incremental predictive value if fed into calculateEdgeScore's
+            // EXISTING pace-factor mechanism -- that block already reads
+            // player.paceRating (BeatsEdge.html's pace-factor code, ~L3420-
+            // 3431/3553-3554) but every real live player currently leaves it
+            // undefined -> 'neutral', so the factor is silently dropped in
+            // production (confirmed: every non-neutral paceRating assignment
+            // in this file lives inside generateMockPlayerData). This function
+            // NEVER writes player.paceRating on any live player object -- it
+            // only varies an isolated, local `fake` object's own paceRating
+            // field inside this simulation, comparing BASELINE (paceRating
+            // omitted, i.e. today's real production behavior) against a
+            // PACE-INJECTED run (paceRating set from a real, as-of, leak-safe
+            // computed net-rating gap) using the exact same frozen
+            // calculateEdgeScore both times, on the exact same paired subset
+            // of predictions. GRADE_CUTOFFS/PROB_CALIB are never re-derived
+            // here -- Model A stays exactly as currently frozen.
+            const runGameEnvironmentValidation = async () => {
+                if (nbaGameEnvRunning || backtestRunning || nbaFamStabilityRunning) return;
+                setNbaGameEnvRunning(true);
+                try {
+                    let pool = [];
+                    if (backendUrl) {
+                        try {
+                            const pr = await fetch(`${backendUrl}/api/nba/backtest-pool?minGames=25&limit=180`);
+                            if (pr.ok) { const pj = await pr.json(); if (Array.isArray(pj.pool)) pool = pj.pool; }
+                        } catch (e) { /* */ }
+                    }
+                    if (pool.length < 20) { setNbaGameEnv({ error: 'No NBA history pool available (need the backend + npm run ingest:nba).', ranAt: Date.now() }); return; }
+
+                    const ids = [...new Set(pool.map(p => p.id))];
+                    const glMap = await nbaGamelogsMulti(ids, [NBA_YR_PREV, NBA_YR_PREV - 1, NBA_YR_PREV - 2]);
+                    // nbaGamelogsMulti's rows carry {ts, opponent, vsLabel, row}
+                    // only -- no team field -- so the player's own team comes
+                    // from the pool metadata instead (p.team, their CURRENT
+                    // team). Same simplification the rest of this shared
+                    // walk-forward engine already makes for position/group
+                    // (static per player across the whole multi-season pull,
+                    // not tracked per-game) -- a traded player's older games
+                    // would attribute the wrong team's pace, which dilutes any
+                    // real signal with noise rather than fabricating one.
+                    const teamById = {}; pool.forEach(p => { teamById[p.id] = p.team; });
+
+                    const teamSet = new Set();
+                    pool.forEach(p => { if (p.team) teamSet.add(p.team); });
+                    Object.values(glMap).forEach(rows => rows.forEach(r => { if (r.opponent) teamSet.add(r.opponent); }));
+                    let teamHist = {};
+                    if (backendUrl && teamSet.size) {
+                        try {
+                            const thr = await fetch(`${backendUrl}/api/nba/team-advanced-history?teams=${[...teamSet].join(',')}`);
+                            if (thr.ok) { const thj = await thr.json(); teamHist = thj.history || {}; }
+                        } catch (e) { /* */ }
+                    }
+                    if (!Object.keys(teamHist).length) { setNbaGameEnv({ error: 'No team_game_advanced history available from the backend.', ranAt: Date.now() }); return; }
+
+                    // Real, leak-safe "as of" trailing pace/net-rating lookup --
+                    // binary search over each team's own chronologically-sorted
+                    // real rows (same technique as scripts/backtest-next-man-
+                    // up.js's mostRecentTrailingAsOf).
+                    const envAsOf = (team, beforeDateStr, games) => {
+                        const rows = teamHist[team];
+                        if (!rows || !rows.length) return null;
+                        let lo = 0, hi = rows.length - 1, best = -1;
+                        while (lo <= hi) {
+                            const mid = (lo + hi) >> 1;
+                            if (rows[mid].game_date < beforeDateStr) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+                        }
+                        if (best === -1) return null;
+                        const slice = rows.slice(Math.max(0, best - games + 1), best + 1);
+                        if (slice.length < 3) return null;
+                        const mean = (key) => { const v = slice.map(r => r[key]).filter(x => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+                        return { pace: mean('pace'), offRating: mean('offensive_rating'), defRating: mean('defensive_rating'), games: slice.length };
+                    };
+
+                    // Fixed BEFORE looking at any train/holdout result -- NBA
+                    // net ratings typically span roughly +/-15, so an 8-point
+                    // gap between the two teams' own real net ratings is a
+                    // genuinely lopsided matchup on paper. Not derived from
+                    // this dataset, never adjusted after seeing results.
+                    const GAP_THRESHOLD = 8;
+                    const MIN = 14;
+                    const _allTs = [];
+                    Object.values(glMap).forEach(rows => rows.forEach(r => { if (r.ts) _allTs.push(r.ts); }));
+                    _allTs.sort((a, b) => a - b);
+                    const holdoutTs = _allTs.length ? _allTs[_allTs.length - 1] - 540 * 864e5 : 0;
+
+                    const accBase = { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() };
+                    const accPace = { train: emptyBacktestAcc(), holdout: emptyBacktestAcc() };
+                    let evaluated = 0;
+
+                    pool.forEach(p => {
+                        const rows = glMap[p.id] || [];
+                        if (rows.length < 20) return;
+                        const group = /^(PG|SG|G)$/i.test(p.position || '') ? 'G' : /^(SF|PF|F)$/i.test(p.position || '') ? 'F' : 'C';
+                        const opps = rows.map(r => r.opponent || '');
+                        const myTeam = teamById[p.id] || '';
+                        const tss = rows.map(r => r.ts || 0);
+                        const mins = rows.map(r => (r.row && r.row.minutes) || null);
+                        const homes = rows.map(r => !/^@/.test(r.vsLabel || ''));
+
+                        nbaAllKeys.forEach(k => {
+                            const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
+                            if (vals.every(v => v === 0)) return;
+
+                            for (let i = MIN; i < vals.length; i++) {
+                                const gTs = tss[i] || 0;
+                                if (!gTs) continue;
+                                const bucket = gTs >= holdoutTs ? 'holdout' : 'train';
+                                const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                                if (seasonAvg <= 0) continue;
+                                let line = null, bestGap = 99;
+                                for (let cand = 0.5; cand <= seasonAvg * 2.2 + 1; cand += 1) {
+                                    const over = hv.filter(v => v > cand).length / hv.length;
+                                    const gap = Math.abs(over - 0.48);
+                                    if (gap < bestGap) { bestGap = gap; line = cand; }
+                                }
+                                if (line == null || line <= 0) continue;
+                                const actual = vals[i], tonightOpp = opps[i], tonightTeam = myTeam;
+                                if (actual === line) continue;
+
+                                // Real, as-of, leak-safe environment lookup for
+                                // THIS specific historical matchup -- both
+                                // teams' own trailing pace/net rating strictly
+                                // before this game's real date. Skip (don't
+                                // tally either accumulator) when unavailable,
+                                // so baseline and pace-injected are always
+                                // compared on the exact same paired subset.
+                                if (!tonightTeam) continue;
+                                const asOfDateStr = new Date(gTs).toISOString().slice(0, 10);
+                                const teamEnv = envAsOf(tonightTeam, asOfDateStr, 10);
+                                const oppEnv = envAsOf(tonightOpp, asOfDateStr, 10);
+                                if (!teamEnv || !oppEnv) continue;
+
+                                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                                const mMean = (a) => { const v = a.filter(x => x != null); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10 : null; };
+                                w.last5.minAvg = mMean(hm.slice(-5)); w.last10.minAvg = mMean(hm.slice(-10));
+                                w.last20.minAvg = mMean(hm.slice(-20)); w.season.minAvg = mMean(hm);
+                                w.vsOpp.minAvg = w.season.minAvg; w.recent.minAvg = w.last5.minAvg;
+                                const glHist = hv.map((v, j) => ({
+                                    points: v, line, opponent: ho[j], vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
+                                    dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null, oppRank: null,
+                                    rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
+                                }));
+                                const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
+                                const projMin = nbaProjMinutes(hm.map(m => ({ row: { minutes: m } })));
+                                const baseFake = {
+                                    sport: 'nba', position: group, opponent: tonightOpp,
+                                    statsByKey: { [k]: w }, gameLogByKey: { [k]: glHist },
+                                    opponentDefense: null, oppRank: null,
+                                    gameDow: Number.isFinite(tss[i]) && tss[i] > 0 ? new Date(tss[i]).getDay() : null,
+                                    b2b: tRest != null ? { restDays: tRest, tonight: tRest <= 1 ? 'second' : null, first: null } : null,
+                                    isHomeTonight: !!homes[i], minutesTrend: nbaMinutesTrend(hm.map(m => ({ row: { minutes: m } }))),
+                                    projMin, opponentContext: null, oppDef: null, situational: null
+                                };
+
+                                const teamNet = teamEnv.offRating - teamEnv.defRating;
+                                const oppNet = oppEnv.offRating - oppEnv.defRating;
+                                const netGap = teamNet - oppNet; // signed: positive = this team on paper stronger
+                                let paceRating = 'neutral';
+                                if (netGap >= GAP_THRESHOLD) paceRating = 'favorable';
+                                else if (netGap <= -GAP_THRESHOLD) paceRating = 'unfavorable';
+                                const envFake = { ...baseFake, paceRating, paceDetail: `real net rating gap ${Math.round(netGap * 10) / 10}` };
+
+                                for (const dir of ['over', 'under']) {
+                                    const eBase = calculateEdgeScore(baseFake, { statKey: k, type: k, line, direction: dir, lineSource: 'backtest' });
+                                    const hit = dir === 'over' ? actual > line : actual < line;
+                                    const gB = accBase[bucket][eBase.grade] || (accBase[bucket][eBase.grade] = { n: 0, hit: 0 });
+                                    gB.n++; if (hit) gB.hit++;
+                                    accBase[bucket]._total.n++; if (hit) accBase[bucket]._total.hit++;
+
+                                    const eEnv = calculateEdgeScore(envFake, { statKey: k, type: k, line, direction: dir, lineSource: 'backtest' });
+                                    const gP = accPace[bucket][eEnv.grade] || (accPace[bucket][eEnv.grade] = { n: 0, hit: 0 });
+                                    gP.n++; if (hit) gP.hit++;
+                                    accPace[bucket]._total.n++; if (hit) accPace[bucket]._total.hit++;
+                                    evaluated++;
+                                }
+                            }
+                        });
+                    });
+
+                    const rate = (o) => o && o.n ? Math.round((o.hit / o.n) * 1000) / 10 : null;
+                    const summarize = (acc) => ({
+                        n: acc._total.n, hitRate: rate(acc._total),
+                        byGrade: ['A', 'B', 'C', 'D'].reduce((o, g) => { o[g] = acc[g] ? { n: acc[g].n, hitRate: rate(acc[g]) } : null; return o; }, {})
+                    });
+                    const result = {
+                        ranAt: Date.now(), evaluated, gapThreshold: GAP_THRESHOLD, holdoutTs,
+                        baseline: { train: summarize(accBase.train), holdout: summarize(accBase.holdout) },
+                        paceInjected: { train: summarize(accPace.train), holdout: summarize(accPace.holdout) }
+                    };
+                    setNbaGameEnv(result);
+                    try { localStorage.setItem('beatsedge_nba_gameenv_v1', JSON.stringify(result)); } catch (e) { }
+                    console.log('%cGame Environment validation — baseline (current production behavior) vs pace-injected (research simulation only, never applied live)', 'font-weight:bold');
+                    (console.table || console.log).call(console, {
+                        'baseline TRAIN': result.baseline.train, 'paceInjected TRAIN': result.paceInjected.train,
+                        'baseline HOLDOUT': result.baseline.holdout, 'paceInjected HOLDOUT': result.paceInjected.holdout
+                    });
+                } catch (e) {
+                    console.error('Game Environment validation failed:', e);
+                    setNbaGameEnv({ error: String(e && e.message || e), ranAt: Date.now() });
+                } finally {
+                    setNbaGameEnvRunning(false);
+                }
+            };
+
             const fetchPlayerProps = () => {
                 // ⚠️ HONEST NOTE ON DATA SOURCES:
                 // Player prop LINES (the actual over/under numbers PrizePicks,
@@ -18063,6 +18312,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaFamStability={nbaFamStability}
                                 nbaFamStabilityRunning={nbaFamStabilityRunning}
                                 onRunFamStability={runFamilyStability}
+                                nbaGameEnv={nbaGameEnv}
+                                nbaGameEnvRunning={nbaGameEnvRunning}
+                                onRunGameEnv={runGameEnvironmentValidation}
                                 nbaFinalVal={nbaFinalVal}
                                 nbaFinalValRunning={nbaFinalValRunning}
                                 onRunFinalVal={runFinalLockedValidation}
