@@ -2502,6 +2502,23 @@
         .news-section-title:first-of-type { margin-top: 0.5rem; }
         .news-section-note { font-weight: 500; font-size: 0.78rem; color: var(--text-muted); letter-spacing: 0; }
 
+        .news-sport-filter {
+            display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem;
+            background: var(--bg-surface); border: 1px solid var(--border-hairline);
+            border-radius: 12px; padding: 0.25rem; margin-bottom: 0.5rem;
+        }
+        .news-sport-filter-btn {
+            background: transparent; border: none; color: var(--text-secondary);
+            padding: 0.4rem 0.8rem; border-radius: 9px; font-family: var(--font-body);
+            font-weight: 600; font-size: 0.8rem; cursor: pointer; transition: all 0.15s ease;
+        }
+        .news-sport-filter-btn:hover { color: var(--text-primary); }
+        .news-sport-filter-btn.active { background: var(--accent-red); color: #fff; }
+        .news-source-tag {
+            font-size: 0.64rem; font-weight: 700; letter-spacing: 0.02em;
+            padding: 0.12rem 0.4rem; border-radius: 5px; background: var(--bg-secondary); color: var(--text-secondary);
+        }
+
         .lineup-list { display: flex; flex-direction: column; gap: 0.85rem; }
         .lineup-card {
             background: linear-gradient(165deg, var(--bg-surface) 0%, var(--bg-raised) 100%);
@@ -2520,6 +2537,8 @@
         }
         .lineup-status-pill.confirmed { color: var(--success-green); background: rgba(46,160,67,0.12); }
         .lineup-status-pill.projected { color: var(--warning-yellow); background: rgba(245,166,35,0.12); }
+        .lineup-status-pill.unavailable { color: var(--text-muted); background: var(--bg-raised); }
+        .lineup-source-line { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid var(--border-hairline); }
 
         .lineup-probables {
             margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 8px;
@@ -5588,18 +5607,19 @@
             );
         }
 
-        // ── News page — starting lineups first, then the wider news wire ────
-        const NEWS_KIND_META = {
-            lineup:  { badge: 'LINEUP',  cls: 'lineup',  icon: '📋' },
-            injury:  { badge: 'INJURY',  cls: 'injury',  icon: '🩹' },
-            roster:  { badge: 'ROSTER',  cls: 'roster',  icon: '🔁' },
-            weather: { badge: 'WEATHER', cls: 'weather', icon: '🌦' },
-            recap:   { badge: 'RECAP',   cls: 'recap',   icon: '📈' },
-            news:    { badge: 'NEWS',    cls: 'news',     icon: '📰' }
+        // ── Starting Lineups page — its own dedicated tab (moved out of News) ──
+        // Source labels are per-sport and honest about what the underlying feed
+        // actually is: MLB's is a real, confirmed-or-probable feed from
+        // statsapi.mlb.com; NFL/CFB's is a roster-derived QB projection (ESPN),
+        // never a confirmed inactive-list lineup. Nothing here is invented --
+        // a sport with no real source (NBA/WNBA/NHL today) shows the honest
+        // "Starting lineup data unavailable" state instead of a fabricated card.
+        const LINEUP_SOURCE_LABEL = {
+            mlb: 'MLB Stats API (statsapi.mlb.com)',
+            nfl: 'ESPN (roster-based QB projection)',
+            ncaaf: 'ESPN (roster-based QB projection)'
         };
-        const NEWS_KIND_ORDER = { lineup: 0, injury: 1, roster: 2, weather: 3, news: 4, recap: 5 };
-
-        function NewsView({ lineups, lineupSource, slateNews, slateNewsSource, selectedSport, playersData, onOpenPlayer }) {
+        function LineupsView({ lineups, lineupSource, selectedSport, playersData, dataUpdatedAt, onOpenPlayer }) {
             const roster = Array.isArray(playersData) ? playersData : [];
             const findPlayer = (name) => {
                 if (!name) return null;
@@ -5618,16 +5638,19 @@
             const games = Array.isArray(lineups) ? lineups : [];
             const upcoming = games.filter(g => g.state !== 'Final' && g.state !== 'post');
             const finals = games.filter(g => g.state === 'Final' || g.state === 'post');
+            const updatedLabel = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+            const sourceLabel = LINEUP_SOURCE_LABEL[selectedSport];
 
-            const news = (Array.isArray(slateNews) ? slateNews : [])
-                .slice()
-                .sort((a, b) =>
-                    (NEWS_KIND_ORDER[a.kind] ?? 4) - (NEWS_KIND_ORDER[b.kind] ?? 4)
-                    || (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
-            const lineupNews = news.filter(n => n.kind === 'lineup');
-            const otherNews = news.filter(n => n.kind !== 'lineup');
+            // CONFIRMED / PROJECTED / UNAVAILABLE -- never a real-sounding status
+            // the source didn't actually back. `g.confirmed` (a real, posted
+            // batting order / active lineup) is the only thing that earns
+            // CONFIRMED; a probable-only or QB-only row is PROJECTED; a game
+            // with literally nothing (no probable, no lineup) is UNAVAILABLE.
+            const statusOf = (g) => g.confirmed ? 'CONFIRMED' : (g.awayProb || g.homeProb || (g.awayLineup && g.awayLineup.length)) ? 'PROJECTED' : 'UNAVAILABLE';
 
-            const LineupCard = ({ g }) => (
+            const LineupCard = ({ g }) => {
+                const status = statusOf(g);
+                return (
                 <div className="lineup-card">
                     <div className="lineup-card-head">
                         <div className="lineup-matchup">
@@ -5639,8 +5662,8 @@
                                 return <span className="lineup-time">{g.startLabel}{st}</span>;
                             })()}
                         </div>
-                        <span className={`lineup-status-pill ${g.confirmed ? 'confirmed' : 'projected'}`}>
-                            {g.confirmed ? '✓ CONFIRMED' : '⏳ NOT POSTED'}
+                        <span className={`lineup-status-pill ${status === 'CONFIRMED' ? 'confirmed' : status === 'PROJECTED' ? 'projected' : 'unavailable'}`}>
+                            {status === 'CONFIRMED' ? '✓ CONFIRMED' : status === 'PROJECTED' ? '⏳ PROJECTED' : '— UNAVAILABLE'}
                         </span>
                     </div>
 
@@ -5656,7 +5679,7 @@
                         <div className="lineup-orders">
                             {[['away', g.away, g.awayLineup], ['home', g.home, g.homeLineup]].map(([side, abbr, ln]) => (
                                 <div key={side} className="lineup-order-col">
-                                    <div className="lineup-order-team">{abbr}</div>
+                                    <div className="lineup-order-team">{abbr} {selectedSport === 'mlb' ? 'Batting Order' : 'Starters'}</div>
                                     <ol className="lineup-order-list">
                                         {ln.map(s => (
                                             <li key={s.order}>
@@ -5674,48 +5697,34 @@
                                 : 'Full lineup not published by a free source yet.')}
                         </div>
                     )}
-                </div>
-            );
 
-            const NewsItem = ({ n }) => {
-                const meta = NEWS_KIND_META[n.kind] || NEWS_KIND_META.news;
-                return (
-                    <div className={`news-item news-${meta.cls}`}>
-                        <div className="news-item-head">
-                            <span className={`news-kind ${meta.cls}`}>{meta.icon} {meta.badge}</span>
-                            {n.teams && n.teams.length > 0 && <span className="news-teams">{n.teams.join(' · ')}</span>}
-                            {n.ageLabel && <span className="news-age">{n.ageLabel}</span>}
+                    {(sourceLabel && (g.awayProb || g.homeProb || g.confirmed)) && (
+                        <div className="lineup-source-line">
+                            Source: {sourceLabel}{updatedLabel ? ` · Last updated ${updatedLabel}` : ''}
                         </div>
-                        <div className="news-headline">
-                            {n.athlete ? <><PlayerLink name={n.athlete} />{' — '}</> : null}{n.headline}
-                        </div>
-                        {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
-                        {n.url && <a className="news-read" href={n.url} target="_blank" rel="noopener noreferrer">Read on ESPN →</a>}
-                    </div>
+                    )}
+                </div>
                 );
             };
 
             return (
                 <div className="injuries-view news-view">
                     <div className="top-picks-intro">
-                        <h1 className="top-picks-heading">News &amp; Lineups</h1>
+                        <h1 className="top-picks-heading">Starting Lineups</h1>
                         <p className="top-picks-subhead">
                             Confirmed <strong>starting lineups</strong> are the fastest edge there is — a
                             posted batting order or a late scratch moves every related prop before the
-                            book catches up. This page leads with lineups for today's slate, then the
-                            wider news wire (starter calls, roster moves, weather, injuries) newest first.
+                            book catches up. Every status below is exactly what the real source says —
+                            CONFIRMED only when the source has actually posted it, PROJECTED when it
+                            hasn't, never invented.
                         </p>
                     </div>
 
-                    {/* ── Starting lineups ─────────────────────────────────── */}
-                    <div className="news-section-title">🏟️ Starting Lineups
-                        <span className="news-section-note">
-                            {lineupSource === 'checking' ? ' · loading…'
-                                : lineupSource === 'unavailable' ? ' · no free lineup feed for this sport yet'
-                                    : lineupSource === 'partial' ? ' · probables set, orders pending' : ' · live from statsapi'}
-                        </span>
-                    </div>
-                    {games.length === 0 ? (
+                    {!LINEUP_SOURCE_LABEL[selectedSport] ? (
+                        <div className="lineup-pending" style={{ margin: '0 0 1.5rem' }}>
+                            Starting lineup data unavailable for {SPORT_LABELS[selectedSport] || selectedSport} — no free, reliable source publishes it yet. Showing what BeatsEdge can honestly confirm instead of a guess.
+                        </div>
+                    ) : games.length === 0 ? (
                         <div className="lineup-pending" style={{ margin: '0 0 1.5rem' }}>
                             {lineupSource === 'checking' ? 'Checking the lineup feed…' : 'No games on this slate.'}
                         </div>
@@ -5730,26 +5739,136 @@
                             )}
                         </div>
                     )}
+                </div>
+            );
+        }
+
+        // ── News page — the wider news wire, newest first ───────────────────
+        const NEWS_KIND_META = {
+            lineup:  { badge: 'LINEUP',  cls: 'lineup',  icon: '📋' },
+            injury:  { badge: 'INJURY',  cls: 'injury',  icon: '🩹' },
+            roster:  { badge: 'ROSTER',  cls: 'roster',  icon: '🔁' },
+            weather: { badge: 'WEATHER', cls: 'weather', icon: '🌦' },
+            recap:   { badge: 'RECAP',   cls: 'recap',   icon: '📈' },
+            news:    { badge: 'NEWS',    cls: 'news',     icon: '📰' }
+        };
+        const NEWS_KIND_ORDER = { lineup: 0, injury: 1, roster: 2, weather: 3, news: 4, recap: 5 };
+
+        const NEWS_SPORT_FILTERS = ['all', 'nba', 'wnba', 'nfl', 'ncaaf', 'mlb', 'nhl'];
+        function NewsView({ slateNews, slateNewsSource, multiSportNews, multiSportNewsStatus, selectedSport, playersData, onOpenPlayer }) {
+            const [sportFilter, setSportFilter] = useState('all');
+            const roster = Array.isArray(playersData) ? playersData : [];
+            const findPlayer = (name) => {
+                if (!name) return null;
+                const n = name.toLowerCase();
+                return roster.find(p => (p.name || '').toLowerCase() === n)
+                    || roster.find(p => { const ln = (p.name || '').toLowerCase().split(' ').slice(-1)[0]; return ln && n.endsWith(ln) && n.split(' ')[0][0] === (p.name || '')[0].toLowerCase(); })
+                    || null;
+            };
+            const PlayerLink = ({ name }) => {
+                const p = findPlayer(name);
+                return p
+                    ? <span className="news-player-link" onClick={() => onOpenPlayer && onOpenPlayer(p)}>{name}</span>
+                    : <span>{name}</span>;
+            };
+
+            // Merge the always-fresh, current-sport ESPN feed (slateNews) with
+            // the broader multi-sport/multi-source batch (multiSportNews) --
+            // one canonical article shape (see classifyNewsKind / articleId),
+            // deduped by source+URL so the same story from the same outlet
+            // never renders twice, newest first.
+            const merged = React.useMemo(() => {
+                const seen = new Set();
+                const out = [];
+                [...(Array.isArray(slateNews) ? slateNews : []), ...(Array.isArray(multiSportNews) ? multiSportNews : [])].forEach(n => {
+                    const key = n.articleId || `${n.source || 'ESPN'}:${n.url || n.headline}`;
+                    if (!n.headline || seen.has(key)) return;
+                    seen.add(key);
+                    out.push(n);
+                });
+                return out;
+            }, [slateNews, multiSportNews]);
+
+            const scoped = sportFilter === 'all' ? merged : merged.filter(n => n.sport === sportFilter);
+            const news = scoped
+                .slice()
+                .sort((a, b) =>
+                    (NEWS_KIND_ORDER[a.kind] ?? 4) - (NEWS_KIND_ORDER[b.kind] ?? 4)
+                    || (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+            const lineupNews = news.filter(n => n.kind === 'lineup');
+            const otherNews = news.filter(n => n.kind !== 'lineup');
+            const sourcesLive = [...new Set(merged.map(n => n.source).filter(Boolean))];
+
+            const NewsItem = ({ n }) => {
+                const meta = NEWS_KIND_META[n.kind] || NEWS_KIND_META.news;
+                return (
+                    <div className={`news-item news-${meta.cls}`}>
+                        <div className="news-item-head">
+                            <span className={`news-kind ${meta.cls}`}>{meta.icon} {meta.badge}</span>
+                            {n.source && <span className="news-source-tag">{n.source}</span>}
+                            {n.teams && n.teams.length > 0 && <span className="news-teams">{n.teams.join(' · ')}</span>}
+                            {n.ageLabel && <span className="news-age">{n.ageLabel}</span>}
+                        </div>
+                        <div className="news-headline">
+                            {n.athlete ? <><PlayerLink name={n.athlete} />{' — '}</> : null}{n.headline}
+                        </div>
+                        {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
+                        {n.url && <a className="news-read" href={n.url} target="_blank" rel="noopener noreferrer">Read on {n.source || 'ESPN'} →</a>}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="injuries-view news-view">
+                    <div className="top-picks-intro">
+                        <h1 className="top-picks-heading">News</h1>
+                        <p className="top-picks-subhead">
+                            The slate news wire — starter calls, roster moves, weather, injuries —
+                            newest first, across every BeatsEdge sport and multiple real outlets per
+                            sport where available. Looking for tonight's starting lineups and batting
+                            orders? See the <strong>Starting Lineups</strong> tab.
+                        </p>
+                    </div>
+
+                    <div className="news-sport-filter">
+                        {NEWS_SPORT_FILTERS.map(s => (
+                            <button
+                                key={s}
+                                className={`news-sport-filter-btn ${sportFilter === s ? 'active' : ''}`}
+                                onClick={() => setSportFilter(s)}
+                            >
+                                {s === 'all' ? 'All' : (SPORT_LABELS[s] || s.toUpperCase())}
+                            </button>
+                        ))}
+                        <span className="news-section-note">
+                            {multiSportNewsStatus === 'loading' ? ' · loading more sources…'
+                                : sourcesLive.length ? ` · sources: ${sourcesLive.join(', ')}` : ''}
+                        </span>
+                    </div>
+                    <div className="lineup-pending" style={{ marginTop: '-0.4rem', marginBottom: '1rem' }}>
+                        Soccer, tennis and esports aren't shown yet — BeatsEdge has no existing roster/news
+                        pipeline for those sports and no reliable free source was verified this session.
+                    </div>
 
                     {/* ── Lineup / role news ───────────────────────────────── */}
                     {lineupNews.length > 0 && (
                         <>
                             <div className="news-section-title">📋 Lineup &amp; Role News</div>
                             <div className="news-wire">
-                                {lineupNews.map((n, i) => <NewsItem key={i} n={n} />)}
+                                {lineupNews.map((n, i) => <NewsItem key={n.articleId || i} n={n} />)}
                             </div>
                         </>
                     )}
 
                     {/* ── Everything else ──────────────────────────────────── */}
                     <div className="news-section-title">📰 News Wire
-                        <span className="news-section-note">{slateNewsSource === 'live' ? ` · ${otherNews.length} from ESPN` : slateNewsSource === 'checking' ? ' · loading…' : ' · feed unavailable'}</span>
+                        <span className="news-section-note">{slateNewsSource === 'live' ? ` · ${otherNews.length} article${otherNews.length === 1 ? '' : 's'}` : slateNewsSource === 'checking' ? ' · loading…' : ' · feed unavailable'}</span>
                     </div>
                     {otherNews.length === 0 ? (
                         <div className="lineup-pending">{slateNewsSource === 'checking' ? 'Loading the news wire…' : 'Nothing on the wire right now.'}</div>
                     ) : (
                         <div className="news-wire">
-                            {otherNews.map((n, i) => <NewsItem key={i} n={n} />)}
+                            {otherNews.map((n, i) => <NewsItem key={n.articleId || i} n={n} />)}
                         </div>
                     )}
                 </div>
@@ -8535,6 +8654,14 @@
                     try { window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) { window.location.hash = ''; }
                 }
             }, [currentView]);
+            // Multi-sport News data is loaded lazily, once, the first time the
+            // user actually opens the News tab -- not on app load, not on
+            // every sport switch, not polled. multiSportNewsLoadedRef (not
+            // state) gates the one-time fetch so this effect can safely
+            // re-run on every currentView change without re-fetching.
+            useEffect(() => {
+                if (currentView === 'news' && isPro) fetchMultiSportNews();
+            }, [currentView, isPro]);
             useEffect(() => {
                 if (!detailModal) return;
                 const onKey = (e) => { if (e.key === 'Escape') setDetailModal(null); };
@@ -8547,6 +8674,15 @@
             const [injuryDataSource, setInjuryDataSource] = useState('checking'); // 'live' | 'sample' | 'checking'
             const [slateNews, setSlateNews] = useState([]);           // full ESPN news feed for the News page
             const [slateNewsSource, setSlateNewsSource] = useState('checking');
+            // Multi-sport, multi-source News page data -- separate from
+            // slateNews above (which stays tied to selectedSport, unchanged).
+            // Fetched ONCE per News-tab visit (not on every app load, not
+            // polled) covering every BeatsEdge-supported sport plus a couple
+            // of additional real outlets per sport, merged with slateNews and
+            // client-side sport-filtered inside NewsView.
+            const [multiSportNews, setMultiSportNews] = useState([]);
+            const [multiSportNewsStatus, setMultiSportNewsStatus] = useState('idle'); // 'idle' | 'loading' | 'loaded'
+            const multiSportNewsLoadedRef = React.useRef(false);
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             // Actual last successful data refresh (ms epoch) — drives the "Live
@@ -8702,6 +8838,28 @@
                 nhl: 'hockey/nhl',
                 mlb: 'baseball/mlb',
                 ncaaf: 'football/college-football'
+            };
+
+            // Additional real outlet RSS feeds for the News page, layered on
+            // top of the ESPN site-API feed (unchanged, still the primary
+            // source for every sport). Fetched through the same public
+            // rss2json.com proxy the app already leans on for CORS bypass
+            // (fetchJSONWithFallback uses an equivalent allorigins.win proxy).
+            // Every entry here was live-verified this session to return real,
+            // current articles before being added -- WNBA has no verified
+            // outlet feed yet, so it intentionally has none (ESPN only,
+            // rather than guessing a URL that was never confirmed to work).
+            // rss2json's free/anonymous tier is rate-limited; a failed fetch
+            // here just means fewer sources for that refresh, never a
+            // fabricated article (see fetchMultiSportNews's per-source
+            // try/catch).
+            const NEWS_RSS_SOURCES = {
+                nba: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nba/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nba/' }],
+                nfl: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nfl/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nfl/' }],
+                mlb: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/mlb/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/mlb/' }],
+                nhl: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nhl/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nhl/' }],
+                ncaaf: [{ name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/college-football/' }],
+                wnba: []
             };
 
             // Only books our data sources (PropLine + ParlayAPI) actually carry
@@ -9284,6 +9442,27 @@
             const WEATHER_NEWS_RE = /\b(rain(?:ed|ing|out)?|wind|snow|storm|postpone[ds]?|(?:weather|rain) delay|tarp (?:on|is)|game (?:suspended|postponed)|makeup game)\b/i;
             const RECAP_NEWS_RE = /(?:\b\d+-\d+\b|game highlights|final score|:\s*game highlights$)|\b(?:beat|beats|defeat[s]?|hold[s]? off|rally (?:past|to)|carries?|blank[s]?|edge[s]?|top[s]?|rout[s]?|snap[s]? (?:a |their )?\d|homers? (?:as|to)|walk-?off)\b/i;
             const NEWS_NOISE_RE = /\bfantasy (?:football|baseball|hockey|basketball)\b|\bforecaster\b|\bwaiver\b|start[\/-]?sit|\brankings?\b|cheat sheet|\bmock draft\b|best bets|how to bet\b|odds,? (?:tips|analysis)|betting (?:preview|preparations)|power rankings|\bpodcast\b|\bfree tix\b/i;
+            // A promo-code/affiliate-gambling blurb, common noise in RSS-sourced
+            // outlet feeds (CBS Sports especially bundles these into its sport
+            // category feeds). Filtered out entirely rather than classified --
+            // it is not sports news at all.
+            const NEWS_PROMO_RE = /\bpromo code\b|\bbonus bets?\b|\bfree bets?\b|sign[\s-]?up bonus|\brisk-free\b|gambling problem|1-800-GAMBLER|use (?:draftkings|fanduel|betmgm|caesars)\b/i;
+
+            // Shared classification (existing regexes above), used by both the
+            // per-selectedSport ESPN fetch below AND the multi-sport/multi-
+            // source News fetch (fetchMultiSportNews) -- one canonical
+            // {headline, description} -> kind mapping, never two competing
+            // classifiers.
+            const classifyNewsKind = (headline, description) => {
+                const text = `${headline || ''} ${description || ''}`;
+                return NEWS_NOISE_RE.test(text) ? 'news'
+                    : RECAP_NEWS_RE.test(headline || '') ? 'recap'
+                        : LINEUP_NEWS_RE.test(text) ? 'lineup'
+                            : NEWS_INJURY_RE.test(text) ? 'injury'
+                                : ROSTER_NEWS_RE.test(text) ? 'roster'
+                                    : WEATHER_NEWS_RE.test(text) ? 'weather'
+                                        : 'news';
+            };
 
             const fetchLiveInjuries = async (players, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
@@ -9444,26 +9623,21 @@
                             .filter(c => c.type === 'team' && c.team)
                             .map(c => strOf(c.team.abbreviation || c.team.name)).filter(Boolean))];
                         const headline = strOf(a.headline);
-                        const text = `${headline} ${strOf(a.description)}`;
-                        // Recap / noise first so a recap that mentions "the
-                        // starting pitcher" isn't mislabelled a lineup alert.
-                        const kind = NEWS_NOISE_RE.test(text) ? 'news'
-                            : RECAP_NEWS_RE.test(headline) ? 'recap'
-                                : LINEUP_NEWS_RE.test(text) ? 'lineup'
-                                    : NEWS_INJURY_RE.test(text) ? 'injury'
-                                        : ROSTER_NEWS_RE.test(text) ? 'roster'
-                                            : WEATHER_NEWS_RE.test(text) ? 'weather'
-                                                : 'news';
+                        const description = strOf(a.description);
+                        const url = strOf(a.links && a.links.web && a.links.web.href);
                         const ts = strOf(a.published || a.lastModified);
                         return {
                             headline,
-                            description: strOf(a.description),
+                            description,
                             published: ts,
                             ageLabel: agoLabel(ts),
-                            url: strOf(a.links && a.links.web && a.links.web.href),
+                            url,
                             athlete: strOf(acat && acat.athlete && (acat.athlete.displayName || acat.athlete.fullName)),
                             teams: tcats,
-                            kind
+                            kind: classifyNewsKind(headline, description),
+                            sport: selectedSport,
+                            source: 'ESPN',
+                            articleId: `ESPN:${url || headline}`
                         };
                     }).filter(n => n.headline);
                     setSlateNews(allNews);
@@ -9677,6 +9851,103 @@
                     console.warn('Lineup fetch failed:', err.message);
                     if (!gone()) { setLineups([]); setLineupSource('unavailable'); }
                 }
+            };
+
+            // A single RSS feed via the rss2json.com proxy (JSON in, JSON out --
+            // no XML parsing needed client-side). Throws on failure; callers
+            // catch per-source so one dead/rate-limited feed never blocks the
+            // others or the page.
+            const fetchRssViaProxy = async (url) => {
+                const proxied = 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(url);
+                const res = await fetch(proxied);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (data.status !== 'ok' || !Array.isArray(data.items)) throw new Error('rss2json status: ' + (data.status || 'unknown'));
+                return data.items;
+            };
+            // rss2json returns titles/descriptions HTML-entity-encoded (e.g.
+            // "&#39;" for an apostrophe) -- decode via a detached textarea
+            // (never inserted into the DOM/rendered, so this can't execute
+            // anything) so React doesn't then re-escape the raw entity text
+            // and double-encode it on screen.
+            const decodeHtmlEntities = (s) => {
+                if (!s) return '';
+                const ta = document.createElement('textarea');
+                // Some outlet feeds (observed live: Yahoo Sports) double-encode
+                // entities at the source ("&amp;#39;" for an apostrophe) --
+                // decode twice; a second pass on already-plain text is a no-op,
+                // so this is safe for correctly-encoded feeds too.
+                ta.innerHTML = s;
+                const once = ta.value;
+                ta.innerHTML = once;
+                return ta.value;
+            };
+            const stripHtml = (s) => decodeHtmlEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+            const normalizeRssItem = (item, sport, sourceName) => {
+                const headline = decodeHtmlEntities(strOf(item.title));
+                const description = stripHtml(item.description).slice(0, 400);
+                if (!headline || NEWS_PROMO_RE.test(`${headline} ${description}`)) return null; // not real sports news
+                const url = strOf(item.link);
+                const ts = strOf(item.pubDate);
+                return {
+                    headline, description,
+                    published: ts, ageLabel: agoLabel(ts),
+                    url, athlete: null, teams: [],
+                    kind: classifyNewsKind(headline, description),
+                    sport, source: sourceName,
+                    image: strOf(item.thumbnail) || null,
+                    articleId: `${sourceName}:${url || headline}`
+                };
+            };
+
+            // Multi-sport, multi-source News page fetch. Covers every
+            // BeatsEdge-supported sport (not just selectedSport) via ESPN's
+            // real site-API news endpoint plus, where a real outlet feed has
+            // been verified to work (NEWS_RSS_SOURCES), 1-2 additional real
+            // outlets. Runs ONCE per session (multiSportNewsLoadedRef) when
+            // the News tab is first opened -- not on app load, not polled --
+            // per-source failures are caught individually and simply mean
+            // fewer articles that refresh, never a fabricated one.
+            const fetchMultiSportNews = async () => {
+                if (multiSportNewsLoadedRef.current) return;
+                multiSportNewsLoadedRef.current = true;
+                setMultiSportNewsStatus('loading');
+                const seen = new Set();
+                const results = [];
+                const add = (article) => {
+                    if (!article || !article.headline || seen.has(article.articleId)) return;
+                    seen.add(article.articleId);
+                    results.push(article);
+                };
+                await Promise.all(sports.map(async (sport) => {
+                    const espnPath = ESPN_SPORT_PATHS[sport];
+                    if (espnPath) {
+                        try {
+                            const data = await fetchJSONWithFallback(`https://site.api.espn.com/apis/site/v2/sports/${espnPath}/news?limit=50`);
+                            ((data && data.articles) || []).forEach(a => {
+                                const headline = strOf(a.headline);
+                                if (!headline) return;
+                                const description = strOf(a.description);
+                                const url = strOf(a.links && a.links.web && a.links.web.href);
+                                const ts = strOf(a.published || a.lastModified);
+                                add({
+                                    headline, description, published: ts, ageLabel: agoLabel(ts), url,
+                                    athlete: null, teams: [], kind: classifyNewsKind(headline, description),
+                                    sport, source: 'ESPN', articleId: `ESPN:${url || headline}`
+                                });
+                            });
+                        } catch (e) { console.warn(`[News] ESPN fetch failed for ${sport}:`, e.message); }
+                    }
+                    await Promise.all((NEWS_RSS_SOURCES[sport] || []).map(async (src) => {
+                        try {
+                            const items = await fetchRssViaProxy(src.url);
+                            items.forEach(item => add(normalizeRssItem(item, sport, src.name)));
+                        } catch (e) { console.warn(`[News] ${src.name} fetch failed for ${sport}:`, e.message); }
+                    }));
+                }));
+                results.sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+                setMultiSportNews(results);
+                setMultiSportNewsStatus('loaded');
             };
 
             const fetchLiveScoreboard = async (isStale) => {
@@ -19353,7 +19624,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     onClick={() => setCurrentView('news')}
                                     title={isPro ? '' : 'Pro'}
                                 >
-                                    News{isPro ? (Array.isArray(lineups) && lineups.some(g => g.confirmed) ? ' 🟢' : '') : ' 🔒'}
+                                    News{isPro ? (Array.isArray(slateNews) && slateNews.length > 0 ? ` (${slateNews.length})` : '') : ' 🔒'}
+                                </button>
+                                <button
+                                    className={`view-toggle-btn ${currentView === 'lineups' ? 'active' : ''}`}
+                                    onClick={() => setCurrentView('lineups')}
+                                    title={isPro ? '' : 'Pro'}
+                                >
+                                    Starting Lineups{isPro ? (Array.isArray(lineups) && lineups.some(g => g.confirmed) ? ' 🟢' : '') : ' 🔒'}
                                 </button>
                                 <button
                                     className={`view-toggle-btn ${currentView === 'injuries' ? 'active' : ''}`}
@@ -19704,20 +19982,42 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             <ErrorBoundary name="News" resetKey={selectedSport}>
                             {isPro ? (
                                 <NewsView
-                                    lineups={lineups}
-                                    lineupSource={lineupSource}
                                     slateNews={slateNews}
                                     slateNewsSource={slateNewsSource}
+                                    multiSportNews={multiSportNews}
+                                    multiSportNewsStatus={multiSportNewsStatus}
                                     selectedSport={selectedSport}
                                     playersData={playersData}
                                     onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
                                 />
                             ) : (
                                 <div className="view-pro-gate">
-                                    <h1 className="top-picks-heading">News &amp; Lineups</h1>
-                                    <p className="top-picks-subhead">Confirmed lineups, starters, roles and the full slate news wire.</p>
-                                    <ProLock title="News &amp; Lineups" onUnlock={onUnlock}
-                                        text="Confirmed lineups and role news across every game on the slate — not just your picks. Pro." />
+                                    <h1 className="top-picks-heading">News</h1>
+                                    <p className="top-picks-subhead">The full slate news wire — starter calls, roster moves, weather, injuries.</p>
+                                    <ProLock title="News" onUnlock={onUnlock}
+                                        text="The full slate news wire across every game — not just your picks. Pro." />
+                                </div>
+                            )}
+                            </ErrorBoundary>
+                        )}
+
+                        {currentView === 'lineups' && (
+                            <ErrorBoundary name="Starting Lineups" resetKey={selectedSport}>
+                            {isPro ? (
+                                <LineupsView
+                                    lineups={lineups}
+                                    lineupSource={lineupSource}
+                                    selectedSport={selectedSport}
+                                    playersData={playersData}
+                                    dataUpdatedAt={dataUpdatedAt}
+                                    onOpenPlayer={(pl) => { setCurrentView('browse'); setPlayerSearch(pl.name); openDetail(pl.id, 0); }}
+                                />
+                            ) : (
+                                <div className="view-pro-gate">
+                                    <h1 className="top-picks-heading">Starting Lineups</h1>
+                                    <p className="top-picks-subhead">Confirmed batting orders, probable pitchers and starters for tonight's slate.</p>
+                                    <ProLock title="Starting Lineups" onUnlock={onUnlock}
+                                        text="Confirmed lineups the moment they post — before the book catches up." />
                                 </div>
                             )}
                             </ErrorBoundary>
