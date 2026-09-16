@@ -4058,11 +4058,55 @@
         // search) -- never baked in once at fetch time -- so a prop that was
         // valid when fetched but whose game started while it sat in state or
         // the 2-minute server cache correctly disappears without needing a
-        // new fetch. A prop with no commenceTimeMs (unmapped-market rows
-        // preserved without full field parsing, or an older cached shape) is
-        // never hidden by this check alone -- absence of data is not treated
-        // as "game started".
-        const isPregameProp = (prop) => !prop || prop.commenceTimeMs == null || Date.now() < prop.commenceTimeMs;
+        // new fetch.
+        //
+        // Post-deployment forensic audit (2026-09-16) found the previous
+        // version of this function -- `prop.commenceTimeMs == null` treated
+        // as "still pregame, don't hide it" -- unsafe: a missing timestamp is
+        // exactly the shape of a SEED/placeholder prop (mlbBuildProps's
+        // seedMode branch and its NFL/CFB/NBA/WNBA equivalents never stamp
+        // commenceTimeMs, since they're built before any real ParlayAPI row
+        // exists to read it from). That let a seed prop for a player whose
+        // real game had ALREADY FINISHED pass this check indefinitely, since
+        // it never carried a timestamp to compare against "now" in the first
+        // place. A missing/non-finite timestamp is now a REJECT, not a pass
+        // -- "unknown" must never be treated as "safe to show".
+        function isPregameProp(prop, now = Date.now()) {
+            if (!prop) return false;
+            const start = Number(prop.commenceTimeMs);
+            if (!Number.isFinite(start)) return false;
+            return now < start;
+        }
+
+        // Same forensic audit: a seed/placeholder prop (isProjection:true,
+        // no lineSource, no eventId, no real posted price) was reaching
+        // calculateEdgeScore()/grade/Prime rendering in Browse because
+        // gradedPlayers had no prop-level gate requiring a REAL provider
+        // line before treating a prop as live -- only findTopPicks/
+        // findPrimePicks/findPlusEVPicks had one. This is that same gate,
+        // shared so Browse, search, and the ranked lists all use ONE
+        // definition of "this is a real, live, provider-confirmed prop" --
+        // never re-derived per call site. Deliberately does NOT check
+        // prop.player/prop.marketKey: this codebase's built prop objects
+        // never carry those fields (player identity lives on the PARENT
+        // player object calculateEdgeScore(player, prop) already receives
+        // separately; statKey/type is the equivalent of marketKey) -- an
+        // invariant confirmed by reading every pushPair/pushOne/pushLine
+        // call site, not assumed.
+        const isLiveProviderProp = (prop) => !!(
+            prop &&
+            prop.lineSource &&
+            prop.eventId &&
+            Number.isFinite(Number(prop.line))
+        );
+
+        // The combined gate for "may this prop appear in the live pregame
+        // board (Browse / Search / Prime / Top Picks / +EV)": a real
+        // provider line AND its game hasn't started. A prop failing either
+        // half may still exist in the player's own raw research data
+        // (playersData / basePlayers, untouched) -- this gate only decides
+        // what's allowed into the LIVE, GRADED rendering path.
+        const isLiveEligibleProp = (prop) => isLiveProviderProp(prop) && isPregameProp(prop);
 
         // Top N best-supported picks across EVERY player and EVERY one of their
         // props, using the same calculateEdgeScore engine as Browse (not a
@@ -4094,8 +4138,7 @@
                     // never a sample/projection line dressed up as a pick. This
                     // is a pure data-eligibility filter -- calculateEdgeScore
                     // itself, ranking, and grading below are unchanged.
-                    if (!prop.lineSource) return;
-                    if (!isPregameProp(prop)) return;
+                    if (!isLiveEligibleProp(prop)) return;
                     // Rank on the MAIN posted line only — alt lines (e.g. an
                     // "over 0.5" goblin) would otherwise dominate with trivially
                     // high hit rates and crowd out real picks.
@@ -4138,8 +4181,7 @@
                     // Same real-source-line gate as findTopPicks/findPrimePicks --
                     // +EV is a market-derived signal, meaningless on a
                     // seed/placeholder prop with no real posted price.
-                    if (!prop.lineSource) return;
-                    if (!isPregameProp(prop)) return;
+                    if (!isLiveEligibleProp(prop)) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
@@ -4188,8 +4230,7 @@
                     // Same real-source-line gate as findTopPicks -- Prime must
                     // never surface a seed/placeholder or pure-projection prop.
                     // See that function's comment for the full reasoning.
-                    if (!prop.lineSource) return;
-                    if (!isPregameProp(prop)) return;
+                    if (!isLiveEligibleProp(prop)) return;
                     if (prop.altLine || prop.crossBook) return;
                     const edge = calculateEdgeScore(player, prop);
                     if (!edge.prime) return;
@@ -5982,6 +6023,17 @@
                 ? findResearchPicks(playersData)
                 : { overs: [], unders: [] };
             const hasAny = research.overs.length + research.unders.length > 0;
+            // Forensic-audit fix (Part 7): truthful empty-state messaging.
+            // "No games on the slate" was shown any time hasAny was false,
+            // conflating two very different real states -- the provider
+            // genuinely has no live props right now, versus real props exist
+            // but none of them clear today's grade/edge bar. Distinguishing
+            // them requires knowing whether ANY real, live-eligible prop
+            // exists at all (same isLiveEligibleProp gate findTopPicks/
+            // findPrimePicks/findPlusEVPicks already use), independent of
+            // whether the ranking bar was cleared.
+            const anyRealProviderProp = !loading && Array.isArray(playersData)
+                && playersData.some(p => !p._mock && Array.isArray(p.props) && p.props.some(isLiveEligibleProp));
             const primePicks = !loading && Array.isArray(playersData) && playersData.length > 0
                 ? findPrimePicks(playersData)
                 : [];
@@ -7922,7 +7974,11 @@
                         <div className="top-picks-grid">
                             <div className="top-pick-card top-pick-card-pending">
                                 <div className="top-pick-sport-label">{SPORT_ICONS[selectedSport]} {SPORT_LABELS[selectedSport]}</div>
-                                <div className="top-pick-pending-text">No games on the {SPORT_LABELS[selectedSport]} slate right now — check back when the next slate posts.</div>
+                                <div className="top-pick-pending-text">
+                                    {anyRealProviderProp
+                                        ? 'No qualifying Top Picks right now — real props are on the board, but none clear today’s grade/edge bar yet.'
+                                        : `No live provider props for ${SPORT_LABELS[selectedSport]} right now — check back when the next slate posts.`}
+                                </div>
                             </div>
                         </div>
                     )}
@@ -19578,24 +19634,51 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             const basePlayers = Array.isArray(playersData) ? playersData : [];
             const norm = React.useCallback((s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), []);
 
+            // Post-deployment forensic audit (2026-09-16): sports whose props
+            // actually go through the real ParlayAPI ingestion pipeline (and
+            // therefore can carry seed/placeholder props from buildMlbPlayer
+            // and its NFL/CFB/NBA/WNBA equivalents that must never be treated
+            // as live). NHL and any other sample-only sport are untouched --
+            // their `_mock` fallback players already carry their own honest
+            // "SAMPLE" labeling, a separate, pre-existing, clearly-marked
+            // system this fix does not touch.
+            const LIVE_PIPELINE_SPORTS = new Set(['mlb', 'nfl', 'ncaaf', 'nba', 'wnba']);
+
             // EXPENSIVE part (runs calculateEdgeScore for every prop) — memoized
             // so it only recomputes when the data / category / calibration
             // changes, NOT on every search keystroke or sort toggle.
             const gradedPlayers = React.useMemo(() => {
                 return basePlayers
-                    // PART 8/14 — game-start filter, applied here (not baked in
-                    // at fetch time) so it's checked fresh against Date.now()
-                    // every time this memo recomputes (sport/date change, the
-                    // ~90s silent refresh, a grade-version bump) rather than
-                    // once when the prop was originally fetched/cached. A prop
-                    // for a game that has since started is dropped from the
-                    // PRE-GAME Browse/Top Picks/Prime/+EV board entirely —
-                    // never graded, ranked, searched, or counted toward this
-                    // player having live lines.
-                    .map(p => (Array.isArray(p.props) && p.props.some(pr => pr.commenceTimeMs != null))
-                        ? { ...p, props: p.props.filter(isPregameProp) }
-                        : p)
-                    .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba' || p.sport === 'wnba') && p._allLines && p._noLiveLines))
+                    // Structural live-prop gate (forensic-audit fix): for every
+                    // non-mock player on a live-pipeline sport, a player's
+                    // `.props` here becomes ONLY the props that pass
+                    // isLiveEligibleProp -- a real provider line (lineSource +
+                    // eventId + a finite line) whose game hasn't started yet,
+                    // checked fresh against Date.now() every time this memo
+                    // recomputes. This is NOT a visual relabel: a seed/
+                    // placeholder prop (isProjection:true, no lineSource, no
+                    // commenceTimeMs -- exactly buildMlbPlayer's pre-fetch
+                    // shape) is removed from `.props` entirely before it ever
+                    // reaches playerBestGrade/calculateEdgeScore/PlayerCard's
+                    // pill loop -- it structurally cannot produce a live
+                    // grade/probability/edge/Prime, during the initial-load
+                    // race window or any other time, because the data those
+                    // calls would need is no longer present on the object by
+                    // the time they run. The player's REAL, unfiltered props
+                    // (seed included) remain untouched on `playersData`/
+                    // `basePlayers` itself -- this filtering only affects the
+                    // derived, live-board view.
+                    .map(p => (p._mock || !LIVE_PIPELINE_SPORTS.has(p.sport) || !Array.isArray(p.props))
+                        ? p
+                        : { ...p, props: p.props.filter(isLiveEligibleProp) })
+                    // A live-pipeline player with zero surviving live props
+                    // (no real line yet, every real line's game already
+                    // started, or genuinely never matched on this slate) has
+                    // nothing eligible to show on the LIVE board and is
+                    // dropped here -- not rendered as an empty/placeholder
+                    // card. Mock/sample-fallback players are untouched (their
+                    // own separate, already-honest labeling system).
+                    .filter(p => p._mock || !LIVE_PIPELINE_SPORTS.has(p.sport) || (Array.isArray(p.props) && p.props.length > 0))
                     .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter && !pr.altLine)))
                     .map(p => ({
                         p, g: playerBestGrade(p, statFilter),
