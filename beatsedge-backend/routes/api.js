@@ -793,7 +793,18 @@ router.get('/propline/*', makePassthrough('propline', 'api.prop-line.com'));
 // x-next-offset to advance, x-result-has-more to know when to stop, and
 // x-result-truncated when its own internal per-source row cap was hit and
 // pagination can't recover the rest) is forwarded through unchanged.
-const PARLAYAPI_PASSTHROUGH_HEADERS = ['x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count'];
+// Safe upstream metadata only -- NEVER the apiKey (that's a query param on
+// the request, never an upstream response header, so it can't leak here
+// regardless). Credit/rate-limit/request-id headers added so the frontend
+// can actually see real credit cost and pagination state instead of only
+// the pagination subset this list used to carry — must stay in sync with
+// server.js's cors() exposedHeaders list (same header names, lowercase
+// here since upstream.headers.get() is case-insensitive either way).
+const PARLAYAPI_PASSTHROUGH_HEADERS = [
+  'x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count',
+  'x-result-degraded', 'x-credits-cost', 'x-credits-remaining', 'x-rate-limit-remaining', 'x-rate-limit-reset',
+  'x-request-id', 'retry-after'
+];
 router.get('/parlayapi/*', makeCachedParlayPassthrough('parlayapi', 'parlay-api.com', PARLAYAPI_PASSTHROUGH_HEADERS));
 
 // GET /api/data-sources/health — safe operational metadata only (status,

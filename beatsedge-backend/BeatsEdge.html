@@ -11278,6 +11278,9 @@
                 const commenceWindow = opts && opts.commenceWindow;
                 const byNorm = {};
                 let n = 0, pagesFetched = 0, rowsReceived = 0;
+                // unmappedMarket is now a COUNT of preserved-but-unlabeled rows,
+                // not a drop reason -- see the row loop below. Genuine drops
+                // (row unusable for a real reason) stay in their own counters.
                 const rejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
                 let truncated = false, truncatedHint = null, offset = 0, partialFailure = false;
 
@@ -11351,14 +11354,30 @@
                             const ct = Date.parse(row.commence_time || '');
                             if (Number.isFinite(ct) && (ct < commenceWindow.lo || ct > commenceWindow.hi)) { rejected.commenceWindow++; return; }
                         }
-                        const sk = mktMap[row.market_key];
-                        if (!sk) {
+                        // A market_key with no entry in mktMap has no friendly
+                        // BeatsEdge statKey (and no *_PROP_DEFS windowing
+                        // formula to compute real hit-rate history from) -- but
+                        // the raw provider row is still real data and must not
+                        // be deleted. It's grouped under its own raw market_key
+                        // instead of a recognized statKey, tagged rawMarket so
+                        // callers can tell real-but-unlabeled apart from a
+                        // known stat, and counted separately (preserved, not
+                        // dropped). It will not appear in the existing
+                        // per-stat player-card UI yet -- that UI is
+                        // intentionally whitelist-driven (see mlbBuildProps and
+                        // its NFL/CFB/NBA/WNBA equivalents, which iterate only
+                        // the known *_PROP_DEFS keys) -- displaying arbitrary
+                        // provider markets with no real-stat windowing source
+                        // is a separate follow-up UI feature, not a data-loss
+                        // bug fix.
+                        const known = mktMap[row.market_key];
+                        const sk = known || row.market_key;
+                        if (!known) {
                             rejected.unmappedMarket++;
                             if (!_parlayUnmappedWarned.has(row.market_key)) {
                                 _parlayUnmappedWarned.add(row.market_key);
-                                console.warn(`[ParlayAPI] Unmapped market_key "${row.market_key}" (sport ${parlaySportKey}) — row dropped, no statKey mapping exists for it.`);
+                                console.warn(`[ParlayAPI] Unmapped market_key "${row.market_key}" (sport ${parlaySportKey}) — no statKey alias exists; preserving raw, not shown in the per-stat UI yet.`);
                             }
-                            return;
                         }
                         const nn = nflNormName(row.player);
                         if (!nn || row.line == null) { rejected.noNameOrLine++; return; }
@@ -11377,7 +11396,9 @@
                             _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
                             juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
                             setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi',
-                            homeTeam: row.home_team || null, awayTeam: row.away_team || null
+                            homeTeam: row.home_team || null, awayTeam: row.away_team || null,
+                            eventId: row.event_id || null,
+                            rawMarket: known ? null : row.market_key
                         });
                         n++;
                     });
@@ -11409,117 +11430,66 @@
                 return { byNorm, n, pagesFetched, rowsReceived, rejected, truncated, partialFailure };
             };
 
-            // Same switch as football (see fetchNflPropLines) — ParlayAPI only,
-            // one call for the whole slate. PropLine's daily quota is shared
-            // account-wide across every sport this app fetches, so MLB testing
-            // was starving NFL/CFB (and vice versa) — dropping it here removes
-            // MLB from that shared blast radius entirely.
-            //
-            // Fetches per MARKET (not one 32-market request) — confirmed live
-            // that ParlayAPI has an internal per-source row cap (~10k) that
-            // pagination alone cannot recover from once hit, and its own
-            // guidance is to narrow scope with `markets=`/`bookmakers=` in
-            // addition to paginating. A handful of individual-market requests
-            // run concurrently, each fully paginated by fetchParlayProps.
-            const mergeParlayByNorm = (acc, byNorm) => {
-                Object.entries(byNorm).forEach(([nn, byStat]) => {
-                    const accStat = acc[nn] || (acc[nn] = {});
-                    Object.entries(byStat).forEach(([sk, byBook]) => {
-                        const accBook = accStat[sk] || (accStat[sk] = {});
-                        Object.entries(byBook).forEach(([bk, arr]) => {
-                            const accArr = accBook[bk] || (accBook[bk] = []);
-                            arr.forEach(e => { if (!accArr.some(x => x._kk === e._kk)) accArr.push(e); });
-                        });
-                    });
-                });
-            };
 
-            // Restores full per-market depth for NFL/CFB/NBA/WNBA. These four
-            // sports used to make ONE combined ParlayAPI request across every
-            // market at once (e.g. all ~25 NFL markets in a single call) --
-            // but ParlayAPI's own internal per-request row cap (~10k, see
-            // fetchParlayProps's comment) applies to that COMBINED request as
-            // a whole, so a real slate's true row count (many games x many
-            // markets x many books) could silently exceed it long before the
-            // board was actually complete, and the shallow default maxPages=3
-            // safety cap made it worse. MLB's fetchMlbPropLines already proved
-            // the fix live in production: fetch each market SEPARATELY (each
-            // one gets its OWN ~10k-row budget from the provider) with real
-            // pagination depth, batched with bounded concurrency so this
-            // isn't N sequential round trips. This is that same pattern,
-            // extracted so the other four sports can use it too. MLB's own
-            // fetchMlbPropLines is intentionally left as its own inline
-            // implementation (not migrated to call this shared helper), only
-            // its FETCH_CONCURRENCY constant is now aligned with this one --
-            // see that constant's own comment for why.
-            const fetchParlayPropsByMarket = async (parlaySportKey, mktMap, opts, isStale) => {
+            // Bulk-board fetch for NFL/CFB/NBA/WNBA/MLB (all five sports use
+            // this one function; MLB's own former inline copy of the same
+            // fan-out pattern -- see fetchMlbPropLines below -- now calls
+            // this too).
+            //
+            // History: this used to be a one-request-per-market-alias fan-out
+            // (up to 43 requests per sport per refresh, mirroring MLB's
+            // proven-live pattern of "give each market its own ~10k-row
+            // budget"), because ParlayAPI's per-request row cap made one
+            // combined multi-market request truncate on a busy slate. That
+            // was the right fix for the information available at the time,
+            // but it also meant a full board refresh cost dozens of upstream
+            // requests, and even at concurrency=1 with a stagger, real live
+            // testing this session (2026-09-16) still saw the provider's
+            // rate limit trip repeatedly against that many sequential calls.
+            //
+            // Live-verified this session (real ParlayAPI Pro key): a SINGLE
+            // unfiltered request (GET /v1/sports/{sport}/props with no
+            // markets= param at all) returns real rows -- 10,000 rows at
+            // limit=10000, 181 distinct market_key values for MLB alone (far
+            // more than any hardcoded market map recognizes), 10 books, 16
+            // events -- confirming the provider's /props endpoint natively
+            // supports "give me everything" rather than requiring the caller
+            // to enumerate markets. rawRowCount landed exactly on the
+            // requested limit, which reads as hitting a cap (ours or
+            // theirs) rather than the natural end of the data, so this
+            // fetches with a high per-page limit and paginates via the
+            // existing offset/x-next-offset/x-result-has-more loop already
+            // built into fetchParlayProps (unchanged, sport-agnostic) until
+            // the provider itself reports no more pages or a safety cap is
+            // hit -- never a blind single shot assumed to be complete.
+            //
+            // This is ONE request per sport per refresh (or a small, strictly
+            // sequential handful if the board needs multiple pages) instead
+            // of dozens -- both far fewer credits AND far less exposure to
+            // the provider's rate limit than the fan-out ever was. Unknown
+            // (unmapped) market_key rows are no longer excluded by omitting
+            // a markets= filter — see fetchParlayProps's own row-loop
+            // comment for how those are preserved rather than dropped.
+            const fetchParlayPropsBulk = async (parlaySportKey, mktMap, opts, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
-                const marketKeys = Object.keys(mktMap);
-                // Live-verified this session (real ParlayAPI Pro key, real
-                // traffic): 10 simultaneous market requests reliably triggers
-                // a real 503 from ParlayAPI ("a simultaneous-connections
-                // limit, not a per-second one" -- matches this file's own
-                // earlier documented observation), which then trips this
-                // backend's OWN dataSourceHealth cooldown and cascades into
-                // "no data for any market" for the rest of that refresh --
-                // observed live for MLB's original, unmodified code too, not
-                // something introduced by extending this pattern to more
-                // sports. First lowered 10 -> 4, still observed live: 27 of
-                // MLB's 33 markets still failed every retry at concurrency 4
-                // (console: "[MLB PropLine] Still no data after retry" naming
-                // 27 markets). Lowered again to fully sequential (1) -- the
-                // provider's limit reads as "no simultaneous connections
-                // tolerated at all" from this evidence, not a soft threshold
-                // somewhere between 4 and 10. Slower per refresh (this now
-                // happens once per shared server-side cache TTL window, not
-                // per user, so the added latency is a one-time cost, not a
-                // per-request one) but avoids burning retry attempts (and
-                // whatever credits a failed request still costs) against a
-                // limit that concurrency=4 was still tripping constantly.
-                const FETCH_CONCURRENCY = 1;
-                const combinedByNorm = {};
-                let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
-                const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
-                const fetchMarketBatch = async (keys) => {
-                    const emptyMarkets = [];
-                    for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
-                        if (gone()) return emptyMarkets;
-                        // A small stagger between sequential market requests,
-                        // on top of concurrency=1 above -- live evidence this
-                        // session showed 503s persisting even fully
-                        // sequential, consistent with ParlayAPI enforcing a
-                        // rolling-window rate limit (not just a simultaneous-
-                        // connections cap) that back-to-back requests with no
-                        // gap can still trip. Cheap insurance; skipped on the
-                        // very first request so this doesn't add dead time
-                        // when nothing's actually being throttled.
-                        if (i > 0) await new Promise(res => setTimeout(res, 150));
-                        const batch = keys.slice(i, i + FETCH_CONCURRENCY);
-                        const results = await Promise.all(batch.map(mk => fetchParlayProps(parlaySportKey, mktMap, mk, {
-                            books: opts.books, limit: opts.limit || 2500, commenceWindow: opts.commenceWindow, maxPages: opts.maxPages || 6
-                        })));
-                        results.forEach((pa, idx) => {
-                            if (!pa) { emptyMarkets.push(batch[idx]); return; }
-                            anyReached = true;
-                            mergeParlayByNorm(combinedByNorm, pa.byNorm);
-                            totalN += pa.n; totalPages += pa.pagesFetched; totalRowsReceived += pa.rowsReceived;
-                            if (pa.truncated) anyTruncated = true;
-                            Object.keys(combinedRejected).forEach(k => combinedRejected[k] += (pa.rejected[k] || 0));
-                        });
-                    }
-                    return emptyMarkets;
-                };
-                const firstPassEmpty = await fetchMarketBatch(marketKeys);
                 if (gone()) return null;
-                if (firstPassEmpty.length) {
-                    console.warn(`[ParlayAPI ${parlaySportKey}] Retrying ${firstPassEmpty.length} market(s) with zero data on first attempt: ${firstPassEmpty.join(', ')}`);
-                    const stillEmpty = await fetchMarketBatch(firstPassEmpty);
-                    if (gone()) return null;
-                    if (stillEmpty.length) console.warn(`[ParlayAPI ${parlaySportKey}] Still no data after retry: ${stillEmpty.join(', ')} — this refresh may be missing real lines for these markets.`);
-                }
-                if (!anyReached) return null;
-                if (anyTruncated) console.warn(`[ParlayAPI ${parlaySportKey}] One or more per-market requests were still truncated even after narrowing — some rows may be missing this refresh.`);
-                return { byNorm: combinedByNorm, n: totalN, pagesFetched: totalPages, rowsReceived: totalRowsReceived, rejected: combinedRejected, truncated: anyTruncated };
+                const pa = await fetchParlayProps(parlaySportKey, mktMap, null, {
+                    books: opts.books,
+                    limit: opts.limit || 10000,
+                    commenceWindow: opts.commenceWindow,
+                    // Pagination pages, not markets -- a full slate day can run
+                    // past one 10k-row page (12,276 real MLB lines were
+                    // observed live in this same session), so this allows
+                    // several sequential pages (each its own request, offset-
+                    // advanced, never concurrent) rather than the single
+                    // page opts.maxPages defaulted to under the old per-market
+                    // pattern.
+                    maxPages: opts.maxPages || 5
+                });
+                if (gone()) return null;
+                if (!pa) return null;
+                if (pa.truncated) console.warn(`[ParlayAPI ${parlaySportKey}] Bulk board request was still truncated after paginating to the safety cap — some rows may be missing this refresh.`);
+                return pa;
             };
 
             // ============================================================
@@ -11631,62 +11601,18 @@
                 // pitches incl. late West-coast starts, short of tomorrow's slate).
                 const _slateStartMs = Date.parse(selectedDate + 'T08:00:00Z');
                 const commenceWindow = { lo: _slateStartMs, hi: _slateStartMs + 28 * 3600 * 1000 };
-                const marketKeys = Object.keys(PARLAY_MLB_MKT);
-                // First lowered 10 -> 4, then to fully sequential (1) after
-                // live evidence (real ParlayAPI Pro key) showed even 4
-                // simultaneous market requests still triggered real 503s from
-                // ParlayAPI on most markets ("[MLB PropLine] Still no data
-                // after retry" naming 27 of 33 markets at concurrency 4) --
-                // see fetchParlayPropsByMarket's own comment above for the
-                // full reasoning. Not a new problem introduced elsewhere --
-                // observed live against this exact, previously-unmodified
-                // code. Slower per refresh, but this now runs once per shared
-                // server-side cache TTL window, not per user.
-                const FETCH_CONCURRENCY = 1;
-                const combinedByNorm = {};
-                let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
-                const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
-                const fetchMarketBatch = async (keys) => {
-                    const emptyMarkets = [];
-                    for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
-                        if (gone()) return emptyMarkets;
-                        // Small stagger -- see fetchParlayPropsByMarket's own
-                        // identical comment above for why (live evidence this
-                        // session: a rolling-window rate limit, not just a
-                        // simultaneous-connections cap).
-                        if (i > 0) await new Promise(res => setTimeout(res, 150));
-                        const batch = keys.slice(i, i + FETCH_CONCURRENCY);
-                        const results = await Promise.all(batch.map(mk => fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, mk, {
-                            books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, commenceWindow, maxPages: 8
-                        })));
-                        results.forEach((pa, idx) => {
-                            // Only a market that returned NOTHING at all (null —
-                            // every page failed, even the first) is worth a
-                            // second attempt. A partialFailure market already
-                            // has real, usable rows from its earlier pages —
-                            // re-fetching it costs a full extra round trip for
-                            // marginal completeness, at the expense of the UI
-                            // feeling sluggish. Speed wins that tradeoff here.
-                            if (!pa) { emptyMarkets.push(batch[idx]); return; }
-                            anyReached = true;
-                            mergeParlayByNorm(combinedByNorm, pa.byNorm);
-                            totalN += pa.n; totalPages += pa.pagesFetched; totalRowsReceived += pa.rowsReceived;
-                            if (pa.truncated) anyTruncated = true;
-                            Object.keys(combinedRejected).forEach(k => combinedRejected[k] += (pa.rejected[k] || 0));
-                        });
-                    }
-                    return emptyMarkets;
-                };
-                const firstPassEmpty = await fetchMarketBatch(marketKeys);
+                // Bulk board fetch (see fetchParlayPropsBulk's own comment for
+                // the live evidence behind this) -- ONE request (or a small,
+                // strictly sequential run of paginated requests if the board
+                // needs more than one page), not one request per market alias.
+                const pa = await fetchParlayPropsBulk('baseball_mlb', PARLAY_MLB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, commenceWindow, maxPages: 5
+                }, isStale);
                 if (gone()) return;
-                if (firstPassEmpty.length) {
-                    console.warn(`[MLB PropLine] Retrying ${firstPassEmpty.length} market(s) with zero data on first attempt: ${firstPassEmpty.join(', ')}`);
-                    const stillEmpty = await fetchMarketBatch(firstPassEmpty);
-                    if (stillEmpty.length) console.warn(`[MLB PropLine] Still no data after retry: ${stillEmpty.join(', ')} — this refresh may be missing real lines for these markets.`);
-                }
-                if (gone()) return;
-                if (!anyReached) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
-                if (anyTruncated) console.warn('[MLB PropLine] One or more per-market ParlayAPI requests were still truncated even after narrowing — some rows may be missing this refresh.');
+                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
+                const combinedByNorm = pa.byNorm;
+                const totalN = pa.n, totalPages = pa.pagesFetched, totalRowsReceived = pa.rowsReceived;
+                const combinedRejected = pa.rejected, anyTruncated = pa.truncated;
 
                 // ---- Join: name + team/game corroboration (Bug D) -----------
                 // ParlayAPI carries no player ID for MLB at all (confirmed
@@ -11738,7 +11664,7 @@
                     if (chosen) { allLinesByPid[chosen.id] = byStat; joinStats.matched++; }
                 });
                 console.log('[MLB PropLine] Completeness report:', JSON.stringify({
-                    marketsQueried: marketKeys.length, pagesFetched: totalPages, rowsReceived: totalRowsReceived,
+                    fetchMode: 'bulk', pagesFetched: totalPages, rowsReceived: totalRowsReceived,
                     rowsRetained: totalN, rowsRejected: combinedRejected, truncated: anyTruncated, ...joinStats
                 }));
                 setParlayCount(totalN);
@@ -12407,8 +12333,8 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const pa = await fetchParlayPropsByMarket('americanfootball_nfl', PARLAY_FB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                const pa = await fetchParlayPropsBulk('americanfootball_nfl', PARLAY_FB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -12716,8 +12642,8 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const pa = await fetchParlayPropsByMarket('americanfootball_ncaaf', PARLAY_FB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                const pa = await fetchParlayPropsBulk('americanfootball_ncaaf', PARLAY_FB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -13313,8 +13239,8 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const pa = await fetchParlayPropsByMarket('basketball_nba', PARLAY_BB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                const pa = await fetchParlayPropsBulk('basketball_nba', PARLAY_BB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -13679,8 +13605,8 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const pa = await fetchParlayPropsByMarket('basketball_wnba', PARLAY_BB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                const pa = await fetchParlayPropsBulk('basketball_wnba', PARLAY_BB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }

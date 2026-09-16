@@ -26,7 +26,23 @@ const PORT = process.env.PORT || 3001;
 // stats (no user data, no secrets pass through it), so there's no
 // sensitive-data reason to restrict origins. If you later add anything
 // user-specific, lock this down to your actual site's origin.
-app.use(cors());
+//
+// exposedHeaders: without this, a cross-origin browser fetch() can only
+// ever read the tiny CORS-safelisted response headers (content-type,
+// content-length, etc.) no matter what the server actually sends --
+// ParlayAPI's real pagination/credit/rate-limit headers were being
+// forwarded onto the Express response (see routes/api.js's
+// PARLAYAPI_PASSTHROUGH_HEADERS) but were invisible to frontend JS the
+// whole time, confirmed live this session. Same header list as
+// PARLAYAPI_PASSTHROUGH_HEADERS -- keep both in sync. Never includes the
+// ParlayAPI key: that's a request query param, never a response header.
+app.use(cors({
+  exposedHeaders: [
+    'x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count',
+    'x-result-degraded', 'x-credits-cost', 'x-credits-remaining', 'x-rate-limit-remaining', 'x-rate-limit-reset',
+    'x-request-id', 'retry-after'
+  ]
+}));
 // 16mb ceiling so the client can push a full slate of prop snapshots in one
 // POST (see /api/snapshots). Everything else is tiny; the limit is just a cap.
 app.use(express.json({ limit: '16mb' }));
