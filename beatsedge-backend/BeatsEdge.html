@@ -11449,12 +11449,34 @@
             // isn't N sequential round trips. This is that same pattern,
             // extracted so the other four sports can use it too. MLB's own
             // fetchMlbPropLines is intentionally left as its own inline
-            // implementation, unchanged -- it already works live, no reason
-            // to touch it while giving the other sports the same strategy.
+            // implementation (not migrated to call this shared helper), only
+            // its FETCH_CONCURRENCY constant is now aligned with this one --
+            // see that constant's own comment for why.
             const fetchParlayPropsByMarket = async (parlaySportKey, mktMap, opts, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 const marketKeys = Object.keys(mktMap);
-                const FETCH_CONCURRENCY = 10;
+                // Live-verified this session (real ParlayAPI Pro key, real
+                // traffic): 10 simultaneous market requests reliably triggers
+                // a real 503 from ParlayAPI ("a simultaneous-connections
+                // limit, not a per-second one" -- matches this file's own
+                // earlier documented observation), which then trips this
+                // backend's OWN dataSourceHealth cooldown and cascades into
+                // "no data for any market" for the rest of that refresh --
+                // observed live for MLB's original, unmodified code too, not
+                // something introduced by extending this pattern to more
+                // sports. First lowered 10 -> 4, still observed live: 27 of
+                // MLB's 33 markets still failed every retry at concurrency 4
+                // (console: "[MLB PropLine] Still no data after retry" naming
+                // 27 markets). Lowered again to fully sequential (1) -- the
+                // provider's limit reads as "no simultaneous connections
+                // tolerated at all" from this evidence, not a soft threshold
+                // somewhere between 4 and 10. Slower per refresh (this now
+                // happens once per shared server-side cache TTL window, not
+                // per user, so the added latency is a one-time cost, not a
+                // per-request one) but avoids burning retry attempts (and
+                // whatever credits a failed request still costs) against a
+                // limit that concurrency=4 was still tripping constantly.
+                const FETCH_CONCURRENCY = 1;
                 const combinedByNorm = {};
                 let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
                 const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
@@ -11462,6 +11484,16 @@
                     const emptyMarkets = [];
                     for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
                         if (gone()) return emptyMarkets;
+                        // A small stagger between sequential market requests,
+                        // on top of concurrency=1 above -- live evidence this
+                        // session showed 503s persisting even fully
+                        // sequential, consistent with ParlayAPI enforcing a
+                        // rolling-window rate limit (not just a simultaneous-
+                        // connections cap) that back-to-back requests with no
+                        // gap can still trip. Cheap insurance; skipped on the
+                        // very first request so this doesn't add dead time
+                        // when nothing's actually being throttled.
+                        if (i > 0) await new Promise(res => setTimeout(res, 150));
                         const batch = keys.slice(i, i + FETCH_CONCURRENCY);
                         const results = await Promise.all(batch.map(mk => fetchParlayProps(parlaySportKey, mktMap, mk, {
                             books: opts.books, limit: opts.limit || 2500, commenceWindow: opts.commenceWindow, maxPages: opts.maxPages || 6
@@ -11600,7 +11632,17 @@
                 const _slateStartMs = Date.parse(selectedDate + 'T08:00:00Z');
                 const commenceWindow = { lo: _slateStartMs, hi: _slateStartMs + 28 * 3600 * 1000 };
                 const marketKeys = Object.keys(PARLAY_MLB_MKT);
-                const FETCH_CONCURRENCY = 10;
+                // First lowered 10 -> 4, then to fully sequential (1) after
+                // live evidence (real ParlayAPI Pro key) showed even 4
+                // simultaneous market requests still triggered real 503s from
+                // ParlayAPI on most markets ("[MLB PropLine] Still no data
+                // after retry" naming 27 of 33 markets at concurrency 4) --
+                // see fetchParlayPropsByMarket's own comment above for the
+                // full reasoning. Not a new problem introduced elsewhere --
+                // observed live against this exact, previously-unmodified
+                // code. Slower per refresh, but this now runs once per shared
+                // server-side cache TTL window, not per user.
+                const FETCH_CONCURRENCY = 1;
                 const combinedByNorm = {};
                 let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
                 const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
@@ -11608,6 +11650,11 @@
                     const emptyMarkets = [];
                     for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
                         if (gone()) return emptyMarkets;
+                        // Small stagger -- see fetchParlayPropsByMarket's own
+                        // identical comment above for why (live evidence this
+                        // session: a rolling-window rate limit, not just a
+                        // simultaneous-connections cap).
+                        if (i > 0) await new Promise(res => setTimeout(res, 150));
                         const batch = keys.slice(i, i + FETCH_CONCURRENCY);
                         const results = await Promise.all(batch.map(mk => fetchParlayProps('baseball_mlb', PARLAY_MLB_MKT, mk, {
                             books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, commenceWindow, maxPages: 8
