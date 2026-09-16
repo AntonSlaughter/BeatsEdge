@@ -4048,6 +4048,22 @@
             return findTopPicks(players, 1)[0] || null;
         }
 
+        // PART 8/14 — game-start filter. A prop with a known commenceTimeMs
+        // (every real ParlayAPI-sourced prop, all 5 live-pipeline sports —
+        // see fetchParlayProps) is hidden from the pregame board once its own
+        // game has actually started (current clock >= commence_time),
+        // regardless of when it was fetched or how long it's sat in the
+        // frontend/server cache. Checked fresh against Date.now() at every
+        // render/consumption call site below (Browse, Top Picks, Prime, +EV,
+        // search) -- never baked in once at fetch time -- so a prop that was
+        // valid when fetched but whose game started while it sat in state or
+        // the 2-minute server cache correctly disappears without needing a
+        // new fetch. A prop with no commenceTimeMs (unmapped-market rows
+        // preserved without full field parsing, or an older cached shape) is
+        // never hidden by this check alone -- absence of data is not treated
+        // as "game started".
+        const isPregameProp = (prop) => !prop || prop.commenceTimeMs == null || Date.now() < prop.commenceTimeMs;
+
         // Top N best-supported picks across EVERY player and EVERY one of their
         // props, using the same calculateEdgeScore engine as Browse (not a
         // separate heuristic). One entry per player so the list stays varied.
@@ -4071,6 +4087,15 @@
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
                 let bestForPlayer = null;
                 player.props.forEach((prop, idx) => {
+                    // Real-source-line gate, sport-agnostic: a prop with no
+                    // prop.lineSource is either a pre-fetch seed placeholder or a
+                    // pure model projection -- never a confirmed live book/DFS
+                    // line. Top Picks must only rank REAL SOURCE LINE + model,
+                    // never a sample/projection line dressed up as a pick. This
+                    // is a pure data-eligibility filter -- calculateEdgeScore
+                    // itself, ranking, and grading below are unchanged.
+                    if (!prop.lineSource) return;
+                    if (!isPregameProp(prop)) return;
                     // Rank on the MAIN posted line only — alt lines (e.g. an
                     // "over 0.5" goblin) would otherwise dominate with trivially
                     // high hit rates and crowd out real picks.
@@ -4110,6 +4135,11 @@
                 if (player._mock) return;
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
                 player.props.forEach((prop, idx) => {
+                    // Same real-source-line gate as findTopPicks/findPrimePicks --
+                    // +EV is a market-derived signal, meaningless on a
+                    // seed/placeholder prop with no real posted price.
+                    if (!prop.lineSource) return;
+                    if (!isPregameProp(prop)) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
@@ -4155,6 +4185,11 @@
                 if (player.sport === 'mlb' && player._allLines && player._noLiveLines) return;
                 let best = null;
                 player.props.forEach((prop, idx) => {
+                    // Same real-source-line gate as findTopPicks -- Prime must
+                    // never surface a seed/placeholder or pure-projection prop.
+                    // See that function's comment for the full reasoning.
+                    if (!prop.lineSource) return;
+                    if (!isPregameProp(prop)) return;
                     if (prop.altLine || prop.crossBook) return;
                     const edge = calculateEdgeScore(player, prop);
                     if (!edge.prime) return;
@@ -8955,9 +8990,31 @@
                 const mySeq = ++loadSeqRef.current;
                 const key = `${selectedSport}|${selectedDate}`;
                 const cached = slateCache.current[key];
+                // A sport with a live ParlayAPI prop pipeline can have its
+                // roster/slate finish loading (loading -> false, triggering the
+                // cache-write effect below) BEFORE that sport's own prop-line
+                // fetch (fetchMlbPropLines / fetchNflPropLines / etc.) has
+                // resolved -- the cache-write effect fires on every playersData
+                // change while !loading, so it can capture a snapshot that's
+                // still all seed/placeholder props (no prop.lineSource
+                // anywhere). If the real prop-line fetch's OWN later update
+                // then gets skipped by the write-effect's slateMatchesSport
+                // guard (e.g. the user already switched sports by the time it
+                // resolves), that seed-only snapshot is what stays cached. The
+                // cache-hit branch below used to trust ANY cache entry that
+                // merely matched sport+_mock -- restoring a seed-only snapshot
+                // with setLoading(false) and never re-triggering a real fetch,
+                // so seed placeholders (mislabeled "live") could sit on screen,
+                // and feed Prime/Top Picks/+EV, for up to the full 5-minute TTL.
+                // A live-pipeline sport's cache entry is only trustworthy once
+                // at least one prop in it actually carries a real prop.lineSource.
+                const LIVE_PIPELINE_SPORTS = new Set(['mlb', 'nfl', 'ncaaf', 'nba', 'wnba']);
+                const cacheHasRealLines = !cached || !LIVE_PIPELINE_SPORTS.has(selectedSport)
+                    || cached.players.some(p => (p.props || []).some(pr => pr.lineSource));
                 if (cached && Date.now() - cached.at < 5 * 60 * 1000
                     && slateMatchesSport(cached.players, selectedSport)
-                    && !cached.players.some(p => p && p._mock)) {
+                    && !cached.players.some(p => p && p._mock)
+                    && cacheHasRealLines) {
                     setPlayersData(cached.players);
                     setLoading(false);
                     if (selectedSport === 'mlb') setMlbSlateSource('live');
@@ -10702,11 +10759,24 @@
                 const props = [];
 
                 if (seedMode) {
-                    // pre-lines placeholder set (buildMlbPlayer)
+                    // pre-lines placeholder set (buildMlbPlayer). EVERY prop built
+                    // here is a transient pre-fetch placeholder with no real
+                    // provider line behind it -- isProjection must be
+                    // unconditionally true, never keyed off whether this statKey
+                    // *usually* has a real market (def.market). The old
+                    // `!def.market` condition left seed props for any stat that
+                    // DOES normally have a market (the vast majority) tagged
+                    // isProjection:false with no lineSource either -- exactly the
+                    // shape every card/modal renderer's "no book, no projection
+                    // flag" fallback reads as "Sample line", so a real player's
+                    // brief pre-fetch placeholder rendered as if it might be a
+                    // real, confirmed line instead of the clearly-labeled
+                    // "Line unavailable" / "Model projection" placeholder it
+                    // always was. See PART 1/12 of the prop-data-integrity fix.
                     MLB_DEFAULT_KEYS[isPitcher ? 'pitcher' : 'batter'].forEach(k => {
                         const def = MLB_PROP_DEFS[k];
                         const g = mlbGamesField(seasonStat, isPitcher);
-                        pushPair(k, def, mlbSampleLine(k, g > 0 ? def.get(seasonStat) / g : 0), { isProjection: !def.market });
+                        pushPair(k, def, mlbSampleLine(k, g > 0 ? def.get(seasonStat) / g : 0), { isProjection: true });
                     });
                     return props;
                 }
@@ -10725,7 +10795,8 @@
                     const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
                     sorted.forEach(e => pushLine(k, def, e, {
                         lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${book}`, book, move: e.move, setAt: e.setAt,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
+                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
+                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
 
@@ -11392,13 +11463,24 @@
                         const kk = ppType ? `${row.line}|${ppType}` : `${row.line}`;
                         if (arr.some(e => e._kk === kk)) { rejected.duplicate++; return; }
                         const o = row.over_price, u = row.under_price;
+                        // Game-start filter (PART 8): the raw commence_time,
+                        // parsed once here and carried on the entry, so a
+                        // render-time check (never baked in at fetch time --
+                        // a cached response must still be re-checked against
+                        // the CURRENT clock, since a game can start while a
+                        // fetch sits in the 2-minute server cache or the
+                        // silent-refresh interval hasn't fired yet) can hide
+                        // this specific prop once its own game has started,
+                        // without needing another provider call.
+                        const commenceMs = Date.parse(row.commence_time || '');
                         arr.push({
                             _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
                             juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
                             setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi',
                             homeTeam: row.home_team || null, awayTeam: row.away_team || null,
                             eventId: row.event_id || null,
-                            rawMarket: known ? null : row.market_key
+                            rawMarket: known ? null : row.market_key,
+                            commenceTimeMs: Number.isFinite(commenceMs) ? commenceMs : null
                         });
                         n++;
                     });
@@ -12195,7 +12277,8 @@
                     sorted.forEach(e => pushLine(k, def, e, {
                         lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                         book: useBook, crossBook, setAt: e.setAt, move: e.move,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine
+                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
+                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
                 return props;
@@ -13157,7 +13240,8 @@
                     sorted.forEach(e => pushLine(k, def, e, {
                         lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                         book: useBook, crossBook, setAt: e.setAt, move: e.move,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine, _mktLine: mktLine
+                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine, _mktLine: mktLine,
+                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
                 return props;
@@ -19395,13 +19479,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                                 <div className="settings-source-row">
                                     <div className="settings-source-name">
-                                        <span>Prop lines — other sports (NBA / NFL / NHL)</span>
-                                        <span className="source-pill sample">🟡 Sample only</span>
+                                        <span>Prop lines — NBA / WNBA / NFL / CFB</span>
+                                        <span className={`source-pill ${parlaySource === 'live' ? 'live' : (parlaySource === 'error' ? 'sample' : 'checking')}`}>
+                                            {parlaySource === 'live' ? '🟢 LIVE — ParlayAPI' : (parlaySource === 'error' ? '🟡 ERROR' : (parlayApiKey ? '⏳ CHECKING' : '⚪ OFF'))}
+                                        </span>
                                     </div>
                                     <div className="settings-note">
-                                        MLB prop lines come from PropLine above. For the other sports these are
-                                        still illustrative sample lines — PropLine also covers NBA/NFL/NHL
-                                        (same markets endpoint), just not wired into those slates in this app yet.
+                                        Same ParlayAPI key and live pipeline as MLB above — real books + DFS
+                                        (PrizePicks, Underdog, Sleeper, DraftKings, FanDuel, BetMGM and more)
+                                        for all four of these sports too, not just MLB. NHL has no real prop-line
+                                        source in this app yet and stays sample-only until one is added.
                                     </div>
                                 </div>
                             </div>
@@ -19496,6 +19583,18 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // changes, NOT on every search keystroke or sort toggle.
             const gradedPlayers = React.useMemo(() => {
                 return basePlayers
+                    // PART 8/14 — game-start filter, applied here (not baked in
+                    // at fetch time) so it's checked fresh against Date.now()
+                    // every time this memo recomputes (sport/date change, the
+                    // ~90s silent refresh, a grade-version bump) rather than
+                    // once when the prop was originally fetched/cached. A prop
+                    // for a game that has since started is dropped from the
+                    // PRE-GAME Browse/Top Picks/Prime/+EV board entirely —
+                    // never graded, ranked, searched, or counted toward this
+                    // player having live lines.
+                    .map(p => (Array.isArray(p.props) && p.props.some(pr => pr.commenceTimeMs != null))
+                        ? { ...p, props: p.props.filter(isPregameProp) }
+                        : p)
                     .filter(p => !((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba' || p.sport === 'wnba') && p._allLines && p._noLiveLines))
                     .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter && !pr.altLine)))
                     .map(p => ({
