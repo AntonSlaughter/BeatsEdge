@@ -14,6 +14,7 @@ const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapsho
 const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
 const dataSourceHealth = require('../lib/dataSourceHealth');
+const parlayCache = require('../lib/parlayCache');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
@@ -660,6 +661,111 @@ function makePassthrough(provider, host, extraPassthroughHeaders = []) {
   };
 }
 
+// Cached, coalescing passthrough for ParlayAPI ONLY (PropLine keeps using
+// the plain makePassthrough above, completely unchanged). A separate
+// function rather than a cache-aware branch inside makePassthrough, so
+// PropLine's request/response path is provably byte-for-byte identical to
+// before -- no shared code path that a ParlayAPI-focused change could
+// accidentally alter.
+//
+// Request flow: cache hit -> return immediately, no upstream call, no
+// health-check. In-flight hit (a request for the identical key already
+// underway) -> await and share that SAME promise -- "coalescing": 100
+// browser tabs asking for the same board within the same moment produce
+// ONE upstream ParlayAPI call, not 100. Otherwise -> the normal
+// eligibility check + upstream fetch + health tracking (identical logic to
+// makePassthrough), then the successful result is cached for the next
+// caller and this in-flight entry is cleared.
+//
+// Only successful (2xx) responses are cached -- a 429/503/502/etc. must
+// never be served to a later caller as if it were a valid cached board.
+function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = []) {
+  return async (req, res) => {
+    const upstreamPath = req.params[0];
+    if (!upstreamPath || upstreamPath.includes('..')) {
+      return res.status(400).json({ error: 'bad path' });
+    }
+
+    const cacheKey = parlayCache.cacheKeyFor(upstreamPath, req.query);
+
+    const sendResult = (result, cacheHeader) => {
+      extraPassthroughHeaders.forEach(h => {
+        if (result.headers && result.headers[h] != null) res.set(h, result.headers[h]);
+      });
+      res.set('x-cache', cacheHeader);
+      return res.status(result.status).type(result.contentType || 'application/json').send(result.body);
+    };
+
+    const hit = parlayCache.get(cacheKey);
+    if (hit) return sendResult(hit, 'HIT');
+
+    const existing = parlayCache.getInFlight(cacheKey);
+    if (existing) {
+      parlayCache.recordCoalesced();
+      try {
+        const result = await existing;
+        return sendResult(result, 'COALESCED');
+      } catch (err) {
+        return res.status(502).json({ error: `${provider} unreachable: ` + err.message });
+      }
+    }
+
+    if (!dataSourceHealth.isEligible(provider)) {
+      const health = dataSourceHealth.getHealth(provider);
+      logOncePerMinute(provider, `[data-source] ${provider} in cooldown until ${health.cooldownUntil} -- short-circuiting without calling upstream`);
+      return res.status(503).json({
+        status: 'unavailable',
+        reason: `${provider} is cooling down after repeated failures (${health.status})`,
+        cooldownUntil: health.cooldownUntil
+      });
+    }
+
+    const doFetch = (async () => {
+      const qs = new URLSearchParams(req.query).toString();
+      const url = `https://${host}/${upstreamPath}${qs ? '?' + qs : ''}`;
+      const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
+      const body = await upstream.text();
+
+      if (upstream.status === 429) {
+        const retryAfterSeconds = parseRetryAfterSeconds(upstream.headers.get('retry-after'));
+        dataSourceHealth.recordFailure(provider, { kind: 'rateLimited', reason: 'HTTP 429', retryAfterSeconds });
+        console.log(`[data-source] ${provider} rate limited (429)${retryAfterSeconds != null ? ` -- Retry-After ${retryAfterSeconds}s` : ''}`);
+      } else if (upstream.status === 401 || upstream.status === 403) {
+        dataSourceHealth.recordFailure(provider, { kind: 'authFailed', reason: `HTTP ${upstream.status}` });
+        console.log(`[data-source] ${provider} auth failure (HTTP ${upstream.status})`);
+      } else if (upstream.status >= 500) {
+        dataSourceHealth.recordFailure(provider, { kind: 'temporarilyUnavailable', reason: `HTTP ${upstream.status}` });
+        console.log(`[data-source] ${provider} upstream error (HTTP ${upstream.status})`);
+      } else if (upstream.status >= 200 && upstream.status < 300) {
+        const wasDown = dataSourceHealth.getHealth(provider).status !== 'healthy';
+        dataSourceHealth.recordSuccess(provider);
+        if (wasDown) console.log(`[data-source] ${provider} recovered`);
+      }
+
+      const headers = {};
+      extraPassthroughHeaders.forEach(h => {
+        const v = upstream.headers.get(h);
+        if (v != null) headers[h] = v;
+      });
+      const result = { status: upstream.status, contentType: upstream.headers.get('content-type') || 'application/json', body, headers };
+      if (upstream.status >= 200 && upstream.status < 300) parlayCache.set(cacheKey, result);
+      return result;
+    })();
+
+    parlayCache.setInFlight(cacheKey, doFetch);
+
+    try {
+      const result = await doFetch;
+      return sendResult(result, 'MISS');
+    } catch (err) {
+      const kind = /timeout|abort/i.test(err.message) ? 'timeout' : 'temporarilyUnavailable';
+      dataSourceHealth.recordFailure(provider, { kind, reason: err.message });
+      console.log(`[data-source] ${provider} unreachable (${kind}: ${err.message})`);
+      return res.status(502).json({ error: `${provider} unreachable: ` + err.message });
+    }
+  };
+}
+
 // PropLine passthrough — api.prop-line.com sends no CORS headers, so a
 // static browser app (BeatsEdge.html) can't call it directly. The caller
 // supplies its own PropLine apiKey as a query param (same trust model as
@@ -688,7 +794,7 @@ router.get('/propline/*', makePassthrough('propline', 'api.prop-line.com'));
 // x-result-truncated when its own internal per-source row cap was hit and
 // pagination can't recover the rest) is forwarded through unchanged.
 const PARLAYAPI_PASSTHROUGH_HEADERS = ['x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count'];
-router.get('/parlayapi/*', makePassthrough('parlayapi', 'parlay-api.com', PARLAYAPI_PASSTHROUGH_HEADERS));
+router.get('/parlayapi/*', makeCachedParlayPassthrough('parlayapi', 'parlay-api.com', PARLAYAPI_PASSTHROUGH_HEADERS));
 
 // GET /api/data-sources/health — safe operational metadata only (status,
 // timestamps, cooldown) for every provider this backend proxies and can
@@ -700,6 +806,11 @@ router.get('/parlayapi/*', makePassthrough('parlayapi', 'parlay-api.com', PARLAY
 router.get('/data-sources/health', (req, res) => {
   res.json({
     providers: dataSourceHealth.getAllHealth(['parlayapi', 'propline']),
+    // Server-side cache/coalescing stats for the ParlayAPI passthrough only
+    // (see lib/parlayCache.js) -- counts only, never the cached response
+    // bodies or any API key. hitRate is null until at least one request has
+    // been served (avoids a misleading 0% on a freshly-started process).
+    parlayApiCache: parlayCache.stats(),
     notServerObserved: [
       { provider: 'espn', note: 'fetched directly by the browser, not proxied through this backend' },
       { provider: 'mlbstatsapi', note: 'fetched directly by the browser, not proxied through this backend' },

@@ -11434,6 +11434,62 @@
                 });
             };
 
+            // Restores full per-market depth for NFL/CFB/NBA/WNBA. These four
+            // sports used to make ONE combined ParlayAPI request across every
+            // market at once (e.g. all ~25 NFL markets in a single call) --
+            // but ParlayAPI's own internal per-request row cap (~10k, see
+            // fetchParlayProps's comment) applies to that COMBINED request as
+            // a whole, so a real slate's true row count (many games x many
+            // markets x many books) could silently exceed it long before the
+            // board was actually complete, and the shallow default maxPages=3
+            // safety cap made it worse. MLB's fetchMlbPropLines already proved
+            // the fix live in production: fetch each market SEPARATELY (each
+            // one gets its OWN ~10k-row budget from the provider) with real
+            // pagination depth, batched with bounded concurrency so this
+            // isn't N sequential round trips. This is that same pattern,
+            // extracted so the other four sports can use it too. MLB's own
+            // fetchMlbPropLines is intentionally left as its own inline
+            // implementation, unchanged -- it already works live, no reason
+            // to touch it while giving the other sports the same strategy.
+            const fetchParlayPropsByMarket = async (parlaySportKey, mktMap, opts, isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                const marketKeys = Object.keys(mktMap);
+                const FETCH_CONCURRENCY = 10;
+                const combinedByNorm = {};
+                let totalN = 0, totalPages = 0, totalRowsReceived = 0, anyTruncated = false, anyReached = false;
+                const combinedRejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
+                const fetchMarketBatch = async (keys) => {
+                    const emptyMarkets = [];
+                    for (let i = 0; i < keys.length; i += FETCH_CONCURRENCY) {
+                        if (gone()) return emptyMarkets;
+                        const batch = keys.slice(i, i + FETCH_CONCURRENCY);
+                        const results = await Promise.all(batch.map(mk => fetchParlayProps(parlaySportKey, mktMap, mk, {
+                            books: opts.books, limit: opts.limit || 2500, commenceWindow: opts.commenceWindow, maxPages: opts.maxPages || 6
+                        })));
+                        results.forEach((pa, idx) => {
+                            if (!pa) { emptyMarkets.push(batch[idx]); return; }
+                            anyReached = true;
+                            mergeParlayByNorm(combinedByNorm, pa.byNorm);
+                            totalN += pa.n; totalPages += pa.pagesFetched; totalRowsReceived += pa.rowsReceived;
+                            if (pa.truncated) anyTruncated = true;
+                            Object.keys(combinedRejected).forEach(k => combinedRejected[k] += (pa.rejected[k] || 0));
+                        });
+                    }
+                    return emptyMarkets;
+                };
+                const firstPassEmpty = await fetchMarketBatch(marketKeys);
+                if (gone()) return null;
+                if (firstPassEmpty.length) {
+                    console.warn(`[ParlayAPI ${parlaySportKey}] Retrying ${firstPassEmpty.length} market(s) with zero data on first attempt: ${firstPassEmpty.join(', ')}`);
+                    const stillEmpty = await fetchMarketBatch(firstPassEmpty);
+                    if (gone()) return null;
+                    if (stillEmpty.length) console.warn(`[ParlayAPI ${parlaySportKey}] Still no data after retry: ${stillEmpty.join(', ')} — this refresh may be missing real lines for these markets.`);
+                }
+                if (!anyReached) return null;
+                if (anyTruncated) console.warn(`[ParlayAPI ${parlaySportKey}] One or more per-market requests were still truncated even after narrowing — some rows may be missing this refresh.`);
+                return { byNorm: combinedByNorm, n: totalN, pagesFetched: totalPages, rowsReceived: totalRowsReceived, rejected: combinedRejected, truncated: anyTruncated };
+            };
+
             // ============================================================
             // Phase 10A -- shared player-identity resolver.
             //
@@ -12304,10 +12360,9 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const markets = Object.keys(PARLAY_FB_MKT).join(',');
-                const pa = await fetchParlayProps('americanfootball_nfl', PARLAY_FB_MKT, markets, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
-                });
+                const pa = await fetchParlayPropsByMarket('americanfootball_nfl', PARLAY_FB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
@@ -12614,10 +12669,9 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const markets = Object.keys(PARLAY_FB_MKT).join(',');
-                const pa = await fetchParlayProps('americanfootball_ncaaf', PARLAY_FB_MKT, markets, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
-                });
+                const pa = await fetchParlayPropsByMarket('americanfootball_ncaaf', PARLAY_FB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
@@ -13212,10 +13266,9 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const markets = Object.keys(PARLAY_BB_MKT).join(',');
-                const pa = await fetchParlayProps('basketball_nba', PARLAY_BB_MKT, markets, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
-                });
+                const pa = await fetchParlayPropsByMarket('basketball_nba', PARLAY_BB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
@@ -13579,10 +13632,9 @@
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
-                const markets = Object.keys(PARLAY_BB_MKT).join(',');
-                const pa = await fetchParlayProps('basketball_wnba', PARLAY_BB_MKT, markets, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 5000, commenceWindow
-                });
+                const pa = await fetchParlayPropsByMarket('basketball_wnba', PARLAY_BB_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 2500, maxPages: 6, commenceWindow
+                }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
 
