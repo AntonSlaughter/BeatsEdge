@@ -5595,7 +5595,34 @@
             player_steals: 'steals', player_stl: 'steals',
             player_blocks: 'blocks', player_blk: 'blocks', player_blocked_shots: 'blocks',
             player_turnovers: 'turnovers', player_to: 'turnovers',
-            player_blocks_steals: 'blocksSteals', player_steals_blocks: 'blocksSteals', 'player_blks+stls': 'blocksSteals'
+            player_blocks_steals: 'blocksSteals', player_steals_blocks: 'blocksSteals', 'player_blks+stls': 'blocksSteals',
+            // Confirmed live via a real, populated WNBA ParlayAPI board
+            // (2026-09-18 diagnostic, tmp/parlayapi-nba-wnba-market-keys.json)
+            // -- exact raw market_key strings, not guessed/inferred from
+            // naming. This table is shared by both fetchNbaPropLines and
+            // fetchWnbaPropLines (same PARLAY_BB_MKT object passed to both),
+            // so these aliases apply to NBA the moment it has real data too
+            // -- that's an existing architecture fact, not a new NBA-specific
+            // assumption; the underlying get/has math in NBA_PROP_DEFS was
+            // already sport-agnostic before this change.
+            //
+            // Deliberately NOT aliased (left provider-only / unmapped):
+            //   player_offensive_rebounds, player_defensive_rebounds -- no
+            //     OREB/DREB split exists in ESPN's live gamelog (confirmed:
+            //     only `totalRebounds`), only in the optional/backtest-only
+            //     hoopR backend, so live grading can't legitimately support this.
+            //   player_points_1st_quarter, player_points_1st_half,
+            //     player_fantasy_points_1st_half -- no period-level data
+            //     exists anywhere in this app's live or historical pipeline.
+            //   player_three_pointers, player_threes_made, player_3_pt_made_combo
+            //     -- three DIFFERENT raw keys from the already-working
+            //     player_threes, each used by a non-overlapping bookmaker
+            //     set with no field available to confirm they mean the same
+            //     thing. Left unmapped rather than assumed equivalent by name.
+            player_fg_made: 'fgMade', player_fg_attempted: 'fgAttempted',
+            player_free_throws_made: 'ftMade', player_free_throws_attempted: 'ftAttempted',
+            player_two_pointers_made: 'twoPtMade', player_two_pointers_attempted: 'twoPtAttempted',
+            player_fantasy_points: 'fantasyPoints'
         };
 
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
@@ -12142,8 +12169,25 @@
                             const meta = evMeta[ev.eventId] || {};
                             const row = {};
                             (ev.stats || []).forEach((v, i) => {
+                                const name = names[i];
+                                if (!name) return;
+                                // Combined "made-attempted" stat values (e.g. "5-9" for
+                                // FG, "3-6" for 3PT, "0-0" for FT) previously lost their
+                                // second number to parseFloat, which stops at the first
+                                // non-numeric char and keeps only the made count. That
+                                // made-only value is UNCHANGED below (still whatever
+                                // parseFloat("5-9") already produced: 5) -- this only
+                                // ADDS the attempted half under a new `name__attempted`
+                                // key for callers that need it (e.g. FG/FT/3PT Attempted
+                                // defs). No existing reader of row[name] is affected.
+                                const madeAtt = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(String(v));
+                                if (madeAtt) {
+                                    row[name] = parseFloat(madeAtt[1]);
+                                    row[name + '__attempted'] = parseFloat(madeAtt[2]);
+                                    return;
+                                }
                                 const num = parseFloat(v);
-                                if (names[i]) row[names[i]] = Number.isFinite(num) ? num : 0;
+                                row[name] = Number.isFinite(num) ? num : 0;
                             });
                             const iso = (meta.gameDate || meta.date || '').slice(0, 10);
                             const parts = iso.split('-');
@@ -13080,8 +13124,21 @@
             // `stats` — same convention NFL uses. The threes field is a
             // "made-attempted" string ("3-7") — parseFloat keeps the makes.
             const NBA_3PM = 'threePointFieldGoalsMade-threePointFieldGoalsAttempted';
+            const NBA_3PA = NBA_3PM + '__attempted';
+            const NBA_FGM = 'fieldGoalsMade-fieldGoalsAttempted';
+            const NBA_FGA = NBA_FGM + '__attempted';
+            const NBA_FTM = 'freeThrowsMade-freeThrowsAttempted';
+            const NBA_FTA = NBA_FTM + '__attempted';
             const nbaPts = r => r.points || 0, nbaReb = r => r.totalRebounds || 0, nbaAst = r => r.assists || 0;
             const nbaHasPts = r => r.points != null, nbaHasReb = r => r.totalRebounds != null, nbaHasAst = r => r.assists != null;
+            // PrizePicks' own published NBA fantasy scoring (confirmed against
+            // prizepicks.com/playbook-article/how-to-play-prizepicks-nba-fantasy-
+            // scoring-system): pts x1, reb x1.2, ast x1.5, stl x3, blk x3, to x-1.
+            // 3PT made carries NO extra weight in this formula (PrizePicks says
+            // so explicitly) -- do not add a threes term here. This is PrizePicks-
+            // specific; Underdog/Sleeper are NOT assumed to score the same way
+            // (see the `books` restriction on the fantasyPoints def below).
+            const nbaFantasyPP = (r) => Math.round((nbaPts(r) * 1 + nbaReb(r) * 1.2 + nbaAst(r) * 1.5 + (r.steals || 0) * 3 + (r.blocks || 0) * 3 - (r.turnovers || 0) * 1) * 10) / 10;
             const NBA_PROP_DEFS = {
                 points:       { type: 'Points',        market: 'player_points',                  get: nbaPts, has: nbaHasPts },
                 rebounds:     { type: 'Rebounds',      market: 'player_rebounds',                get: nbaReb, has: nbaHasReb },
@@ -13094,15 +13151,38 @@
                 steals:       { type: 'Steals',        market: 'player_steals',                  get: r => r.steals || 0, has: r => r.steals != null },
                 blocks:       { type: 'Blocks',        market: 'player_blocks',                  get: r => r.blocks || 0, has: r => r.blocks != null },
                 turnovers:    { type: 'Turnovers',     market: 'player_turnovers',               get: r => r.turnovers || 0, has: r => r.turnovers != null },
-                blocksSteals: { type: 'Blocks+Steals', market: 'player_blocks_steals',           get: r => (r.blocks || 0) + (r.steals || 0), has: r => r.blocks != null || r.steals != null }
+                blocksSteals: { type: 'Blocks+Steals', market: 'player_blocks_steals',           get: r => (r.blocks || 0) + (r.steals || 0), has: r => r.blocks != null || r.steals != null },
+                // ── Additive Phase 2/3 markets (market-coverage expansion) ──
+                // `market` values below are the EXACT raw ParlayAPI market_key
+                // strings confirmed live against a real, populated WNBA board
+                // (2026-09-18, tmp/parlayapi-nba-wnba-market-keys.json) -- not
+                // guessed. The alias itself lives in PARLAY_BB_MKT (shared by
+                // both NBA and WNBA); this field just documents/mirrors it,
+                // same as every other entry in this object. These defs flow
+                // through nbaComputeWindows exactly like the 12 markets above.
+                fgMade:            { type: 'FG Made',               market: 'player_fg_made', get: r => r[NBA_FGM] || 0, has: r => r[NBA_FGM] != null },
+                ftMade:            { type: 'FT Made',               market: 'player_free_throws_made', get: r => r[NBA_FTM] || 0, has: r => r[NBA_FTM] != null },
+                twoPtMade:         { type: 'Two Pointers Made',      market: 'player_two_pointers_made', get: r => Math.max(0, (r[NBA_FGM] || 0) - (r[NBA_3PM] || 0)), has: r => r[NBA_FGM] != null && r[NBA_3PM] != null },
+                fgAttempted:       { type: 'FG Attempted',          market: 'player_fg_attempted', get: r => r[NBA_FGA] || 0, has: r => r[NBA_FGA] != null },
+                ftAttempted:       { type: 'FT Attempted',          market: 'player_free_throws_attempted', get: r => r[NBA_FTA] || 0, has: r => r[NBA_FTA] != null },
+                twoPtAttempted:    { type: 'Two Pointers Attempted', market: 'player_two_pointers_attempted', get: r => Math.max(0, (r[NBA_FGA] || 0) - (r[NBA_3PA] || 0)), has: r => r[NBA_FGA] != null && r[NBA_3PA] != null },
+                // PrizePicks-only -- see `books` guard in nbaBuildProps and the
+                // per-book knownKeys filter feeding buildProviderOnlyProps, both
+                // of which make sure an Underdog/Sleeper row under this same
+                // raw key (if one ever exists) falls through to "Model not
+                // supported yet" instead of silently being graded with a
+                // formula that was only confirmed for PrizePicks. Confirmed
+                // live: player_fantasy_points currently only appears under
+                // prizepicks (see the same diagnostic).
+                fantasyPoints:     { type: 'Fantasy Points', market: 'player_fantasy_points', books: ['prizepicks'], get: r => nbaFantasyPP(r), has: r => nbaHasPts(r) && nbaHasReb(r) && nbaHasAst(r) && r.steals != null && r.blocks != null && r.turnovers != null }
             };
             const NBA_MARKET_TO_KEY = {
-                ...Object.fromEntries(Object.entries(NBA_PROP_DEFS).map(([k, v]) => [v.market, k])),
+                ...Object.fromEntries(Object.entries(NBA_PROP_DEFS).filter(([, v]) => v.market).map(([k, v]) => [v.market, k])),
                 player_three_pointers_made: 'threes', player_threes_made: 'threes', 'player_3pt_made': 'threes', 'player_3-pt_made': 'threes',
                 player_pts_rebs_asts: 'pra', player_pts_rebs: 'pr', player_pts_asts: 'pa', player_rebs_asts: 'ra',
                 player_blocked_shots: 'blocks', player_steals_blocks: 'blocksSteals'
             };
-            const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals'];
+            const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals', 'Fantasy Points', 'FG Made', 'FG Attempted', 'Two Pointers Made', 'Two Pointers Attempted', 'FT Made', 'FT Attempted'];
             const nbaAllKeys = Object.keys(NBA_PROP_DEFS);
 
             const nbaFetchGamelog = async (id) => {
@@ -13394,6 +13474,15 @@
                 };
                 nbaAllKeys.forEach(k => {
                     const def = NBA_PROP_DEFS[k];
+                    // Some defs (e.g. fantasyPoints) are only confirmed correct
+                    // for a specific book's scoring rules -- skip building a
+                    // real model prop for any other book. Handled here, not in
+                    // fetchParlayProps, so ingestion stays untouched; the
+                    // matching per-book knownKeys filter below (feeding
+                    // buildProviderOnlyProps) makes sure a skipped book's row
+                    // still surfaces as a real "Model not supported yet" prop
+                    // instead of being silently dropped.
+                    if (def.books && !def.books.includes(book)) return;
                     const byBook = allLines[k] || {};
                     // ONLY the selected book. Never borrow another book's line —
                     // each tab shows exactly what that book has posted.
@@ -13418,7 +13507,19 @@
                         eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
-                props.push(...buildProviderOnlyProps(allLines, nbaAllKeys, book));
+                // A book-restricted def (see the `def.books` guard above) is
+                // only "known" for the book(s) it's actually confirmed for --
+                // for every other book it must still count as unmapped, so a
+                // real row under that key falls through to buildProviderOnlyProps
+                // and renders as a real "Model not supported yet" prop rather
+                // than being silently dropped (bca62e6's core invariant,
+                // unchanged here — only the knownKeys list passed in is
+                // per-book now, buildProviderOnlyProps itself is untouched).
+                const knownForBook = nbaAllKeys.filter(k => {
+                    const d = NBA_PROP_DEFS[k];
+                    return !d.books || d.books.includes(book);
+                });
+                props.push(...buildProviderOnlyProps(allLines, knownForBook, book));
                 return props;
             };
 
