@@ -116,8 +116,12 @@ ok(nbaClassification.method !== 'EXACT_ID' && nbaClassification.propLineIdRequir
 
 // ---- Live spot-check (lean, 1-2 real PropLine requests, gracefully skips) ----
 (async () => {
-  const PROPLINE_KEY = process.env.PROPLINE_KEY || 'd0a9903df442e544949ee2f980b7c1a6';
+  const PROPLINE_KEY = process.env.PROPLINE_KEY;
   const PL = 'https://api.prop-line.com';
+  if (!PROPLINE_KEY) {
+    skipped('live spot-check: no PROPLINE_KEY environment variable configured this run -- skipping gracefully (never substitutes a hardcoded credential)');
+    return finish();
+  }
   try {
     const evR = await fetch(`${PL}/v1/sports/baseball_mlb/events?apiKey=${PROPLINE_KEY}`);
     if (!evR.ok) throw new Error('HTTP ' + evR.status);

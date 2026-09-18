@@ -14,10 +14,11 @@
 // structure), so a future provider-schema change would be caught here
 // rather than discovered silently.
 //
-// Gracefully SKIPS (not fails) if PropLine is unreachable or the key is
-// invalid -- this must never block the rest of the suite.
+// Gracefully SKIPS (not fails) if PropLine is unreachable, the key is
+// invalid, or no PROPLINE_KEY is configured at all -- this must never block
+// the rest of the suite, and must never fall back to a hardcoded credential.
 
-const PROPLINE_KEY = process.env.PROPLINE_KEY || 'd0a9903df442e544949ee2f980b7c1a6';
+const PROPLINE_KEY = process.env.PROPLINE_KEY;
 const PL = 'https://api.prop-line.com';
 
 let pass = 0, fail = 0, skip = 0;
@@ -44,6 +45,12 @@ const plGet = (path) => j(`${PL}${path}${path.includes('?') ? '&' : '?'}apiKey=$
 
 (async () => {
   console.log('=== PropLine live capability test (lean, ~5 requests) ===\n');
+
+  if (!PROPLINE_KEY) {
+    skipped('1-10. No PROPLINE_KEY environment variable configured this run -- skipping gracefully (never fails the suite, never substitutes a hardcoded credential)');
+    console.log(`\n=== RESULT: ${pass} passed, ${fail} failed, ${skip} skipped ===`);
+    process.exit(0);
+  }
 
   // 1. Event discovery -- real, current MLB events (in-season sport, most
   // likely to have live near-term events regardless of when this runs).

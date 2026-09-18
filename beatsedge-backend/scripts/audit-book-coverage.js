@@ -5,11 +5,16 @@
 //   node scripts/audit-book-coverage.js
 //   node scripts/audit-book-coverage.js --sport baseball_mlb --events 6
 //
-// Uses the same keys the app ships with (the user's own PropLine / ParlayAPI
-// keys). No writes, no DB — pure read.
+// Requires PROPLINE_KEY and PARLAY_API_KEY as environment variables (the
+// user's own PropLine / ParlayAPI keys) -- no fallback, never hardcoded.
+// No writes, no DB — pure read.
 
-const PROPLINE_KEY = process.env.PROPLINE_KEY || 'd0a9903df442e544949ee2f980b7c1a6';
-const PARLAY_KEY = process.env.PARLAY_API_KEY || '053117e00add4a84457034fd9c58d1d5';
+const PROPLINE_KEY = process.env.PROPLINE_KEY;
+const PARLAY_KEY = process.env.PARLAY_API_KEY;
+if (!PROPLINE_KEY || !PARLAY_KEY) {
+  console.error('Missing required credential(s): set PROPLINE_KEY and PARLAY_API_KEY as environment variables before running this script (no hardcoded fallback exists).');
+  process.exit(1);
+}
 
 const args = process.argv.slice(2);
 const argVal = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 ? args[i + 1] : def; };
@@ -145,7 +150,7 @@ async function auditSport(s) {
 
 (async () => {
   console.log(`BeatsEdge — sportsbook prop-line coverage audit  ·  ${new Date().toISOString()}`);
-  console.log(`PropLine key …${PROPLINE_KEY.slice(-6)}  ·  sampling up to ${MAX_EVENTS} games/sport`);
+  console.log(`PropLine key: configured  ·  sampling up to ${MAX_EVENTS} games/sport`);
   const list = ONLY_SPORT ? SPORTS.filter(s => s.key === ONLY_SPORT || s.label.toLowerCase() === ONLY_SPORT.toLowerCase()) : SPORTS;
   const results = [];
   for (const s of list) {
