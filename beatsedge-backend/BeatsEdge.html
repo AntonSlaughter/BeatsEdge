@@ -4029,6 +4029,10 @@
                 player.props.forEach(prop => {
                     if (typeFilter && typeFilter !== 'all' && prop.type !== typeFilter) return;
                     if (skipAlt && prop.altLine) return; // headline grade = the standard board, not a Goblin
+                    // Provider-only market (no BeatsEdge formula) -- never
+                    // feeds the headline grade badge; it has no window data
+                    // for calculateEdgeScore to read in the first place.
+                    if (prop.modelSupported === false) return;
                     const e = calculateEdgeScore(player, prop);
                     if (!best || GRADE_RANK[e.grade] < GRADE_RANK[best.grade] ||
                         (e.grade === best.grade && e.gradeScore > best.gradeScore)) {
@@ -4108,6 +4112,17 @@
         // what's allowed into the LIVE, GRADED rendering path.
         const isLiveEligibleProp = (prop) => isLiveProviderProp(prop) && isPregameProp(prop);
 
+        // Market-coverage audit fix: a provider-only prop (see
+        // buildProviderOnlyProps) is a REAL, live-eligible prop -- it has a
+        // lineSource, eventId, and commenceTimeMs like any other -- but
+        // BeatsEdge has no historical formula for its market, so it was
+        // never run through calculateEdgeScore and carries no
+        // statsByKey-backed window to run one on now. isLiveEligibleProp
+        // alone is not enough to gate calculateEdgeScore calls; this is.
+        // Undefined `modelSupported` (every prop built before this fix, and
+        // every prop from a known market today) defaults to true.
+        const isModelSupportedProp = (prop) => !!prop && prop.modelSupported !== false;
+
         // Top N best-supported picks across EVERY player and EVERY one of their
         // props, using the same calculateEdgeScore engine as Browse (not a
         // separate heuristic). One entry per player so the list stays varied.
@@ -4139,6 +4154,9 @@
                     // is a pure data-eligibility filter -- calculateEdgeScore
                     // itself, ranking, and grading below are unchanged.
                     if (!isLiveEligibleProp(prop)) return;
+                    // Provider-only market (no BeatsEdge formula) -- real prop,
+                    // stays visible in Browse/Search, never ranked here.
+                    if (!isModelSupportedProp(prop)) return;
                     // Rank on the MAIN posted line only — alt lines (e.g. an
                     // "over 0.5" goblin) would otherwise dominate with trivially
                     // high hit rates and crowd out real picks.
@@ -4182,6 +4200,9 @@
                     // +EV is a market-derived signal, meaningless on a
                     // seed/placeholder prop with no real posted price.
                     if (!isLiveEligibleProp(prop)) return;
+                    // Provider-only market (no BeatsEdge formula) -- real prop,
+                    // stays visible in Browse/Search, never ranked here.
+                    if (!isModelSupportedProp(prop)) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
@@ -4231,6 +4252,9 @@
                     // never surface a seed/placeholder or pure-projection prop.
                     // See that function's comment for the full reasoning.
                     if (!isLiveEligibleProp(prop)) return;
+                    // Provider-only market (no BeatsEdge formula) -- real prop,
+                    // stays visible in Browse/Search, never ranked here.
+                    if (!isModelSupportedProp(prop)) return;
                     if (prop.altLine || prop.crossBook) return;
                     const edge = calculateEdgeScore(player, prop);
                     if (!edge.prime) return;
@@ -5090,6 +5114,11 @@
                     const gl = p.gameLogByKey || {};
                     p.props.forEach(pr => {
                         if (!pr.lineSource || pr.altLine || pr.ppKind || pr.crossBook || (pr.direction || 'over') !== 'over') return;
+                        // Provider-only market -- no statsByKey window exists for
+                        // it, so calculateEdgeScore would silently fall back to
+                        // player.stats (an UNRELATED stat) instead of erroring.
+                        // Never archive that as if it were a real graded snapshot.
+                        if (pr.modelSupported === false) return;
                         let e;
                         try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
                         if (!e) return;
@@ -8092,6 +8121,11 @@
                     let prime = false, bestEdge = null;
                     (p.props || []).forEach((pr, i) => {
                         if (pr.altLine || pr.crossBook) return;
+                        // Provider-only market -- same reasoning as
+                        // archivePropSnapshots: no statsByKey window exists for
+                        // it, so skip rather than let calculateEdgeScore fall
+                        // back to an unrelated stat for this research tool too.
+                        if (pr.modelSupported === false) return;
                         let e; try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
                         if (!e) return;
                         if (e.prime) prime = true;
@@ -10871,6 +10905,7 @@
                 // the `seedMode` branch above, the brief pre-fetch placeholder
                 // shown before fetchMlbPropLines's first live fetch completes.
 
+                props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), book));
                 return props;
             };
 
@@ -10901,6 +10936,18 @@
                 assignPropIds(props);
                 return props
                     .map(pr => {
+                        // Market-coverage audit fix: a provider-only prop has no
+                        // statsByKey window for its market -- calculateEdgeScore
+                        // would silently fall back to player.stats (an UNRELATED
+                        // stat) rather than error, producing a plausible-looking
+                        // but fabricated grade. Never run it; sort these last
+                        // (GRADE_RANK.D is the worst-existing rank, so pushing one
+                        // step past it keeps them strictly after every real grade
+                        // without needing a new sort key).
+                        if (pr.modelSupported === false) {
+                            pr.__edge = null;
+                            return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK.D + 1, g: -Infinity };
+                        }
                         const e = calculateEdgeScore(playerLike, pr);
                         // Stash the computed edge on the prop so attachPlusEV (which
                         // always runs right after this) can reuse it instead of
@@ -11027,6 +11074,10 @@
                     // prop (same player, same line) instead of running the engine
                     // again — same value either way, just without paying for it twice.
                     const { __edge, ...prClean } = pr;
+                    // Provider-only market -- no model output exists (or should
+                    // ever be computed) for it, so it can never be a +EV
+                    // candidate either. See sortPropsByEdge's identical guard.
+                    if (pr.modelSupported === false) return prClean;
                     const byBook = player._allLines && player._allLines[pr.statKey];
                     const edge = __edge || calculateEdgeScore(player, pr);
                     const result = computePlusEVForProp(pr, byBook, edge.projection, edge.thinData);
@@ -12281,6 +12332,72 @@
                 return { statsByKey, gameLogByKey };
             };
 
+            // Market-coverage audit fix (2026-09-18): a raw ParlayAPI
+            // market_key with no entry in a sport's own known-market map
+            // (MLB_PROP_DEFS / NFL_PROP_DEFS / NBA_PROP_DEFS) still has REAL
+            // provider data sitting in `allLines` under that raw key --
+            // fetchParlayProps already preserves it there at ingestion (see
+            // that function's own row-loop comment). It was only ever
+            // dropped from the visible board downstream, in each sport's own
+            // *BuildProps function, because those functions have always
+            // iterated ONLY their known keys (Object.keys(*_PROP_DEFS) /
+            // nbaAllKeys / posKeys) when turning `allLines` into
+            // `player.props`. This helper is called by all three
+            // *BuildProps functions to add those preserved-but-previously-
+            // unbuilt entries back as PROVIDER-ONLY props: a real line, real
+            // source, real event id, real commence time -- but explicitly
+            // tagged `modelSupported: false` and carrying no hitRate, no
+            // seeded window, no calculateEdgeScore input of any kind. There
+            // is no historical formula for a market BeatsEdge doesn't
+            // recognize, so none is invented -- every renderer that reads
+            // `modelSupported` shows "Model not supported yet" instead of a
+            // grade/probability/edge for these, and findTopPicks/
+            // findPrimePicks/findPlusEVPicks skip them entirely (unchanged
+            // Model A, just never invoked on them).
+            const humanizeMarketKey = (key) => {
+                if (!key) return 'Unknown market';
+                return String(key)
+                    .replace(/^player_/, '')
+                    .replace(/[_]+/g, ' ')
+                    .trim()
+                    .replace(/\b\w/g, c => c.toUpperCase()) || String(key);
+            };
+            const buildProviderOnlyProps = (allLines, knownKeys, book) => {
+                const known = new Set(knownKeys);
+                const props = [];
+                Object.keys(allLines || {}).forEach(rawKey => {
+                    if (known.has(rawKey)) return; // already built as a model-supported prop by the caller
+                    const byBook = allLines[rawKey];
+                    const arr = byBook && byBook[book];
+                    if (!arr || !arr.length) return;
+                    const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
+                    const multi = sorted.length > 1;
+                    const label = humanizeMarketKey(rawKey);
+                    sorted.forEach(e => {
+                        const base = {
+                            type: label, statKey: rawKey, line: e.line, modelSupported: false,
+                            lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${book}`,
+                            book, setAt: e.setAt, move: e.move, altLine: multi && !e.primary,
+                            eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
+                            homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null
+                        };
+                        if (DFS_PLATFORMS.has(book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
+                            props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: e.over ?? null, oppOdds: null, hitRate: null });
+                            return;
+                        }
+                        const hasO = e.over != null, hasU = e.under != null;
+                        if (hasO && hasU) {
+                            props.push({ ...base, direction: 'over', odds: e.over ?? null, oppOdds: e.under ?? null, hitRate: null });
+                            props.push({ ...base, direction: 'under', odds: e.under ?? null, oppOdds: e.over ?? null, hitRate: null });
+                            return;
+                        }
+                        const side = hasO ? 'over' : 'under';
+                        props.push({ ...base, direction: side, oneWay: true, ppKind: null, odds: (side === 'over' ? e.over : e.under) ?? null, oppOdds: null, hitRate: null });
+                    });
+                });
+                return props;
+            };
+
             // Build a player's props for ONE book from their consolidated lines.
             const nflBuildProps = (posKeys, statsByKey, allLines, book, perGameFor) => {
                 const props = [];
@@ -12337,6 +12454,7 @@
                         eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
+                props.push(...buildProviderOnlyProps(allLines, Object.keys(NFL_PROP_DEFS), book));
                 return props;
             };
 
@@ -13300,6 +13418,7 @@
                         eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
                     }));
                 });
+                props.push(...buildProviderOnlyProps(allLines, nbaAllKeys, book));
                 return props;
             };
 
@@ -17916,7 +18035,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     {player.props.map((prop, idx) => ({ prop, idx }))
                                         .filter(({ prop }) => (pillDir === 'all' || prop.direction === pillDir) && (pillAlts || !prop.altLine) && (statFilter === 'all' || prop.type === statFilter))
                                         .map(({ prop, idx }) => {
-                                            const edge = calculateEdgeScore(player, prop);
+                                            // Market-coverage audit fix: a provider-only prop (real
+                                            // line, no BeatsEdge formula for this market) must never
+                                            // reach calculateEdgeScore -- there's no statsByKey window
+                                            // for it to read. null here, not a fabricated result.
+                                            const edge = prop.modelSupported === false ? null : calculateEdgeScore(player, prop);
                                             const isActive = activeInModal && (prop.id != null ? detailModal.propId === prop.id : detailModal.propIdx === idx);
                                             return (
                                             <div
@@ -17973,15 +18096,23 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         <span className="prop-move price" title="Odds moved, line held">⚡</span>
                                                     )}
                                                 </div>
-                                                <div className={`grade-badge-sm ${GRADE_META[edge.grade].cls}`} style={{ marginTop: '0.35rem' }}>{edge.grade}</div>
-                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem', fontVariantNumeric: 'tabular-nums' }} title="Model probability this side hits — an estimate, not a lock">
-                                                    {edge.modelProbPct}%<span style={{ color: edge.edgePct > 0.5 ? 'var(--success-green)' : edge.edgePct < -0.5 ? 'var(--danger-red)' : 'var(--text-muted)' }}> · {edge.edgePct >= 0 ? '+' : ''}{edge.edgePct}%</span>
-                                                </div>
-                                                <div className="prop-pill-dots">
-                                                    {edge.factors.map((f, fIdx) => (
-                                                        <span key={fIdx} className={`mini-dot ${f.supports ? 'green' : 'red'}`}></span>
-                                                    ))}
-                                                </div>
+                                                {edge ? (
+                                                    <React.Fragment>
+                                                        <div className={`grade-badge-sm ${GRADE_META[edge.grade].cls}`} style={{ marginTop: '0.35rem' }}>{edge.grade}</div>
+                                                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem', fontVariantNumeric: 'tabular-nums' }} title="Model probability this side hits — an estimate, not a lock">
+                                                            {edge.modelProbPct}%<span style={{ color: edge.edgePct > 0.5 ? 'var(--success-green)' : edge.edgePct < -0.5 ? 'var(--danger-red)' : 'var(--text-muted)' }}> · {edge.edgePct >= 0 ? '+' : ''}{edge.edgePct}%</span>
+                                                        </div>
+                                                        <div className="prop-pill-dots">
+                                                            {edge.factors.map((f, fIdx) => (
+                                                                <span key={fIdx} className={`mini-dot ${f.supports ? 'green' : 'red'}`}></span>
+                                                            ))}
+                                                        </div>
+                                                    </React.Fragment>
+                                                ) : (
+                                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.35rem' }} title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no grade, probability, or edge is invented for it.">
+                                                        Model not supported yet
+                                                    </div>
+                                                )}
                                             </div>
                                             );
                                         })}
@@ -18018,6 +18149,34 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     // player.props, which is exactly the drift this whole
                                     // component's prop-identity fix exists to prevent.
                                     const activeProp = cardProp || player.props[0];
+                                    // Market-coverage audit fix: a provider-only market has a
+                                    // real line but no BeatsEdge formula -- calculateEdgeScore
+                                    // must never run on it (no statsByKey window exists for it
+                                    // to read). Show the real source/line/DFS-type honestly and
+                                    // stop, rather than reaching the full model breakdown below.
+                                    if (activeProp.modelSupported === false) {
+                                        return (
+                                            <div className="edge-section">
+                                                <div className="edge-section-header">
+                                                    <div className="edge-section-title">🎯 BeatsEdge Matchup Analysis</div>
+                                                </div>
+                                                <div style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)' }}>
+                                                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
+                                                        {player.name} — {activeProp.type}
+                                                    </div>
+                                                    <div style={{ marginBottom: '0.75rem' }}>
+                                                        Line: {activeProp.line}
+                                                        {typeof activeProp.odds === 'number' && <> ({activeProp.odds > 0 ? '+' : ''}{activeProp.odds})</>}
+                                                        {' · '}{bookLabel(activeProp.book) || activeProp.lineSource}
+                                                        {activeProp.ppKind && <> · {activeProp.ppKind === 'demon' ? '😈 Demon' : '👺 Goblin'}</>}
+                                                    </div>
+                                                    <div title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no probability, projection, edge, or grade is invented for it.">
+                                                        <strong>Model not supported for this market yet.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — BeatsEdge simply has no research formula for "{activeProp.type}" yet.
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
                                     const edge = calculateEdgeScore(player, activeProp);
                                     const verdictClass = edge.matchupLabel === 'GREEN MATCHUP' ? 'green' : (edge.matchupLabel === 'RED MATCHUP' ? 'red' : 'mixed');
                                     const verdictEmoji = verdictClass === 'green' ? '🟢' : (verdictClass === 'red' ? '🔴' : '🟡');
