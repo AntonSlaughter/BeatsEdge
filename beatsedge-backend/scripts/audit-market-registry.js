@@ -35,12 +35,30 @@ const NBA_WNBA_SUPPORTED = {
   twoPtMade: ['player_two_pointers_made'], fgAttempted: ['player_fg_attempted'],
   ftAttempted: ['player_free_throws_attempted'], twoPtAttempted: ['player_two_pointers_attempted'],
   fantasyPoints: ['player_fantasy_points'],
+  // Phase 2A -- registered, but historical-data availability is genuinely
+  // sport-conditional (see the sport-aware override in buildByProviderKey
+  // below, mirroring BeatsEdge.html's buildMarketRegistry override).
+  offensiveRebounds: ['player_offensive_rebounds'], defensiveRebounds: ['player_defensive_rebounds'],
 };
 const NBA_WNBA_DERIVED_KEYS = new Set(['pra', 'pr', 'pa', 'ra', 'twoPtMade', 'twoPtAttempted', 'blocksSteals']);
+// Phase 2A -- OREB/DREB is the one pair of markets whose real state differs
+// by sport even though they share one modelKey/def. NBA: SUPPORTED, but
+// conditional on the optional hoopR backend being connected (falls back to
+// provider-only per player otherwise -- runtime behavior, not visible to
+// this static audit). WNBA: no historical source exists at all, so it
+// never becomes model-supported regardless of live ESPN data.
+const SPORT_CONDITIONAL_MODEL_KEYS = {
+  offensiveRebounds: {
+    nba: { state: MARKET_STATE.SUPPORTED, conditional: 'Requires the optional hoopR backend (nba_player_box) to be connected; falls back to provider-only per player when unavailable or that player has no historical record.' },
+    wnba: { state: MARKET_STATE.DATA_REQUIRED, reason: 'No historical WNBA OREB source exists in this application. Live-only per-game data (confirmed available via ESPN\'s summary endpoint) cannot safely produce a hit-rate-based probability on its own.' },
+  },
+  defensiveRebounds: {
+    nba: { state: MARKET_STATE.SUPPORTED, conditional: 'Requires the optional hoopR backend (nba_player_box) to be connected; falls back to provider-only per player when unavailable or that player has no historical record.' },
+    wnba: { state: MARKET_STATE.DATA_REQUIRED, reason: 'No historical WNBA DREB source exists in this application. Live-only per-game data (confirmed available via ESPN\'s summary endpoint) cannot safely produce a hit-rate-based probability on its own.' },
+  },
+};
 
 const NBA_WNBA_UNRESOLVED = [
-  { providerKey: 'player_offensive_rebounds', displayName: 'Offensive Rebounds', state: MARKET_STATE.DATA_REQUIRED, reason: 'No OREB/DREB split in the live ESPN gamelog data path.' },
-  { providerKey: 'player_defensive_rebounds', displayName: 'Defensive Rebounds', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Offensive Rebounds.' },
   { providerKey: 'player_points_1st_quarter', displayName: 'Points 1st Quarter', state: MARKET_STATE.DATA_REQUIRED, reason: 'No period-level player statistics exist in any current data source.' },
   { providerKey: 'player_points_1st_half', displayName: 'Points 1st Half', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter.' },
   { providerKey: 'player_fantasy_points_1st_half', displayName: 'Fantasy Points 1st Half', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter; also source-specific formula.' },
@@ -52,24 +70,29 @@ const NBA_WNBA_UNRESOLVED = [
   { providerKey: 'player_pts_rebs_asts_1st_half', displayName: 'Pts+Reb+Ast 1st Half (PrizePicks)', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available.' },
 ];
 
-function buildByProviderKey() {
+function buildByProviderKey(sport) {
   const map = {};
   Object.entries(NBA_WNBA_SUPPORTED).forEach(([modelKey, keys]) => {
     const isDerived = NBA_WNBA_DERIVED_KEYS.has(modelKey);
-    keys.forEach(k => { map[k] = { modelKey, state: isDerived ? MARKET_STATE.DERIVED : MARKET_STATE.SUPPORTED, reason: null }; });
+    const override = SPORT_CONDITIONAL_MODEL_KEYS[modelKey] && SPORT_CONDITIONAL_MODEL_KEYS[modelKey][sport];
+    const state = override ? override.state : (isDerived ? MARKET_STATE.DERIVED : MARKET_STATE.SUPPORTED);
+    const reason = override ? (override.reason || null) : null;
+    const conditional = override ? (override.conditional || null) : null;
+    keys.forEach(k => { map[k] = { modelKey, state, reason, conditional }; });
   });
-  NBA_WNBA_UNRESOLVED.forEach(e => { map[e.providerKey] = { modelKey: null, state: e.state, reason: e.reason }; });
+  NBA_WNBA_UNRESOLVED.forEach(e => { map[e.providerKey] = { modelKey: null, state: e.state, reason: e.reason, conditional: null }; });
   return map;
 }
 
 function auditSportFile(sport, marketsArray) {
-  const registry = buildByProviderKey();
+  const registry = buildByProviderKey(sport);
   const results = marketsArray.map(m => {
     const entry = registry[m.market_key];
     return {
       providerKey: m.market_key, rowCount: m.rowCount, registered: !!entry,
       state: entry ? entry.state : MARKET_STATE.DATA_REQUIRED, modelKey: entry ? entry.modelKey : null,
       reason: entry ? entry.reason : 'Not yet in the registry -- newly observed raw market_key with no classification on record.',
+      conditional: entry ? entry.conditional : null,
     };
   });
   const counts = { total: results.length, registered: results.filter(r => r.registered).length };
@@ -84,6 +107,11 @@ function auditSportFile(sport, marketsArray) {
   console.log(`Derived: ${counts[MARKET_STATE.DERIVED]}`);
   console.log(`Provider-only (data required): ${counts[MARKET_STATE.DATA_REQUIRED]}`);
   console.log(`Provider-only (formula unknown): ${counts[MARKET_STATE.FORMULA_UNKNOWN]}`);
+  const conditional = results.filter(r => r.conditional);
+  if (conditional.length) {
+    console.log('Conditionally supported (depends on optional data source, not guaranteed for every deployment/player):');
+    conditional.forEach(r => console.log(`  - ${r.providerKey} (${r.rowCount} rows) [${r.state}]: ${r.conditional}`));
+  }
   const unresolved = results.filter(r => r.state !== MARKET_STATE.SUPPORTED && r.state !== MARKET_STATE.DERIVED);
   if (unresolved.length) {
     console.log('Provider-only markets and why:');

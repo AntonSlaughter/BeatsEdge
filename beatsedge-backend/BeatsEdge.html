@@ -5625,10 +5625,6 @@
             // already sport-agnostic before this change.
             //
             // Deliberately NOT aliased (left provider-only / unmapped):
-            //   player_offensive_rebounds, player_defensive_rebounds -- no
-            //     OREB/DREB split exists in ESPN's live gamelog (confirmed:
-            //     only `totalRebounds`), only in the optional/backtest-only
-            //     hoopR backend, so live grading can't legitimately support this.
             //   player_points_1st_quarter, player_points_1st_half,
             //     player_fantasy_points_1st_half -- no period-level data
             //     exists anywhere in this app's live or historical pipeline.
@@ -5640,7 +5636,15 @@
             player_fg_made: 'fgMade', player_fg_attempted: 'fgAttempted',
             player_free_throws_made: 'ftMade', player_free_throws_attempted: 'ftAttempted',
             player_two_pointers_made: 'twoPtMade', player_two_pointers_attempted: 'twoPtAttempted',
-            player_fantasy_points: 'fantasyPoints'
+            player_fantasy_points: 'fantasyPoints',
+            // OREB/DREB (Phase 2A) -- aliased now that a real, safe path
+            // exists for the stat itself to reach a "known" prop only when
+            // real historical data is actually behind it (NBA_PROP_DEFS'
+            // `requiresHistory: true` + nbaBuildProps' matching guard).
+            // Still correctly stays provider-only for WNBA and for any NBA
+            // player with no hoopR-backed history -- see the comment on
+            // those two defs.
+            player_offensive_rebounds: 'offensiveRebounds', player_defensive_rebounds: 'defensiveRebounds'
         };
 
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
@@ -13220,7 +13224,23 @@
                 // formula that was only confirmed for PrizePicks. Confirmed
                 // live: player_fantasy_points currently only appears under
                 // prizepicks (see the same diagnostic).
-                fantasyPoints:     { type: 'Fantasy Points', market: 'player_fantasy_points', books: ['prizepicks'], get: r => nbaFantasyPP(r), has: r => nbaHasPts(r) && nbaHasReb(r) && nbaHasAst(r) && r.steals != null && r.blocks != null && r.turnovers != null }
+                fantasyPoints:     { type: 'Fantasy Points', market: 'player_fantasy_points', books: ['prizepicks'], get: r => nbaFantasyPP(r), has: r => nbaHasPts(r) && nbaHasReb(r) && nbaHasAst(r) && r.steals != null && r.blocks != null && r.turnovers != null },
+                // OREB/DREB (Phase 2A) -- ESPN's live gamelog has no
+                // offensive/defensive rebound split at all (confirmed live),
+                // so `r.offensiveRebounds`/`r.defensiveRebounds` only exist
+                // on a row when nbaEnrichOrebDreb successfully merged real
+                // historical values onto it from the optional hoopR-backed
+                // backend. `requiresHistory: true` is read by nbaBuildProps'
+                // per-stat guard (mirrors the existing `books` guard) to
+                // refuse building a modeled prop -- for ANY player, NBA or
+                // WNBA -- when statsByKey shows zero real historical games
+                // for this stat, instead of building one off an empty/NaN
+                // window. WNBA never gets anything merged onto its rows at
+                // all (nbaEnrichOrebDreb is only ever called from the NBA
+                // fetch paths), so this guard is what keeps WNBA correctly
+                // provider-only, not a separate WNBA-specific check.
+                offensiveRebounds: { type: 'Offensive Rebounds', market: 'player_offensive_rebounds', requiresHistory: true, get: r => typeof r.offensiveRebounds === 'number' ? r.offensiveRebounds : 0, has: r => typeof r.offensiveRebounds === 'number' },
+                defensiveRebounds: { type: 'Defensive Rebounds', market: 'player_defensive_rebounds', requiresHistory: true, get: r => typeof r.defensiveRebounds === 'number' ? r.defensiveRebounds : 0, has: r => typeof r.defensiveRebounds === 'number' }
             };
             const NBA_MARKET_TO_KEY = {
                 ...Object.fromEntries(Object.entries(NBA_PROP_DEFS).filter(([, v]) => v.market).map(([k, v]) => [v.market, k])),
@@ -13228,7 +13248,7 @@
                 player_pts_rebs_asts: 'pra', player_pts_rebs: 'pr', player_pts_asts: 'pa', player_rebs_asts: 'ra',
                 player_blocked_shots: 'blocks', player_steals_blocks: 'blocksSteals'
             };
-            const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals', 'Fantasy Points', 'FG Made', 'FG Attempted', 'Two Pointers Made', 'Two Pointers Attempted', 'FT Made', 'FT Attempted'];
+            const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals', 'Fantasy Points', 'FG Made', 'FG Attempted', 'Two Pointers Made', 'Two Pointers Attempted', 'FT Made', 'FT Attempted', 'Offensive Rebounds', 'Defensive Rebounds'];
             const nbaAllKeys = Object.keys(NBA_PROP_DEFS);
 
             // ============================================================
@@ -13282,8 +13302,12 @@
             // new is unlocked here, this just makes that reasoning queryable
             // instead of only living in commit messages/chat history.
             const REGISTRY_UNRESOLVED = [
-                { providerKey: 'player_offensive_rebounds', sport: 'wnba', displayName: 'Offensive Rebounds', period: 'full_game', state: MARKET_STATE.DATA_REQUIRED, reason: 'No OREB/DREB split in the live ESPN gamelog data path (only totalRebounds); the split only exists in the optional, backend-only hoopR data used for backtests, never for live grading.' },
-                { providerKey: 'player_defensive_rebounds', sport: 'wnba', displayName: 'Defensive Rebounds', period: 'full_game', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Offensive Rebounds -- no live split available.' },
+                // player_offensive_rebounds / player_defensive_rebounds used
+                // to be listed here -- Phase 2A moved them into
+                // NBA_PROP_DEFS/PARLAY_BB_MKT (real registered markets now,
+                // with a runtime requiresHistory guard) plus an explicit
+                // per-sport override at the end of buildMarketRegistry, so
+                // they're no longer "unresolved" in the sense this list means.
                 { providerKey: 'player_points_1st_quarter', sport: 'wnba', displayName: 'Points 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'No period-level (quarter/half) player statistics exist anywhere in this app\'s data sources -- ESPN gamelog and hoopR box scores are both full-game only.' },
                 { providerKey: 'player_points_1st_half', sport: 'wnba', displayName: 'Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter.' },
                 { providerKey: 'player_fantasy_points_1st_half', sport: 'wnba', displayName: 'Fantasy Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter -- also compounds with Fantasy Points\' own source-specific formula requirement.' },
@@ -13323,6 +13347,28 @@
                     type: e.state === MARKET_STATE.DATA_REQUIRED ? 'period_or_missing_data' : 'source_specific',
                     requiredStats: [], period: e.period, books: null, state: e.state, reason: e.reason
                 }));
+                // OREB/DREB (Phase 2A) explicit override -- addFromDefs above
+                // classifies these SUPPORTED for both nba and wnba, because
+                // they share one NBA_PROP_DEFS object with no sport-aware
+                // concept. Real historical-data availability genuinely
+                // differs per sport (and, for NBA, per deployment/player),
+                // which the generic derivation-only classification can't
+                // express -- so this is one explicit, narrow override, not a
+                // new generic mechanism. The RUNTIME behavior (whether a
+                // given player+stat actually gets modeled output) is already
+                // fully and correctly handled by NBA_PROP_DEFS'
+                // `requiresHistory` flag + nbaBuildProps' matching guard,
+                // independent of this registry entirely -- this only fixes
+                // what the static registry/audit REPORTS.
+                entries.forEach(e => {
+                    if (e.modelKey !== 'offensiveRebounds' && e.modelKey !== 'defensiveRebounds') return;
+                    if (e.sport === 'wnba') {
+                        e.state = MARKET_STATE.DATA_REQUIRED;
+                        e.reason = 'No historical WNBA OREB/DREB source exists in this application (no equivalent of NBA\'s optional hoopR backend). Live-only per-game data (confirmed available via ESPN\'s summary endpoint) can never safely produce a hit-rate-based probability on its own, so this stays provider-only regardless.';
+                    } else if (e.sport === 'nba') {
+                        e.conditional = 'Requires the optional backend (hoopR nba_player_box, off_reb/def_reb) to be connected. Falls back to provider-only automatically, per player, when the backend is unreachable or that specific player has no historical OREB/DREB games on record -- never fabricated.';
+                    }
+                });
                 return entries;
             };
             const MARKET_REGISTRY = buildMarketRegistry();
@@ -13381,6 +13427,66 @@
                     }));
                 }
                 return map;
+            };
+            // OREB/DREB historical enrichment -- NBA ONLY (never called for
+            // WNBA, which has no equivalent backend data source at all).
+            // ESPN's live gamelog has no offensive/defensive rebound split
+            // (confirmed live), so the optional backend's hoopR-derived
+            // nba_player_box (off_reb/def_reb, exposed via /api/nba/gamelogs
+            // -- see lib/nbaHistDb.js) is the ONLY real historical source for
+            // these two stats. Purely additive and fail-safe: when no
+            // backend is configured, or the request fails for any reason,
+            // `glRows` (ESPN-only rows already built) are returned completely
+            // unchanged -- the same rows nbaComputeWindows already computes
+            // every other stat's windows from. This does not create a
+            // separate model: NBA_PROP_DEFS.offensiveRebounds/
+            // defensiveRebounds' own has() then simply finds nothing on any
+            // row for a player nothing was merged onto (zero real games,
+            // exactly the same "no data" state any other stat would show for
+            // a player with none), and the existing generic window-building
+            // in nbaComputeWindows handles it the same way it always has.
+            const nbaEnrichOrebDreb = async (ids, rowsByPlayer) => {
+                if (!backendUrl) return rowsByPlayer;
+                try {
+                    const list = [...new Set((ids || []).map(String))].filter(Boolean);
+                    if (!list.length) return rowsByPlayer;
+                    const since = (NBA_YR_PREV - 1) + '-08-01';
+                    const r = await fetch(`${backendUrl}/api/nba/gamelogs?athletes=${list.join(',')}&since=${since}`);
+                    if (!r.ok) return rowsByPlayer;
+                    const j = await r.json();
+                    Object.entries(j.logs || {}).forEach(([id, glogs]) => {
+                        const rows = rowsByPlayer[id];
+                        if (!rows || !rows.length) return;
+                        const byDate = {};
+                        (glogs || []).forEach(g => {
+                            if (g.oreb == null && g.dreb == null) return;
+                            if (g.d) byDate[g.d] = g;
+                        });
+                        rows.forEach(entry => {
+                            if (!Number.isFinite(entry.ts)) return;
+                            // Real, confirmed live discrepancy (Karl-Anthony
+                            // Towns, 2026-06-13 game): ESPN's gameDate is UTC
+                            // ("2026-06-14T00:30:00Z" for an evening US tip),
+                            // while hoopR's game_date is the US-local game
+                            // night ("2026-06-13") -- a plain UTC-date match
+                            // silently misses every evening game. Check the
+                            // UTC date AND the UTC date minus one calendar
+                            // day (covers every US timezone's evening-game
+                            // case) rather than attempting precise timezone
+                            // math; an exact string match either way is
+                            // required, so this can only ever produce a
+                            // correct merge or no merge, never a wrong one.
+                            const utcDate = new Date(entry.ts);
+                            const dateKeyUtc = utcDate.toISOString().slice(0, 10);
+                            const dateKeyPrevUtc = new Date(utcDate.getTime() - 86400000).toISOString().slice(0, 10);
+                            const g = byDate[dateKeyUtc] || byDate[dateKeyPrevUtc];
+                            if (!g || !entry.row) return;
+                            if (typeof g.oreb === 'number') entry.row.offensiveRebounds = g.oreb;
+                            if (typeof g.dreb === 'number') entry.row.defensiveRebounds = g.dreb;
+                        });
+                    });
+                } catch (e) { /* backend unreachable -- ESPN-only rows, unchanged, same as today */ }
+                return rowsByPlayer;
             };
             // L5 minutes vs the prior 10 — feeds the NBA "Minutes Trend" factor.
             const nbaMinutesTrend = (glRows) => {
@@ -13655,6 +13761,19 @@
                     const useBook = book, crossBook = false;
                     const pg = perGameFor(k);
                     const w = statsByKey[k];
+                    // A def flagged requiresHistory (OREB/DREB) must never
+                    // build a modeled prop off zero real historical games --
+                    // that would mean an empty/NaN window standing in for a
+                    // real hit-rate calculation. This is what keeps WNBA (no
+                    // backend source at all) and any NBA player with no
+                    // hoopR-backed history correctly provider-only, without
+                    // a separate WNBA-specific or OREB-specific check: any
+                    // future requiresHistory market gets the same safety for
+                    // free. Matched by the identical check in knownForBook
+                    // below, so a skipped player+stat here still surfaces as
+                    // a real "Model not supported yet" prop instead of
+                    // silently disappearing.
+                    if (def.requiresHistory && (!w || (w.season.games || 0) === 0)) return;
                     if (w && (w.season.games || 0) >= 4) {
                         const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
                         const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
@@ -13682,7 +13801,17 @@
                 // per-book now, buildProviderOnlyProps itself is untouched).
                 const knownForBook = nbaAllKeys.filter(k => {
                     const d = NBA_PROP_DEFS[k];
-                    return !d.books || d.books.includes(book);
+                    if (d.books && !d.books.includes(book)) return false;
+                    // Mirrors the requiresHistory guard in the build loop
+                    // above -- a stat with zero real historical games for
+                    // THIS player must not count as "known", so its real
+                    // provider row falls through to buildProviderOnlyProps
+                    // instead of being silently dropped.
+                    if (d.requiresHistory) {
+                        const w = statsByKey[k];
+                        if (!w || (w.season.games || 0) === 0) return false;
+                    }
+                    return true;
                 });
                 props.push(...buildProviderOnlyProps(allLines, knownForBook, book));
                 return props;
@@ -13789,7 +13918,8 @@
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
                 if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no NBA lines matched this slate\'s roster scan (name join).'); return []; }
 
-                const glMap = await nbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
+                const nbaIds = matchedNames.map(nm => bySlot[nm].id);
+                const glMap = await nbaEnrichOrebDreb(nbaIds, await nbaGamelogs(nbaIds));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _nbaLedger = plLoadLedger('nba', selectedDate);
                 const now = Date.now();
@@ -14525,6 +14655,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 let glRows;
                 try { glRows = await nbaGamelogMulti(player.id); }
                 catch (e) { return; }
+                await nbaEnrichOrebDreb([player.id], { [player.id]: glRows });
                 if (!glRows.length) {
                     setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nba' ? { ...p, _detailLoaded: true } : p));
                     return;

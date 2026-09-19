@@ -20,12 +20,18 @@ function hasData() {
 
 // Per-game rows for a set of ESPN athlete ids, oldest first. Compact keys —
 // the frontend reshapes them into its gamelog format.
-//   { "<athleteId>": [ { d, o, h, m, pts, reb, ast, tpm, stl, blk, tov, pm, st, fga, fta, tpa }, ... ] }
+//   { "<athleteId>": [ { d, o, h, m, pts, reb, ast, tpm, stl, blk, tov, pm, st, fga, fta, tpa, oreb, dreb }, ... ] }
 // `st` (starter, 1/0) added for the Phase 5 player-availability/role
 // backtest. `fga`/`fta`/`tpa` (shot-attempt volume) added for the Phase 7
-// opportunity/workload research backtest. Both purely additive -- every
-// existing consumer of this function already ignores unknown keys on each
-// row, and neither is read by Model A (_calculateEdgeScoreImpl).
+// opportunity/workload research backtest. `oreb`/`dreb` (off_reb/def_reb --
+// present in nba_player_box since the original hoopR ingest, just never
+// exposed here before) added for the OREB/DREB market-coverage patch: the
+// live ESPN gamelog has no offensive/defensive rebound split at all
+// (confirmed live), so this is the only real historical source for those
+// two stats, and only when a caller has this optional backend connected.
+// All purely additive -- every existing consumer of this function already
+// ignores unknown keys on each row, and none of these fields are read by
+// Model A (_calculateEdgeScoreImpl).
 function gamelogs(ids, { since = null, playedOnly = true } = {}) {
   const list = [...new Set((ids || []).map(String))].filter(Boolean);
   if (!list.length) return {};
@@ -37,7 +43,8 @@ function gamelogs(ids, { since = null, playedOnly = true } = {}) {
   if (since) { clauses.push(`game_date >= ?`); args.push(since); }
   const rows = db.prepare(`
     SELECT athlete_id, game_date, opponent, home_away, minutes, points, rebounds, assists,
-           threes, steals, blocks, turnovers, plus_minus, starter, fga, fta, threes_att
+           threes, steals, blocks, turnovers, plus_minus, starter, fga, fta, threes_att,
+           off_reb, def_reb
     FROM nba_player_box
     WHERE ${clauses.join(' AND ')}
     ORDER BY athlete_id, game_date
@@ -49,6 +56,7 @@ function gamelogs(ids, { since = null, playedOnly = true } = {}) {
       tpm: r.threes, stl: r.steals, blk: r.blocks, tov: r.turnovers, pm: r.plus_minus,
       st: r.starter,
       fga: r.fga, fta: r.fta, tpa: r.threes_att,
+      oreb: r.off_reb, dreb: r.def_reb,
     });
   }
   return out;
