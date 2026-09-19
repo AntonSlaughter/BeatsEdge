@@ -5459,17 +5459,35 @@
         const VOLUME_WORD = { mlb: 'at-bats / innings', nba: 'minutes & usage', nfl: 'touches & targets', nhl: 'ice time' };
 
         // Which PropLine bookmaker key each platform tab maps to.
+        // Every book actually fetched (PROPLINE_BOOK_PRIORITY) must have a
+        // selectable entry here -- a real player whose current props exist
+        // only on a book missing from this map gets a correctly-populated
+        // `allLines` from the real provider join, but mlbBuildProps (and its
+        // NBA/NFL/CFB/WNBA equivalents) only ever build props for ONE
+        // selected book at a time; with no tab for that book, their `props`
+        // array is empty for every selectable tab and gradedPlayers drops
+        // them -- invisible in Browse regardless of search. Confirmed live
+        // 2026-09-19: Ronald Acuna Jr.'s only current MLB line was
+        // Pinnacle-only, which had no tab. betrivers/caesars/pinnacle/bovada
+        // added so every fetched book is reachable; the original six are
+        // unchanged. Purely a selector-configuration fix -- does not touch
+        // mlbBuildProps/fetchMlbPropLines/gradedPlayers/DFS_PLATFORMS.
         const PLATFORM_BOOK = {
             prizepicks: 'prizepicks', underdog: 'underdog', sleeper: 'sleeper',
-            fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm'
+            fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm',
+            betrivers: 'betrivers', caesars: 'caesars', pinnacle: 'pinnacle', bovada: 'bovada'
         };
+        // DFS (goblin/demon/one-way-pick) platforms only -- sportsbooks added
+        // to PLATFORM_BOOK above are real two-sided lines, never DFS-style
+        // picks, so this set is deliberately NOT expanded with them.
         const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper']);
         // Display name for a `prop.book` key (as set by nflBuildProps / the MLB
         // + NBA line builders). Used by the Prime Plays card.
         const BOOK_LABEL = {
             prizepicks: 'PrizePicks', underdog: 'Underdog', sleeper: 'Sleeper',
             fanduel: 'FanDuel', draftkings: 'DraftKings', betmgm: 'BetMGM',
-            espnbet: 'ESPN BET', caesars: 'Caesars', fanatics: 'Fanatics', hardrock: 'Hard Rock'
+            espnbet: 'ESPN BET', caesars: 'Caesars', fanatics: 'Fanatics', hardrock: 'Hard Rock',
+            betrivers: 'BetRivers', pinnacle: 'Pinnacle', bovada: 'Bovada'
         };
         const bookLabel = (b) => {
             if (!b) return null;
@@ -9017,14 +9035,24 @@
             // Only books our data sources (PropLine + ParlayAPI) actually carry
             // prop lines for. ParlayPlay / Betr / Pick6 return nothing from
             // either feed, so they're not shown — an empty tab is worse than
-            // no tab.
+            // no tab. All 10 books ParlayAPI is actually fetched with
+            // (PROPLINE_BOOK_PRIORITY) must be listed here, though — a book
+            // fetched but missing from this list left real players
+            // structurally invisible in Browse (mlbBuildProps only builds
+            // props for one selected book at a time; no tab for a book means
+            // no tab can ever show a player whose current line is only on
+            // it). Confirmed live 2026-09-19 for Pinnacle.
             const platforms = [
                 { id: 'prizepicks', name: 'PrizePicks' },
                 { id: 'underdog', name: 'Underdog' },
                 { id: 'sleeper', name: 'Sleeper' },
                 { id: 'fanduel', name: 'FanDuel' },
                 { id: 'draftkings', name: 'DraftKings' },
-                { id: 'betmgm', name: 'BetMGM' }
+                { id: 'betmgm', name: 'BetMGM' },
+                { id: 'betrivers', name: 'BetRivers' },
+                { id: 'caesars', name: 'Caesars' },
+                { id: 'pinnacle', name: 'Pinnacle' },
+                { id: 'bovada', name: 'Bovada' }
             ];
 
             const sports = ['nba', 'wnba', 'nfl', 'ncaaf', 'nhl', 'mlb'];
