@@ -13231,6 +13231,125 @@
             const NBA_STAT_CAT_ORDER = ['Points', 'Rebounds', 'Assists', 'Pts+Reb+Ast', '3-PT Made', 'Pts+Reb', 'Pts+Ast', 'Reb+Ast', 'Steals', 'Blocks', 'Turnovers', 'Blocks+Steals', 'Fantasy Points', 'FG Made', 'FG Attempted', 'Two Pointers Made', 'Two Pointers Attempted', 'FT Made', 'FT Attempted'];
             const nbaAllKeys = Object.keys(NBA_PROP_DEFS);
 
+            // ============================================================
+            // UNIVERSAL PROP MARKET REGISTRY -- read-only classification/
+            // reporting layer, built FROM the existing per-sport *_PROP_DEFS
+            // and PARLAY_*_MKT alias tables above (never a hand-duplicated
+            // copy of them, so it cannot drift out of sync with what the
+            // app actually computes). Does not change how any market is
+            // fetched, built, or graded -- calculateEdgeScore, GRADE_CUTOFFS,
+            // PROB_CALIB, FAMILY_CALIB, Prime, Confluence, and every existing
+            // *_PROP_DEFS get/has function are all untouched by this block.
+            //
+            // Scope, stated plainly: this app currently has a real,
+            // ParlayAPI-driven live prop pipeline for exactly five sports --
+            // MLB, NFL, NCAAF (CFB), NBA, WNBA (confirmed via
+            // grep across the whole file: no NCAAB/NHL/soccer/tennis/esports
+            // ingestion, PROP_DEFS, or UI exists anywhere in this app today).
+            // The registry only covers those five. NBA/WNBA's
+            // DATA_REQUIRED/FORMULA_UNKNOWN entries below are the ones this
+            // session actually confirmed live (2026-09-19 WNBA ParlayAPI
+            // board, tmp/parlayapi-nba-wnba-market-keys.json) -- nothing here
+            // is guessed for a market never actually observed.
+            const MARKET_STATE = {
+                SUPPORTED: 'model_supported', DERIVED: 'derived',
+                DATA_REQUIRED: 'data_required', FORMULA_UNKNOWN: 'formula_unknown'
+            };
+            // The ONLY hand-maintained classification for already-working
+            // markets: which existing *_PROP_DEFS keys are composites
+            // (computed from other stats) vs. directly-read stats. Everything
+            // else about a supported market (its raw provider key(s),
+            // display name, book restriction) is read directly off the real
+            // def object, never duplicated.
+            const REGISTRY_DERIVED_KEYS = {
+                nba: new Set(['pra', 'pr', 'pa', 'ra', 'twoPtMade', 'twoPtAttempted', 'blocksSteals']),
+                wnba: new Set(['pra', 'pr', 'pa', 'ra', 'twoPtMade', 'twoPtAttempted', 'blocksSteals']),
+                mlb: new Set(['hitsRunsRbis', 'singles']),
+                nfl: new Set(['passRushYds', 'rushRecYds']),
+                ncaaf: new Set(['passRushYds', 'rushRecYds'])
+            };
+            const REGISTRY_DERIVATION_INPUTS = {
+                pra: ['points', 'rebounds', 'assists'], pr: ['points', 'rebounds'], pa: ['points', 'assists'], ra: ['rebounds', 'assists'],
+                twoPtMade: ['fgMade', 'threes'], twoPtAttempted: ['fgAttempted', 'threes'], blocksSteals: ['blocks', 'steals'],
+                hitsRunsRbis: ['hits', 'runs', 'rbis'], singles: ['hits', 'doubles', 'triples', 'homeRuns'],
+                passRushYds: ['passYds', 'rushYds'], rushRecYds: ['rushYds', 'recYds']
+            };
+            // Real, confirmed-live raw provider market_keys that are NOT in
+            // any *_PROP_DEFS/PARLAY_*_MKT alias table, with the exact
+            // reason each stays provider-only. This is the concrete
+            // "add one registry definition" extension point Phase-2/3/WNBA-
+            // mapping work already established the reasoning for -- nothing
+            // new is unlocked here, this just makes that reasoning queryable
+            // instead of only living in commit messages/chat history.
+            const REGISTRY_UNRESOLVED = [
+                { providerKey: 'player_offensive_rebounds', sport: 'wnba', displayName: 'Offensive Rebounds', period: 'full_game', state: MARKET_STATE.DATA_REQUIRED, reason: 'No OREB/DREB split in the live ESPN gamelog data path (only totalRebounds); the split only exists in the optional, backend-only hoopR data used for backtests, never for live grading.' },
+                { providerKey: 'player_defensive_rebounds', sport: 'wnba', displayName: 'Defensive Rebounds', period: 'full_game', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Offensive Rebounds -- no live split available.' },
+                { providerKey: 'player_points_1st_quarter', sport: 'wnba', displayName: 'Points 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'No period-level (quarter/half) player statistics exist anywhere in this app\'s data sources -- ESPN gamelog and hoopR box scores are both full-game only.' },
+                { providerKey: 'player_points_1st_half', sport: 'wnba', displayName: 'Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter.' },
+                { providerKey: 'player_fantasy_points_1st_half', sport: 'wnba', displayName: 'Fantasy Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter -- also compounds with Fantasy Points\' own source-specific formula requirement.' },
+                { providerKey: 'player_three_pointers', sport: 'wnba', displayName: '3PT Made (PrizePicks demon/goblin variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Distinct raw key from the confirmed player_threes mapping, used by a non-overlapping bookmaker set (PrizePicks-only demon/goblin vs. player_threes\' sportsbook+Underdog standard lines). No field available to confirm these represent the identical market; not assumed equivalent by name.' },
+                { providerKey: 'player_threes_made', sport: 'wnba', displayName: '3PT Made (Pinnacle variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Distinct raw key from player_threes, Pinnacle-only in the confirmed diagnostic. Same non-assumption as above.' },
+                { providerKey: 'player_3_pt_made_combo', sport: 'wnba', displayName: '3PT Made (combo variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: '"Combo" semantics unconfirmed -- could be a same-game combo market, not a plain 3PT-made line. Not assumed.' },
+                { providerKey: 'player_pra', sport: 'wnba', displayName: 'Pts+Reb+Ast (Underdog variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Underdog\'s own separate raw key for what looks like Pts+Reb+Ast, distinct from the confirmed player_pts_rebs_asts. Not assumed equivalent without a field to confirm it.' },
+                { providerKey: 'player_pra_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (Underdog)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
+                { providerKey: 'player_pts_rebs_asts_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (PrizePicks)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' }
+            ];
+            const buildMarketRegistry = () => {
+                const entries = [];
+                const addFromDefs = (sport, defs, mktMap) => {
+                    const rawKeysByInternal = {};
+                    Object.entries(mktMap || {}).forEach(([raw, internal]) => {
+                        (rawKeysByInternal[internal] = rawKeysByInternal[internal] || []).push(raw);
+                    });
+                    Object.entries(defs).forEach(([modelKey, def]) => {
+                        const isDerived = (REGISTRY_DERIVED_KEYS[sport] || new Set()).has(modelKey);
+                        const providerKeys = rawKeysByInternal[modelKey] || (def.market ? [def.market] : []);
+                        entries.push({
+                            sport, modelKey, displayName: def.type, providerKeys,
+                            type: isDerived ? 'derived' : (def.books ? 'source_specific' : 'direct'),
+                            requiredStats: REGISTRY_DERIVATION_INPUTS[modelKey] || [],
+                            period: 'full_game', books: def.books || null,
+                            state: isDerived ? MARKET_STATE.DERIVED : MARKET_STATE.SUPPORTED, reason: null
+                        });
+                    });
+                };
+                addFromDefs('nba', NBA_PROP_DEFS, PARLAY_BB_MKT);
+                addFromDefs('wnba', NBA_PROP_DEFS, PARLAY_BB_MKT);
+                addFromDefs('mlb', MLB_PROP_DEFS, PARLAY_MLB_MKT);
+                addFromDefs('nfl', NFL_PROP_DEFS, PARLAY_FB_MKT);
+                addFromDefs('ncaaf', NFL_PROP_DEFS, PARLAY_FB_MKT);
+                REGISTRY_UNRESOLVED.forEach(e => entries.push({
+                    sport: e.sport, modelKey: null, displayName: e.displayName, providerKeys: [e.providerKey],
+                    type: e.state === MARKET_STATE.DATA_REQUIRED ? 'period_or_missing_data' : 'source_specific',
+                    requiredStats: [], period: e.period, books: null, state: e.state, reason: e.reason
+                }));
+                return entries;
+            };
+            const MARKET_REGISTRY = buildMarketRegistry();
+            // Phase 11 coverage diagnostic -- pass one sport's raw market_key
+            // rows from a REAL diagnostic (e.g. the `markets` array in
+            // tmp/parlayapi-nba-wnba-market-keys.json), get back exactly
+            // which state every raw key resolves to and why. Pure/read-only;
+            // never called automatically, never affects the live app.
+            const auditMarketCoverage = (sport, rawMarketRows) => {
+                const registryForSport = MARKET_REGISTRY.filter(e => e.sport === sport);
+                const byProviderKey = {};
+                registryForSport.forEach(e => (e.providerKeys || []).forEach(k => { byProviderKey[k] = e; }));
+                const results = (rawMarketRows || []).map(row => {
+                    const entry = byProviderKey[row.market_key];
+                    return {
+                        providerKey: row.market_key, rowCount: row.rowCount, registered: !!entry,
+                        state: entry ? entry.state : MARKET_STATE.DATA_REQUIRED, modelKey: entry ? entry.modelKey : null,
+                        reason: entry ? entry.reason : 'Not yet in the registry -- newly observed raw market_key with no classification on record.'
+                    };
+                });
+                const counts = { total: results.length, registered: results.filter(r => r.registered).length };
+                [MARKET_STATE.SUPPORTED, MARKET_STATE.DERIVED, MARKET_STATE.DATA_REQUIRED, MARKET_STATE.FORMULA_UNKNOWN].forEach(s => {
+                    counts[s] = results.filter(r => r.state === s).length;
+                });
+                return { sport, counts, results, unregistered: results.filter(r => !r.registered) };
+            };
+
             const nbaFetchGamelog = async (id) => {
                 const [cur, prev] = await Promise.all([
                     nflFetch(`${NBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${NBA_YR_CUR}`).catch(() => null),
