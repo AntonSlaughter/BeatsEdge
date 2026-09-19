@@ -10162,7 +10162,12 @@
                     const espnPath = ESPN_SPORT_PATHS[selectedSport];
                     if (!espnPath) { setScoreboardSource('sample'); return; }
                     const dateStr = selectedDate.replace(/-/g, '');
-                    const url = `https://site.api.espn.com/apis/site/v2/sports/${espnPath}/scoreboard?dates=${dateStr}`;
+                    // WNBA-only host override (see WNBA_ESPN's own comment) --
+                    // every other sport keeps the original host untouched.
+                    // This function is shared across all sports, so the fix
+                    // is scoped by sport here rather than changed globally.
+                    const espnHost = selectedSport === 'wnba' ? 'site.web.api.espn.com' : 'site.api.espn.com';
+                    const url = `https://${espnHost}/apis/site/v2/sports/${espnPath}/scoreboard?dates=${dateStr}`;
                     const data = await fetchJSONWithFallback(url);
                     if (gone()) return;
                     const games = (data.events || []).map(ev => {
@@ -14002,7 +14007,15 @@
             // avg, minutes trend, hit rate, vs-opponent, similar-defense
             // history, back-to-back, home/road, line-vs-market) is real.
             // ══════════════════════════════════════════════════════════════
-            const WNBA_ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/wnba';
+            // Host confirmed live 2026-09-19: site.api.espn.com/apis/site/v2/...
+            // returned HTTP 403 for this exact WNBA scoreboard path (and its
+            // own allorigins.win fallback proxy also failed), while
+            // site.web.api.espn.com/apis/site/v2/... (same path, different
+            // host) served the identical real data successfully. Host-only
+            // change -- WNBA_ESPN_COMMON (the gamelog host, a separate
+            // constant) is untouched; this is scoped to the slate/scoreboard
+            // discovery path only, per the approved fix.
+            const WNBA_ESPN = 'https://site.web.api.espn.com/apis/site/v2/sports/basketball/wnba';
             const WNBA_ESPN_COMMON = 'https://site.api.espn.com/apis/common/v3/sports/basketball/wnba';
             // WNBA's season runs May-Oct within ONE calendar year (no NBA-style
             // year-crossing), so `?season=` is just the year itself.
