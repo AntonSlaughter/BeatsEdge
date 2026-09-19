@@ -11266,9 +11266,19 @@
                                 oppPitcherId: oppProb && oppProb.id ? String(oppProb.id) : null,
                                 oppPitcherName: oppProb && oppProb.fullName
                             }));
-                        } else {
-                            rosterNeeded.add(JSON.stringify({ tId: meT.id, ...base, oppPitcherId: oppProb && oppProb.id ? String(oppProb.id) : null, oppPitcherName: oppProb && oppProb.fullName }));
                         }
+                        // Always ALSO queue the team's full active roster (position
+                        // players), not just when a lineup hasn't posted yet. A real
+                        // provider prop (ParlayAPI/DFS board) can exist for a player
+                        // who isn't in today's confirmed starting 9 -- benched, a
+                        // late scratch, a pinch-hit/DH-rotation candidate -- and the
+                        // Browse player universe must not silently exclude someone
+                        // fetchMlbPropLines could otherwise attach a real line to.
+                        // Safe to always run: the personId+role dedupe below already
+                        // skips anyone already queued from the posted lineup, so a
+                        // starter is never duplicated -- this only adds coverage for
+                        // real active-roster players who weren't in that lineup.
+                        rosterNeeded.add(JSON.stringify({ tId: meT.id, ...base, oppPitcherId: oppProb && oppProb.id ? String(oppProb.id) : null, oppPitcherName: oppProb && oppProb.fullName }));
                     }
                 }
 
@@ -11330,9 +11340,17 @@
                     seen.add(key);
                     const built = buildMlbPlayer(slot, people, teamBattingByTeamId);
                     if (!built) continue;
-                    // Drop hitters with no real season signal (September call-ups,
-                    // bench arms listed as position players, etc.).
-                    if (built.role === 'batter' && (!people[slot.personId].hit || (people[slot.personId].hit.gamesPlayed || 0) < 15)) continue;
+                    // A real active-roster/lineup player must appear in Browse
+                    // regardless of how much season history they have -- a low
+                    // (or zero) games-played count is exactly "not enough model
+                    // history," which is not a valid reason to exclude someone
+                    // who may have a real, current ParlayAPI/PropLine prop
+                    // attached later by fetchMlbPropLines. buildMlbPlayer/
+                    // mlbBuildProps already default every stat to 0 when a
+                    // batter's `hit` object is missing or sparse (`|| 0`
+                    // throughout), so this is safe -- no crash risk, just a
+                    // seed card with modest/zero placeholder numbers until (or
+                    // unless) a real line replaces them.
                     players.push(built);
                 }
 
