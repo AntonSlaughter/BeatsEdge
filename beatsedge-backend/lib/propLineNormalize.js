@@ -109,16 +109,29 @@ function normalizePropLineOutcome({ sport, eventId, homeTeam, awayTeam, bookmake
   };
 }
 
-// Canonical dedup key -- sport+event+player+market+provider+source, per
-// Section 10's explicit requirement that the key must not collapse two
-// real, distinct lines just because player/stat names match. Two
-// providers quoting the SAME book (e.g. ParlayAPI PrizePicks 20.5 and
-// PropLine PrizePicks 20.5 for the same real player/event/market) DO
-// share this key -- see resolveDuplicate() for what happens next; this
-// function only decides "these two rows are claiming to describe the
-// same real market," never "these two rows have the same value."
+// Canonical dedup key -- sport+event+player+market+source+period+line+
+// projectionType+direction. Fixed per the Phase 1-3 foundation work:
+// the original version of this key was sport+event+player+market+source
+// ONLY, which meant a normal PrizePicks 0.5 line and a PrizePicks 1.5
+// DEMON line for the SAME player/market/book collapsed onto one key
+// (same sport, event, player, market, source -- nothing else was
+// checked), and resolveDuplicate() would then silently discard one of
+// them as if it were a stale re-poll of the other. Same bug for two
+// different real lines from the same book (e.g. a standard line moving
+// from 20.5 to 21.5 intra-day was indistinguishable from two genuinely
+// different simultaneous rungs on an alt ladder) and for two different
+// periods of the same market. `line`/`projectionType`/`direction` now
+// make each of those a distinct key, matching BeatsEdge.html's own
+// in-pipeline identity (assignPropIds) so both layers agree on what
+// counts as "the same prop." `period` defaults to 'FULL_GAME' when
+// absent -- true today (no period-level provider integration exists
+// yet) and forward-compatible with a future period phase without
+// requiring another identity-scheme change.
 function dedupeKey(prop) {
-  return [prop.sport, prop.eventId, prop.playerId || prop.player, prop.market, prop.source].join('|');
+  return [
+    prop.sport, prop.eventId, prop.playerId || prop.player, prop.market, prop.source,
+    prop.period || 'FULL_GAME', prop.line, prop.projectionType || 'standard', prop.side || prop.direction || ''
+  ].join('|');
 }
 
 // Deterministic priority resolution for two rows that share a dedupeKey

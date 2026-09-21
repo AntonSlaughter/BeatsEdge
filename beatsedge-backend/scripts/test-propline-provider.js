@@ -44,13 +44,31 @@ const bookB = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_
 const mergedBooks = mergeProps([bookA, bookB]);
 ok(mergedBooks.length === 2 && mergedBooks.some(p => p.line === 0.5) && mergedBooks.some(p => p.line === 1.5), '8. Multiple real books (different lines) never averaged -- both survive distinctly', mergedBooks.map(p => ({ source: p.source, line: p.line })));
 
-// 9. Multiple providers quoting the SAME book do not average -- picked by
-// policy (timestamp/priority), never math-averaged.
+// 9. Multiple providers quoting the SAME book at the SAME real value do not
+// average -- picked by policy (timestamp/priority), never math-averaged.
+// (Both providers observing the identical real posted line, 0.5 -- the
+// realistic "two feeds, one real market" case; a genuine VALUE disagreement
+// between providers is a different scenario, covered separately in 9c/9d
+// below, per the Phase 1-3 fix: dedupeKey now includes `line`, so two
+// providers reporting DIFFERENT values for the same book no longer silently
+// collapse to one via policy -- both real observations survive.)
 const parlayVersion = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_hits', source: 'prizepicks', line: 0.5, provider: 'parlayapi', timestamp: '2026-09-15T10:00:00Z' };
-const proplineVersion = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_hits', source: 'prizepicks', line: 1.5, provider: 'propline', timestamp: '2026-09-15T10:00:00Z' };
+const proplineVersion = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_hits', source: 'prizepicks', line: 0.5, provider: 'propline', timestamp: '2026-09-15T10:00:00Z' };
 const mergedProviders = mergeProps([parlayVersion, proplineVersion]);
-ok(mergedProviders.length === 1 && (mergedProviders[0].line === 0.5 || mergedProviders[0].line === 1.5), '9. Two providers quoting the same real book: never averaged to 1.0 -- one real value chosen by policy', mergedProviders[0].line);
-ok(mergedProviders[0].line !== 1.0, '9b. Explicit non-average check: result is not the mathematical average (1.0) of the two inputs', mergedProviders[0].line);
+ok(mergedProviders.length === 1 && mergedProviders[0].line === 0.5, '9. Two providers quoting the same real book at the same real value (0.5): merge to one row via policy, never averaged', mergedProviders[0].line);
+ok(mergedProviders[0].provider === 'parlayapi', '9b. Policy correctly prefers ParlayAPI (primary, per resolveDuplicate\'s default providerPriority) when both providers report the identical value with equal timestamps', mergedProviders[0].provider);
+
+// 9c/9d. Two providers DISAGREEING on the real value for the same book/
+// market (e.g. one feed hasn't picked up a line move yet) is a genuinely
+// different case from 9 above -- both real observations must now survive
+// distinctly rather than one being silently discarded, since a stale
+// disagreement is data, not noise. This is the exact bug the Phase 1-3
+// dedupeKey fix closes (the old key ignored `line` entirely).
+const parlayDisagree = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_hits', source: 'prizepicks', line: 0.5, provider: 'parlayapi', timestamp: '2026-09-15T10:00:00Z' };
+const proplineDisagree = { sport: 'mlb', eventId: 'e1', playerId: 'mlb:1', market: 'batter_hits', source: 'prizepicks', line: 1.5, provider: 'propline', timestamp: '2026-09-15T10:00:00Z' };
+const mergedDisagreement = mergeProps([parlayDisagree, proplineDisagree]);
+ok(mergedDisagreement.length === 2, '9c. Two providers reporting DIFFERENT real values (0.5 vs 1.5) for the same book/market now both survive as distinct rows -- never silently discarded as if duplicates', mergedDisagreement.map(p => ({ provider: p.provider, line: p.line })));
+ok(!mergedDisagreement.some(p => p.line === 1.0), '9d. Explicit non-average check: neither surviving row is the mathematical average (1.0) of the two inputs', mergedDisagreement.map(p => p.line));
 
 // 10. Model projection never replaces source line -- structural: the
 // normalized object has no modelProjection/modelEdge field at all.
@@ -113,6 +131,49 @@ ok(nflClassification.method === 'EXACT_ID' && nflClassification.beatsEdgeId === 
 const nbaNameTeamResolve = () => ({ chosen: { id: 'espn:3136195', name: 'Jayson Tatum', team: 'BOS' }, reason: 'nameOnlyNoTeamData', candidates: [{ id: 'espn:3136195' }] });
 const nbaClassification = classifyPlayerIdentity('nba', { player_id: 'nba:1628369', description: 'Jayson Tatum' }, () => null, nbaNameTeamResolve);
 ok(nbaClassification.method !== 'EXACT_ID' && nbaClassification.propLineIdRequiresMapping === true, 'NBA: real player_id (nba:1628369) is NOT BeatsEdge\'s own ESPN athlete id (verified live: Jayson Tatum\'s real ESPN id is 3136195, a different number) -- correctly falls back to name+team resolution, never mis-trusted as EXACT_ID', nbaClassification);
+
+// ---- Phase 1-3 foundation: dedupeKey fix regression tests ----------------
+// dedupeKey used to be sport+event+player+market+source ONLY. That meant a
+// normal PrizePicks 0.5 line and a PrizePicks 1.5 DEMON line for the SAME
+// player/market/book shared one key (nothing else was checked) and
+// resolveDuplicate() would silently discard one as if it were a stale
+// re-poll of the other. These tests prove the FIXED key (adds
+// period/line/projectionType/direction) keeps every case Phase 2/3
+// explicitly requires distinct, and still merges genuine duplicates.
+
+// 21. Same book, DIFFERENT real lines (e.g. a line move captured as two
+// rows, or two simultaneous alt-ladder rungs) -- must never collapse.
+const lineA = { sport: 'mlb', eventId: 'e4', playerId: 'mlb:9', market: 'batter_hits', source: 'prizepicks', line: 0.5, projectionType: 'standard', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+const lineB = { sport: 'mlb', eventId: 'e4', playerId: 'mlb:9', market: 'batter_hits', source: 'prizepicks', line: 1.5, projectionType: 'standard', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+ok(dedupeKey(lineA) !== dedupeKey(lineB), '21. Same book, different real lines (0.5 vs 1.5) now produce DIFFERENT dedupeKeys -- the exact bug this fix closes (old key ignored `line` entirely)', [dedupeKey(lineA), dedupeKey(lineB)]);
+ok(mergeProps([lineA, lineB]).length === 2, '21b. mergeProps keeps both real lines distinct, never collapses one into the other', mergeProps([lineA, lineB]).map(p => p.line));
+
+// 22. Same book, same line, NORMAL vs DEMON projectionType -- must coexist.
+const normalLine = { sport: 'mlb', eventId: 'e4', playerId: 'mlb:9', market: 'batter_hits', source: 'prizepicks', line: 1.5, projectionType: 'standard', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+const demonLine = { sport: 'mlb', eventId: 'e4', playerId: 'mlb:9', market: 'batter_hits', source: 'prizepicks', line: 1.5, projectionType: 'demon', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+const goblinLine = { sport: 'mlb', eventId: 'e4', playerId: 'mlb:9', market: 'batter_hits', source: 'prizepicks', line: 1.5, projectionType: 'goblin', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+ok(new Set([dedupeKey(normalLine), dedupeKey(demonLine), dedupeKey(goblinLine)]).size === 3, '22. Same player/market/book/line: NORMAL, DEMON and GOBLIN all produce distinct dedupeKeys -- all three coexist', [dedupeKey(normalLine), dedupeKey(demonLine), dedupeKey(goblinLine)]);
+ok(mergeProps([normalLine, demonLine, goblinLine]).length === 3, '22b. mergeProps keeps NORMAL + DEMON + GOBLIN as three distinct rows, never collapses to one', mergeProps([normalLine, demonLine, goblinLine]).length);
+
+// 23. Same everything except direction/side (a two-sided line's over vs
+// under) -- must be two distinct rows, never one row silently picking a side.
+const overSide = { sport: 'nfl', eventId: 'e5', playerId: 'espn:2', market: 'player_pass_yds', source: 'draftkings', line: 250.5, direction: 'over', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+const underSide = { sport: 'nfl', eventId: 'e5', playerId: 'espn:2', market: 'player_pass_yds', source: 'draftkings', line: 250.5, direction: 'under', provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+ok(dedupeKey(overSide) !== dedupeKey(underSide), '23. Same line, opposite sides (over/under) produce different dedupeKeys', [dedupeKey(overSide), dedupeKey(underSide)]);
+
+// 24. `period` defaults consistently to FULL_GAME when absent (today's
+// reality -- no period-level provider integration exists yet) so two rows
+// that both omit it still correctly merge as genuine duplicates, while an
+// explicit future period value is kept distinct from full-game -- forward-
+// compatible with a later period phase without another identity-scheme
+// change.
+const noPeriodA = { sport: 'nba', eventId: 'e6', playerId: 'espn:3', market: 'player_points', source: 'fanduel', line: 20.5, provider: 'parlayapi', timestamp: '2026-09-20T10:00:00Z' };
+const noPeriodB = { sport: 'nba', eventId: 'e6', playerId: 'espn:3', market: 'player_points', source: 'fanduel', line: 20.5, provider: 'propline', timestamp: '2026-09-20T09:00:00Z' };
+const explicitFullGame = { ...noPeriodA, period: 'FULL_GAME' };
+const firstQuarter = { ...noPeriodA, period: '1Q' };
+ok(dedupeKey(noPeriodA) === dedupeKey(explicitFullGame), '24. Omitted period and explicit period:"FULL_GAME" hash identically (both mean the same real full-game market)', [dedupeKey(noPeriodA), dedupeKey(explicitFullGame)]);
+ok(dedupeKey(noPeriodA) !== dedupeKey(firstQuarter), '24b. A future period:"1Q" row is kept distinct from the full-game row for the same player/market/book -- ready for a later period phase without a further key change', [dedupeKey(noPeriodA), dedupeKey(firstQuarter)]);
+ok(mergeProps([noPeriodA, noPeriodB]).length === 1, '24c. Two providers quoting the identical full-game market (both omitting period) still correctly merge to one row', mergeProps([noPeriodA, noPeriodB]).length);
 
 // ---- Live spot-check (lean, 1-2 real PropLine requests, gracefully skips) ----
 (async () => {

@@ -541,6 +541,62 @@
             color: var(--text-primary);
         }
 
+        /* Phase 4 — clickable, real-eventId game filter chips (distinct from
+           the read-only ESPN .live-game-chip ticker above — different id
+           space, see the game-strip's own code comment). */
+        .game-select-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.6rem 2rem;
+        }
+        .game-select-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+        }
+        .game-select-chip {
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            padding: 0.3rem 0.7rem;
+            border-radius: 8px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .game-select-chip:hover { border-color: var(--accent-red); color: var(--accent-red); }
+        .game-select-chip.active { background: var(--accent-red); border-color: var(--accent-red); color: #fff; }
+        .game-select-status { opacity: 0.65; font-weight: 500; }
+
+        /* Phase 5 — period filter pills, same visual language as platform-tab. */
+        .period-select-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.5rem 2rem;
+            flex-wrap: wrap;
+        }
+        .period-select-chip {
+            font-size: 0.8rem;
+            font-weight: 700;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            padding: 0.3rem 0.8rem;
+            border-radius: 999px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .period-select-chip:hover { color: var(--accent-red); border-color: var(--accent-red); }
+        .period-select-chip.active { background: var(--accent-red); border-color: var(--accent-red); color: #fff; }
+
         .live-game-status {
             color: var(--accent-red);
             font-weight: 700;
@@ -5458,29 +5514,54 @@
         };
         const VOLUME_WORD = { mlb: 'at-bats / innings', nba: 'minutes & usage', nfl: 'touches & targets', nhl: 'ice time' };
 
-        // Which PropLine bookmaker key each platform tab maps to.
-        // Every book actually fetched (PROPLINE_BOOK_PRIORITY) must have a
-        // selectable entry here -- a real player whose current props exist
-        // only on a book missing from this map gets a correctly-populated
-        // `allLines` from the real provider join, but mlbBuildProps (and its
-        // NBA/NFL/CFB/WNBA equivalents) only ever build props for ONE
-        // selected book at a time; with no tab for that book, their `props`
-        // array is empty for every selectable tab and gradedPlayers drops
-        // them -- invisible in Browse regardless of search. Confirmed live
-        // 2026-09-19: Ronald Acuna Jr.'s only current MLB line was
-        // Pinnacle-only, which had no tab. betrivers/caesars/pinnacle/bovada
-        // added so every fetched book is reachable; the original six are
-        // unchanged. Purely a selector-configuration fix -- does not touch
-        // mlbBuildProps/fetchMlbPropLines/gradedPlayers/DFS_PLATFORMS.
-        const PLATFORM_BOOK = {
-            prizepicks: 'prizepicks', underdog: 'underdog', sleeper: 'sleeper',
-            fanduel: 'fanduel', draftkings: 'draftkings', betmgm: 'betmgm',
-            betrivers: 'betrivers', caesars: 'caesars', pinnacle: 'pinnacle', bovada: 'bovada'
-        };
-        // DFS (goblin/demon/one-way-pick) platforms only -- sportsbooks added
-        // to PLATFORM_BOOK above are real two-sided lines, never DFS-style
-        // picks, so this set is deliberately NOT expanded with them.
-        const DFS_PLATFORMS = new Set(['prizepicks', 'underdog', 'sleeper']);
+        // ── Canonical provider/book registry (Phase 1) ───────────────────────
+        // SINGLE source of truth for every real book this app fetches AND can
+        // display. Before this, the same 10 books were independently
+        // hardcoded in THREE places (this map, the `platforms` UI tab array,
+        // and the ParlayAPI fetch-request priority list) which could silently
+        // drift -- confirmed live 2026-09-19 when Pinnacle was fetched (real
+        // rows existed in `allLines`) but had no UI tab, making every
+        // Pinnacle-only player structurally invisible in Browse (mlbBuildProps
+        // and its NFL/CFB/NBA/WNBA equivalents only ever built props for ONE
+        // selected book at a time; no tab for a book meant no tab could ever
+        // show a player whose current line was only on it). Add a new real
+        // book here ONCE and it gets a fetch slot, a PLATFORM_BOOK entry, and
+        // a UI tab together -- the three-separate-lists failure mode is now
+        // structurally impossible. A book ParlayAPI returns that isn't in
+        // this registry still isn't silently lost: it flows into "All Books"
+        // (ALL_BOOKS below) via booksPresentIn's live discovery, with an
+        // auto-generated label from bookLabel()'s title-case fallback; it
+        // just won't have its own dedicated single-book tab until added here
+        // (a deliberate, low-risk scope boundary -- generating tabs from
+        // live-discovered-but-unconfirmed books would turn `platforms` from a
+        // static array into runtime state for a book not yet known to exist).
+        const BOOK_REGISTRY = [
+            { id: 'prizepicks', name: 'PrizePicks', dfs: true },
+            { id: 'underdog', name: 'Underdog', dfs: true },
+            { id: 'sleeper', name: 'Sleeper', dfs: true },
+            { id: 'fanduel', name: 'FanDuel', dfs: false },
+            { id: 'draftkings', name: 'DraftKings', dfs: false },
+            { id: 'betmgm', name: 'BetMGM', dfs: false },
+            { id: 'betrivers', name: 'BetRivers', dfs: false },
+            { id: 'caesars', name: 'Caesars', dfs: false },
+            { id: 'pinnacle', name: 'Pinnacle', dfs: false },
+            { id: 'bovada', name: 'Bovada', dfs: false }
+        ];
+        // Sentinel `book` value meaning "every book at once" -- not a real
+        // bookmaker id (no book in BOOK_REGISTRY is named 'all'), so it can
+        // never collide with a real book key anywhere allLines/PLATFORM_BOOK
+        // is indexed by.
+        const ALL_BOOKS = 'all';
+        // Which fetch/build-time book key each platform tab maps to. Derived
+        // from BOOK_REGISTRY (was an independent hardcoded copy -- see the
+        // registry comment above) plus the ALL_BOOKS sentinel.
+        const PLATFORM_BOOK = Object.fromEntries(
+            BOOK_REGISTRY.map(b => [b.id, b.id]).concat([[ALL_BOOKS, ALL_BOOKS]])
+        );
+        // DFS (goblin/demon/one-way-pick) platforms only -- sportsbooks in
+        // BOOK_REGISTRY are real two-sided lines, never DFS-style picks, so
+        // this set is deliberately not expanded with them.
+        const DFS_PLATFORMS = new Set(BOOK_REGISTRY.filter(b => b.dfs).map(b => b.id));
         // Display name for a `prop.book` key (as set by nflBuildProps / the MLB
         // + NBA line builders). Used by the Prime Plays card.
         const BOOK_LABEL = {
@@ -5549,7 +5630,7 @@
         // as gap-fill only — PropLine stays primary where both have a line, and
         // a book only ever shows lines that book actually posted. Rows carry no
         // player_id → name join.
-        const PARLAY_DFS_BOOKS = 'prizepicks,underdog,sleeper';
+        const PARLAY_DFS_BOOKS = BOOK_REGISTRY.filter(b => b.dfs).map(b => b.id).join(',');
         // ParlayAPI market_key → BeatsEdge statKey. Only the clean, gradeable
         // ones; its DFS-oddity markets ("halves with 25+ rec yds") are skipped.
         const PARLAY_MLB_MKT = {
@@ -8935,6 +9016,15 @@
             // Bumped whenever a backtest rewrites GRADE_CUTOFFS, to invalidate memoized grades.
             const [gradeVersion, setGradeVersion] = useState(0);
             const [statFilter, setStatFilter] = useState('all'); // Browse: PrizePicks-style stat-category chip (prop.type, or 'all')
+            // Phase 4 — game-specific prop view. Null = no game selected (every
+            // game's props show, today's default/unchanged behavior). Set to a
+            // real ParlayAPI eventId (never an ESPN id, never a team-name
+            // string) by clicking a game chip in the new games strip below.
+            const [selectedGameEventId, setSelectedGameEventId] = useState(null);
+            // Phase 5 — period filter. 'all' (default, unchanged behavior) shows
+            // every period; 'FULL_GAME' | '1Q' | '1H' | '2H' narrows to props
+            // whose real normalized period (see periodForMarketKey) matches.
+            const [periodFilter, setPeriodFilter] = useState('all');
 
             // ⚠️ SECURITY NOTE: this file is static, client-side HTML. Anything
             // stored here (including localStorage) lives in YOUR browser only —
@@ -9036,27 +9126,20 @@
                 wnba: []
             };
 
-            // Only books our data sources (PropLine + ParlayAPI) actually carry
-            // prop lines for. ParlayPlay / Betr / Pick6 return nothing from
-            // either feed, so they're not shown — an empty tab is worse than
-            // no tab. All 10 books ParlayAPI is actually fetched with
-            // (PROPLINE_BOOK_PRIORITY) must be listed here, though — a book
-            // fetched but missing from this list left real players
-            // structurally invisible in Browse (mlbBuildProps only builds
-            // props for one selected book at a time; no tab for a book means
-            // no tab can ever show a player whose current line is only on
-            // it). Confirmed live 2026-09-19 for Pinnacle.
+            // Only books our data sources (ParlayAPI) actually carry prop
+            // lines for. ParlayPlay / Betr / Pick6 return nothing from the
+            // feed, so they're not shown — an empty tab is worse than no
+            // tab. Derived from BOOK_REGISTRY (single source of truth — see
+            // its own comment) plus a leading "All Books" tab (ALL_BOOKS)
+            // that merges every book's real lines at once instead of
+            // picking one. A book fetched but missing from BOOK_REGISTRY
+            // would leave real players structurally invisible on its own
+            // single-book tab (mlbBuildProps builds props per book); adding
+            // it once to BOOK_REGISTRY now fixes every list at once.
+            // Confirmed live 2026-09-19 for Pinnacle, before this fix.
             const platforms = [
-                { id: 'prizepicks', name: 'PrizePicks' },
-                { id: 'underdog', name: 'Underdog' },
-                { id: 'sleeper', name: 'Sleeper' },
-                { id: 'fanduel', name: 'FanDuel' },
-                { id: 'draftkings', name: 'DraftKings' },
-                { id: 'betmgm', name: 'BetMGM' },
-                { id: 'betrivers', name: 'BetRivers' },
-                { id: 'caesars', name: 'Caesars' },
-                { id: 'pinnacle', name: 'Pinnacle' },
-                { id: 'bovada', name: 'Bovada' }
+                { id: ALL_BOOKS, name: 'All Books' },
+                ...BOOK_REGISTRY.map(b => ({ id: b.id, name: b.name }))
             ];
 
             const sports = ['nba', 'wnba', 'nfl', 'ncaaf', 'nhl', 'mlb'];
@@ -10849,6 +10932,108 @@
 
             const CONSENSUS_ORDER = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'bovada'];
 
+            // Every real book key present anywhere in one player's
+            // consolidated `allLines` (Phase 2 — "All Books"). Known books
+            // (BOOK_REGISTRY) come first in their usual priority order; any
+            // OTHER book key the live data actually contains (a real
+            // ParlayAPI bookmaker not yet added to BOOK_REGISTRY) is still
+            // appended, never silently dropped — "All Books" must mean every
+            // real line from every book, not just the ones with a tab.
+            const booksPresentIn = (allLines) => {
+                const found = new Set();
+                Object.values(allLines || {}).forEach(byBook => {
+                    Object.keys(byBook || {}).forEach(bk => found.add(bk));
+                });
+                const ordered = PROPLINE_BOOK_PRIORITY.filter(bk => found.has(bk));
+                found.forEach(bk => { if (!ordered.includes(bk)) ordered.push(bk); });
+                return ordered;
+            };
+
+            // ── Period normalization (Phase 5, updated with the fresh live
+            // inventory) ──────────────────────────────────────────────────────
+            // Real, LIVE-CAPTURED raw ParlayAPI market_key -> normalized period.
+            // WNBA entries confirmed 2026-09-18 (tmp/parlayapi-nba-wnba-market-
+            // keys.json). NFL entries confirmed 2026-09-21 via a full live 5-
+            // sport inventory pull from inside the running app itself
+            // (tmp/parlayapi-period-inventory-all-sports.json — americanfootball_
+            // nfl: 10,001 raw rows, 280 unique market_keys). That same pull found
+            // ZERO 1Q/1H/2H player markets for MLB (9,892 rows), CFB (1,295 rows,
+            // thin/off-slate), and NBA (2,403 rows, thin) — their raw market_key
+            // lists really do not contain any period-shaped key today; this is
+            // not a capture gap. NFL/CFB share one market-key space
+            // (PARLAY_FB_MKT), so a future CFB period key already matches this
+            // table automatically the moment ParlayAPI returns one for CFB — no
+            // separate CFB-specific entries needed. `anytime_2nd_half_td_scorer`
+            // is the ONLY confirmed real 2H player-prop-shaped market anywhere in
+            // this inventory, and it is Bovada-only (no DFS source) — do not
+            // treat its presence as evidence any DFS book offers 2H markets.
+            const PERIOD_MARKET_MAP = {
+                // WNBA (basketball_wnba)
+                player_points_1st_quarter: '1Q',
+                player_points_1st_half: '1H',
+                player_fantasy_points_1st_half: '1H',
+                player_pra_1st_half: '1H',
+                player_pts_rebs_asts_1st_half: '1H',
+                player_assists_1st_half: '1H',
+                player_rebounds_1st_half: '1H',
+                // NFL (americanfootball_nfl) — 1Q, confirmed live 2026-09-21
+                player_anytime_td_1st_quarter: '1Q',
+                player_anytime_tds_1st_quarter: '1Q',
+                player_fantasy_points_1st_quarter: '1Q',
+                player_int_1st_quarter: '1Q',
+                player_pass_attempts_1st_quarter: '1Q',
+                player_pass_completions_1st_quarter: '1Q',
+                player_pass_tds_1st_quarter: '1Q',
+                player_pass_yds_1st_quarter: '1Q',
+                player_rec_yards_1st_quarter: '1Q',
+                player_receiving_yards_1st_quarter: '1Q',
+                player_receptions_1st_quarter: '1Q',
+                'player_rush___rec_tds_1st_quarter': '1Q',
+                player_rush_attempts_1st_quarter: '1Q',
+                player_rush_yards_1st_quarter: '1Q',
+                // NFL — 1H, confirmed live 2026-09-21
+                player_anytime_td_1st_half: '1H',
+                player_anytime_tds_1st_half: '1H',
+                // player_fantasy_points_1st_half already registered above
+                // (WNBA block) — same raw key, same real period, confirmed
+                // live for BOTH sports; this map is a flat rawKey->period
+                // lookup (sport-agnostic by design), so one entry covers both.
+                player_fg_made_1st_half: '1H',
+                player_fg_made_combo_1st_half: '1H',
+                player_pass_tds_1st_half: '1H',
+                player_pass_yds_1st_half: '1H',
+                player_rec_yards_1st_half: '1H',
+                player_receiving_yards_1st_half: '1H',
+                player_receptions_1st_half: '1H',
+                'player_rush___rec_tds_1st_half': '1H',
+                player_rush_yards_1st_half: '1H',
+                // NFL — 2H, confirmed live 2026-09-21. Bovada-only, no
+                // "player_" prefix — its own distinct naming shape.
+                anytime_2nd_half_td_scorer: '2H'
+            };
+            // Narrow, explicit fallback pattern — used ONLY for a raw market_key
+            // NOT already in PERIOD_MARKET_MAP above. Exists so a genuinely new
+            // future key that follows the SAME confirmed real naming convention
+            // (e.g. a new NFL stat ending in "_1st_quarter") is still classified
+            // rather than silently falling to UNKNOWN, without requiring a code
+            // edit for every single new stat ParlayAPI adds under an already-
+            // proven period suffix. Deliberately narrow (anchored at the end of
+            // the key, or immediately followed by an underscore) so it can never
+            // match an unrelated market that merely mentions "half" or "quarter"
+            // elsewhere in its name. This is NOT run against a humanized label —
+            // only the raw provider key itself.
+            const PERIOD_PATTERN_1Q = /(^|_)(1st|first)_quarter($|_)/;
+            const PERIOD_PATTERN_1H = /(^|_)(1st|first)_half($|_)/;
+            const PERIOD_PATTERN_2H = /(^|_)(2nd|second)_half($|_)/;
+            const periodForMarketKey = (rawKey) => {
+                if (Object.prototype.hasOwnProperty.call(PERIOD_MARKET_MAP, rawKey)) return PERIOD_MARKET_MAP[rawKey];
+                const k = String(rawKey || '');
+                if (PERIOD_PATTERN_1Q.test(k)) return '1Q';
+                if (PERIOD_PATTERN_1H.test(k)) return '1H';
+                if (PERIOD_PATTERN_2H.test(k)) return '2H';
+                return 'UNKNOWN';
+            };
+
             // Build the prop list for ONE book. `allLines` is
             //   { statKey: { bookKey: [ {line, over, under, setAt, move, primary} ] } }
             // Only LIVE book lines become props — no sample fallback. For a DFS
@@ -10891,8 +11076,13 @@
                 const pushLine = (k, def, e, extraIn) => {
                     const { _stdLine, ...extra } = extraIn;
                     // PrizePicks/Underdog Goblin & Demon are "More"-only picks —
-                    // no opposite side, whatever PropLine echoes back.
-                    if (DFS_PLATFORMS.has(book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
+                    // no opposite side, whatever PropLine echoes back. Keyed off
+                    // extra.book (the line's OWN book), not the outer `book`
+                    // param — the two are always equal in the single-book path,
+                    // but "All Books" mode (below) calls this once per real
+                    // book, so this must reflect whichever book this specific
+                    // line actually belongs to.
+                    if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
                         // Goblins/Demons are never the standard board — treat them
                         // as alt lines even when they're the only rung for a stat,
                         // so they sit behind the "Show Goblins & Demons" toggle and
@@ -10940,18 +11130,32 @@
                 // every LIVE line this book carries. Two-way lines get over +
                 // under; a one-way line (PrizePicks Goblin / Demon, or a
                 // sportsbook alt ladder rung) gets only the side that's priced.
-                Object.keys(MLB_PROP_DEFS).forEach(k => {
-                    const def = MLB_PROP_DEFS[k];
-                    const arr = allLines[k] && allLines[k][book];
-                    if (!arr || !arr.length) return;
-                    const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
-                    const multi = sorted.length > 1;
-                    const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
-                    sorted.forEach(e => pushLine(k, def, e, {
-                        lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${book}`, book, move: e.move, setAt: e.setAt,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
-                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
-                    }));
+                // ALL_BOOKS (Phase 2 — "All Books"): build the exact same way,
+                // once per real book present in allLines, instead of once for
+                // a single selected book. Every book's props end up in the
+                // same `props` array as genuinely distinct entries — nothing
+                // here merges or picks a winner across books; assignPropIds'
+                // id already includes `book`, so two books' lines for the
+                // same stat/line/side never collide.
+                const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                booksToBuild.forEach(bk => {
+                    Object.keys(MLB_PROP_DEFS).forEach(k => {
+                        const def = MLB_PROP_DEFS[k];
+                        const arr = allLines[k] && allLines[k][bk];
+                        if (!arr || !arr.length) return;
+                        const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
+                        const multi = sorted.length > 1;
+                        const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                        sorted.forEach(e => pushLine(k, def, e, {
+                            lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${bk}`, book: bk, move: e.move, setAt: e.setAt,
+                            altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
+                            eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
+                            // Phase 5: every MLB_PROP_DEFS market is a confirmed
+                            // full-game stat (verified market key list, none
+                            // period-specific) -- real, not a default guess.
+                            period: 'FULL_GAME', homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null
+                        }));
+                    });
                 });
 
                 // NOTE: this used to also inject a synthetic "Hitter Fantasy
@@ -10969,7 +11173,7 @@
                 // the `seedMode` branch above, the brief pre-fetch placeholder
                 // shown before fetchMlbPropLines's first live fetch completes.
 
-                props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), book));
+                booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), bk)));
                 return props;
             };
 
@@ -11487,6 +11691,11 @@
             // ============================================================
             // Sharp sportsbooks first, then the DFS apps this app is themed
             // around. First book in this list that has a line for a player wins.
+            // Kept as its own explicit priority ORDER (deliberately different
+            // from BOOK_REGISTRY's UI-tab order) rather than derived from it —
+            // every id in this list is still one of BOOK_REGISTRY's 10 (the
+            // set that matters for the Pinnacle-style visibility bug is fixed
+            // via PLATFORM_BOOK/platforms above, not this priority ordering).
             const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'bovada'];
 
             // ── ParlayAPI: fetch DFS props for one sport, shaped as
@@ -12478,7 +12687,12 @@
                             lineSource: `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${book}`,
                             book, setAt: e.setAt, move: e.move, altLine: multi && !e.primary,
                             eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
-                            homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null
+                            homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null,
+                            // Phase 5: a provider-only market's real period, from the
+                            // raw market_key itself (rawKey) -- NEVER the caller's
+                            // knownKeys/statKey space, and never defaulted to
+                            // FULL_GAME just because most other markets are.
+                            period: periodForMarketKey(rawKey)
                         };
                         if (DFS_PLATFORMS.has(book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
                             props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: e.over ?? null, oppOdds: null, hitRate: null });
@@ -12526,34 +12740,45 @@
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
-                posKeys.forEach(k => {
-                    const def = NFL_PROP_DEFS[k];
-                    const byBook = allLines[k] || {};
-                    // ONLY the selected book. Never borrow another book's line —
-                    // each tab shows exactly what that book has posted.
-                    if (!byBook[book] || !byBook[book].length) return;
-                    const useBook = book, crossBook = false;
-                    // Drop obvious bad data — e.g. a niche book listing a WR's
-                    // "rush yards" at 43.5 when he averages ~1.
-                    const pg = perGameFor(k);
-                    const w = statsByKey[k];
-                    if (w && (w.season.games || 0) >= 4) {
-                        const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
-                        const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
-                        if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
-                    }
-                    let arr = byBook[useBook];
-                    const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
-                    const multi = sorted.length > 1;
-                    const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
-                    sorted.forEach(e => pushLine(k, def, e, {
-                        lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
-                        book: useBook, crossBook, setAt: e.setAt, move: e.move,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
-                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
-                    }));
+                // ALL_BOOKS (Phase 2 — "All Books"): run this exact same
+                // per-book logic once per real book present in allLines
+                // instead of once for a single selected book — see the
+                // identical pattern/comment in mlbBuildProps.
+                const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                booksToBuild.forEach(bk => {
+                    posKeys.forEach(k => {
+                        const def = NFL_PROP_DEFS[k];
+                        const byBook = allLines[k] || {};
+                        // ONLY this book. Never borrow another book's line —
+                        // each tab (or each book, in All Books) shows exactly
+                        // what that book has posted.
+                        if (!byBook[bk] || !byBook[bk].length) return;
+                        const useBook = bk, crossBook = false;
+                        // Drop obvious bad data — e.g. a niche book listing a WR's
+                        // "rush yards" at 43.5 when he averages ~1.
+                        const pg = perGameFor(k);
+                        const w = statsByKey[k];
+                        if (w && (w.season.games || 0) >= 4) {
+                            const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
+                            const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
+                            if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
+                        }
+                        let arr = byBook[useBook];
+                        const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
+                        const multi = sorted.length > 1;
+                        const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                        sorted.forEach(e => pushLine(k, def, e, {
+                            lineSource: crossBook ? `${useBook} line — not posted on ${bk}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
+                            book: useBook, crossBook, setAt: e.setAt, move: e.move,
+                            altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine,
+                            eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
+                            // Phase 5: every NFL_PROP_DEFS market is a confirmed
+                            // full-game stat -- real, not a default guess.
+                            period: 'FULL_GAME', homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null
+                        }));
+                    });
                 });
-                props.push(...buildProviderOnlyProps(allLines, Object.keys(NFL_PROP_DEFS), book));
+                booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(NFL_PROP_DEFS), bk)));
                 return props;
             };
 
@@ -13321,7 +13546,49 @@
                 { providerKey: 'player_3_pt_made_combo', sport: 'wnba', displayName: '3PT Made (combo variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: '"Combo" semantics unconfirmed -- could be a same-game combo market, not a plain 3PT-made line. Not assumed.' },
                 { providerKey: 'player_pra', sport: 'wnba', displayName: 'Pts+Reb+Ast (Underdog variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Underdog\'s own separate raw key for what looks like Pts+Reb+Ast, distinct from the confirmed player_pts_rebs_asts. Not assumed equivalent without a field to confirm it.' },
                 { providerKey: 'player_pra_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (Underdog)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
-                { providerKey: 'player_pts_rebs_asts_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (PrizePicks)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' }
+                { providerKey: 'player_pts_rebs_asts_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (PrizePicks)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
+                { providerKey: 'player_assists_1st_half', sport: 'wnba', displayName: 'Assists 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
+                { providerKey: 'player_rebounds_1st_half', sport: 'wnba', displayName: 'Rebounds 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
+                // NFL period markets -- confirmed live 2026-09-21 via a full 5-
+                // sport ParlayAPI inventory pull run from inside the running
+                // app (tmp/parlayapi-period-inventory-all-sports.json,
+                // americanfootball_nfl: 10,001 raw rows). Same DATA_REQUIRED
+                // reasoning as WNBA: NFL's own historical source (ESPN gamelog)
+                // is full-game only, same as every other sport in this app --
+                // no period-level (quarter/half) player statistics exist
+                // anywhere in this app's data sources for any sport yet.
+                { providerKey: 'player_anytime_td_1st_quarter', sport: 'nfl', displayName: 'Anytime TD 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'No period-level (quarter/half) player statistics exist anywhere in this app\'s data sources -- ESPN gamelog is full-game only, same as every other sport.' },
+                { providerKey: 'player_anytime_tds_1st_quarter', sport: 'nfl', displayName: 'Anytime TDs 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_fantasy_points_1st_quarter', sport: 'nfl', displayName: 'Fantasy Points 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter -- also compounds with Fantasy Points\' own source-specific formula requirement.' },
+                { providerKey: 'player_int_1st_quarter', sport: 'nfl', displayName: 'Interceptions 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_pass_attempts_1st_quarter', sport: 'nfl', displayName: 'Pass Attempts 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_pass_completions_1st_quarter', sport: 'nfl', displayName: 'Pass Completions 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_pass_tds_1st_quarter', sport: 'nfl', displayName: 'Pass TDs 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_pass_yds_1st_quarter', sport: 'nfl', displayName: 'Pass Yards 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rec_yards_1st_quarter', sport: 'nfl', displayName: 'Receiving Yards 1st Quarter (Underdog variant)', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter. Distinct raw key from player_receiving_yards_1st_quarter (different bookmaker set) -- not assumed equivalent, both registered separately.' },
+                { providerKey: 'player_receiving_yards_1st_quarter', sport: 'nfl', displayName: 'Receiving Yards 1st Quarter (PrizePicks variant)', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_receptions_1st_quarter', sport: 'nfl', displayName: 'Receptions 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rush___rec_tds_1st_quarter', sport: 'nfl', displayName: 'Rush + Rec TDs 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rush_attempts_1st_quarter', sport: 'nfl', displayName: 'Rush Attempts 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rush_yards_1st_quarter', sport: 'nfl', displayName: 'Rush Yards 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_anytime_td_1st_half', sport: 'nfl', displayName: 'Anytime TD 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_anytime_tds_1st_half', sport: 'nfl', displayName: 'Anytime TDs 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_fantasy_points_1st_half', sport: 'nfl', displayName: 'Fantasy Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter -- also compounds with Fantasy Points\' own source-specific formula requirement.' },
+                { providerKey: 'player_fg_made_1st_half', sport: 'nfl', displayName: 'FG Made 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_fg_made_combo_1st_half', sport: 'nfl', displayName: 'FG Made Combo 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter. "Combo" semantics unconfirmed -- distinct raw key from player_fg_made_1st_half, not assumed equivalent.' },
+                { providerKey: 'player_pass_tds_1st_half', sport: 'nfl', displayName: 'Pass TDs 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_pass_yds_1st_half', sport: 'nfl', displayName: 'Pass Yards 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rec_yards_1st_half', sport: 'nfl', displayName: 'Receiving Yards 1st Half (Underdog variant)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter. Distinct raw key from player_receiving_yards_1st_half (different bookmaker set) -- not assumed equivalent, both registered separately.' },
+                { providerKey: 'player_receiving_yards_1st_half', sport: 'nfl', displayName: 'Receiving Yards 1st Half (PrizePicks variant)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_receptions_1st_half', sport: 'nfl', displayName: 'Receptions 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rush___rec_tds_1st_half', sport: 'nfl', displayName: 'Rush + Rec TDs 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                { providerKey: 'player_rush_yards_1st_half', sport: 'nfl', displayName: 'Rush Yards 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter.' },
+                // The ONLY confirmed real 2H player-prop-shaped market found
+                // anywhere in the live inventory (any sport). Bovada-only, no
+                // "player_" prefix, no DFS source at all -- do not treat its
+                // presence as evidence any DFS book (PrizePicks/Underdog/
+                // Sleeper) offers a 2H market; none do, per the same inventory.
+                { providerKey: 'anytime_2nd_half_td_scorer', sport: 'nfl', displayName: 'Anytime TD Scorer, 2nd Half', period: '2h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Anytime TD 1st Quarter. Confirmed Bovada-only (sportsbook, not DFS) in the live inventory -- no DFS book currently offers a 2H player market for any sport.' }
             ];
             const buildMarketRegistry = () => {
                 const entries = [];
@@ -13748,53 +14015,65 @@
                         hitRate: side === 'over' ? oHR : Math.max(2, 100 - oHR)
                     });
                 };
-                nbaAllKeys.forEach(k => {
-                    const def = NBA_PROP_DEFS[k];
-                    // Some defs (e.g. fantasyPoints) are only confirmed correct
-                    // for a specific book's scoring rules -- skip building a
-                    // real model prop for any other book. Handled here, not in
-                    // fetchParlayProps, so ingestion stays untouched; the
-                    // matching per-book knownKeys filter below (feeding
-                    // buildProviderOnlyProps) makes sure a skipped book's row
-                    // still surfaces as a real "Model not supported yet" prop
-                    // instead of being silently dropped.
-                    if (def.books && !def.books.includes(book)) return;
-                    const byBook = allLines[k] || {};
-                    // ONLY the selected book. Never borrow another book's line —
-                    // each tab shows exactly what that book has posted.
-                    if (!byBook[book] || !byBook[book].length) return;
-                    const useBook = book, crossBook = false;
-                    const pg = perGameFor(k);
-                    const w = statsByKey[k];
-                    // A def flagged requiresHistory (OREB/DREB) must never
-                    // build a modeled prop off zero real historical games --
-                    // that would mean an empty/NaN window standing in for a
-                    // real hit-rate calculation. This is what keeps WNBA (no
-                    // backend source at all) and any NBA player with no
-                    // hoopR-backed history correctly provider-only, without
-                    // a separate WNBA-specific or OREB-specific check: any
-                    // future requiresHistory market gets the same safety for
-                    // free. Matched by the identical check in knownForBook
-                    // below, so a skipped player+stat here still surfaces as
-                    // a real "Model not supported yet" prop instead of
-                    // silently disappearing.
-                    if (def.requiresHistory && (!w || (w.season.games || 0) === 0)) return;
-                    if (w && (w.season.games || 0) >= 4) {
-                        const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
-                        const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
-                        if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
-                    }
-                    let arr = byBook[useBook];
-                    const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
-                    const multi = sorted.length > 1;
-                    const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
-                    const mktLine = marketLineFor(byBook);
-                    sorted.forEach(e => pushLine(k, def, e, {
-                        lineSource: crossBook ? `${useBook} line — not posted on ${book}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
-                        book: useBook, crossBook, setAt: e.setAt, move: e.move,
-                        altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine, _mktLine: mktLine,
-                        eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
-                    }));
+                // ALL_BOOKS (Phase 2 — "All Books"): run this exact same
+                // per-book logic once per real book present in allLines
+                // instead of once for a single selected book — see the
+                // identical pattern/comment in mlbBuildProps.
+                const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                booksToBuild.forEach(bk => {
+                    nbaAllKeys.forEach(k => {
+                        const def = NBA_PROP_DEFS[k];
+                        // Some defs (e.g. fantasyPoints) are only confirmed correct
+                        // for a specific book's scoring rules -- skip building a
+                        // real model prop for any other book. Handled here, not in
+                        // fetchParlayProps, so ingestion stays untouched; the
+                        // matching per-book knownKeys filter below (feeding
+                        // buildProviderOnlyProps) makes sure a skipped book's row
+                        // still surfaces as a real "Model not supported yet" prop
+                        // instead of being silently dropped.
+                        if (def.books && !def.books.includes(bk)) return;
+                        const byBook = allLines[k] || {};
+                        // ONLY this book. Never borrow another book's line —
+                        // each tab (or each book, in All Books) shows exactly
+                        // what that book has posted.
+                        if (!byBook[bk] || !byBook[bk].length) return;
+                        const useBook = bk, crossBook = false;
+                        const pg = perGameFor(k);
+                        const w = statsByKey[k];
+                        // A def flagged requiresHistory (OREB/DREB) must never
+                        // build a modeled prop off zero real historical games --
+                        // that would mean an empty/NaN window standing in for a
+                        // real hit-rate calculation. This is what keeps WNBA (no
+                        // backend source at all) and any NBA player with no
+                        // hoopR-backed history correctly provider-only, without
+                        // a separate WNBA-specific or OREB-specific check: any
+                        // future requiresHistory market gets the same safety for
+                        // free. Matched by the identical check in knownForBook
+                        // below, so a skipped player+stat here still surfaces as
+                        // a real "Model not supported yet" prop instead of
+                        // silently disappearing.
+                        if (def.requiresHistory && (!w || (w.season.games || 0) === 0)) return;
+                        if (w && (w.season.games || 0) >= 4) {
+                            const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
+                            const hi = (w.recent && w.recent.range && w.recent.range[1]) || pg;
+                            if (primaryLine > pg * 6 + 8 || primaryLine > hi * 2 + 8) return;
+                        }
+                        let arr = byBook[useBook];
+                        const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
+                        const multi = sorted.length > 1;
+                        const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                        const mktLine = marketLineFor(byBook);
+                        sorted.forEach(e => pushLine(k, def, e, {
+                            lineSource: crossBook ? `${useBook} line — not posted on ${bk}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
+                            book: useBook, crossBook, setAt: e.setAt, move: e.move,
+                            altLine: multi && !e.primary, odds: e.over, oppOdds: e.under, _stdLine: stdLine, _mktLine: mktLine,
+                            eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
+                            // Phase 5: every NBA_PROP_DEFS market (shared by NBA and
+                            // WNBA, including OREB/DREB) is a confirmed full-game
+                            // stat -- real, not a default guess.
+                            period: 'FULL_GAME', homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null
+                        }));
+                    });
                 });
                 // A book-restricted def (see the `def.books` guard above) is
                 // only "known" for the book(s) it's actually confirmed for --
@@ -13804,21 +14083,23 @@
                 // than being silently dropped (bca62e6's core invariant,
                 // unchanged here — only the knownKeys list passed in is
                 // per-book now, buildProviderOnlyProps itself is untouched).
-                const knownForBook = nbaAllKeys.filter(k => {
-                    const d = NBA_PROP_DEFS[k];
-                    if (d.books && !d.books.includes(book)) return false;
-                    // Mirrors the requiresHistory guard in the build loop
-                    // above -- a stat with zero real historical games for
-                    // THIS player must not count as "known", so its real
-                    // provider row falls through to buildProviderOnlyProps
-                    // instead of being silently dropped.
-                    if (d.requiresHistory) {
-                        const w = statsByKey[k];
-                        if (!w || (w.season.games || 0) === 0) return false;
-                    }
-                    return true;
+                booksToBuild.forEach(bk => {
+                    const knownForBook = nbaAllKeys.filter(k => {
+                        const d = NBA_PROP_DEFS[k];
+                        if (d.books && !d.books.includes(bk)) return false;
+                        // Mirrors the requiresHistory guard in the build loop
+                        // above -- a stat with zero real historical games for
+                        // THIS player must not count as "known", so its real
+                        // provider row falls through to buildProviderOnlyProps
+                        // instead of being silently dropped.
+                        if (d.requiresHistory) {
+                            const w = statsByKey[k];
+                            if (!w || (w.season.games || 0) === 0) return false;
+                        }
+                        return true;
+                    });
+                    props.push(...buildProviderOnlyProps(allLines, knownForBook, bk));
                 });
-                props.push(...buildProviderOnlyProps(allLines, knownForBook, book));
                 return props;
             };
 
@@ -20216,7 +20497,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // EXPENSIVE part (runs calculateEdgeScore for every prop) — memoized
             // so it only recomputes when the data / category / calibration
             // changes, NOT on every search keystroke or sort toggle.
-            const gradedPlayers = React.useMemo(() => {
+            const preGameFilterPlayers = React.useMemo(() => {
                 return basePlayers
                     // Structural live-prop gate (forensic-audit fix): for every
                     // non-mock player on a live-pipeline sport, a player's
@@ -20254,6 +20535,97 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         _n: norm(p.name), _t: norm(p.team), _o: norm(p.opponent), _pos: norm(p.position)
                     }));
             }, [basePlayers, statFilter, gradeVersion, norm]);
+
+            // Phase 4 (corrected per review) — permanent, real game inventory
+            // for the game-specific prop view. The original version derived
+            // this from preGameFilterPlayers' already-pregame-filtered `.props`,
+            // which meant a game silently vanished from the strip the moment
+            // its commence time passed (isLiveEligibleProp had already dropped
+            // every one of its props by then) — it could not "remain
+            // identifiable" once live/completed, which is what this fixes.
+            //
+            // Source: basePlayers' own RAW `_allLines` — the full, unfiltered
+            // per-book ParlayAPI line arrays every live-pipeline player already
+            // carries (set once per fetch by fetchMlbPropLines/fetchNflPropLines/
+            // fetchCfbPropLines/fetchNbaPropLines/fetchWnbaPropLines, untouched
+            // by isLiveEligibleProp or the platform-switch rebuild effect) —
+            // never a second ingestion/matching system, just reading data that
+            // was already there.
+            //
+            // No ESPN join, on purpose: there is no reliable ESPN<->ParlayAPI
+            // eventId join anywhere in this app (confirmed by the Phase 0
+            // audit — different id spaces, never cross-referenced; even the
+            // existing NBA/WNBA name-based player/team resolver has its own
+            // comment admitting "no live-verified confirmation of ParlayAPI's
+            // exact NBA/WNBA home_team/away_team string format exists"). Per
+            // explicit instruction, this does not fake one — the canonical
+            // game is keyed SOLELY by ParlayAPI's own real eventId, carrying
+            // only fields ParlayAPI itself supplies: eventId / homeTeam /
+            // awayTeam / commenceTimeMs / sport.
+            //
+            // Status is deliberately limited to what that data can HONESTLY
+            // support: 'UPCOMING' (real commenceTimeMs still in the future) or
+            // 'STARTED' (real commenceTimeMs has passed) — never a fabricated
+            // LIVE-vs-FINAL distinction, since a ParlayAPI prop row carries no
+            // live score or completion signal at all. 'UNKNOWN' only if a raw
+            // entry genuinely has no commenceTimeMs (never observed live, but
+            // handled rather than assumed).
+            const slateGames = React.useMemo(() => {
+                const byEvent = {};
+                (Array.isArray(basePlayers) ? basePlayers : []).forEach(p => {
+                    if (!p || !p._allLines) return;
+                    Object.values(p._allLines).forEach(byBook => {
+                        Object.values(byBook || {}).forEach(arr => {
+                            (arr || []).forEach(e => {
+                                if (!e || !e.eventId) return;
+                                if (!byEvent[e.eventId]) {
+                                    byEvent[e.eventId] = {
+                                        eventId: e.eventId, sport: p.sport || null,
+                                        homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null,
+                                        commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null
+                                    };
+                                }
+                            });
+                        });
+                    });
+                });
+                const now = Date.now();
+                return Object.values(byEvent)
+                    .map(g => ({
+                        ...g,
+                        status: g.commenceTimeMs == null ? 'UNKNOWN' : (g.commenceTimeMs > now ? 'UPCOMING' : 'STARTED')
+                    }))
+                    .sort((a, b) => (a.commenceTimeMs || 0) - (b.commenceTimeMs || 0));
+            }, [basePlayers]);
+
+            // Phase 4/5 — narrow to the selected game (real eventId) and/or
+            // period (real, normalized — never guessed). 'all'/null (the
+            // defaults) mean exactly today's unfiltered behavior. This wraps
+            // preGameFilterPlayers rather than replacing it, so grading
+            // (playerBestGrade above) is completely unaffected — this step
+            // only ever changes what's VISIBLE, never how a grade/edge/
+            // probability is computed. Mock/sample players (no live pipeline,
+            // no real eventId/period to filter by) are left untouched, same
+            // as every other live-prop gate in this file.
+            const gradedPlayers = React.useMemo(() => {
+                if (!selectedGameEventId && periodFilter === 'all') return preGameFilterPlayers;
+                const periodOf = (pr) => pr.period || 'UNKNOWN';
+                const applies = (p) => !p._mock && LIVE_PIPELINE_SPORTS.has(p.sport) && Array.isArray(p.props);
+                return preGameFilterPlayers
+                    .map(x => applies(x.p)
+                        ? {
+                            ...x,
+                            p: {
+                                ...x.p,
+                                props: x.p.props.filter(pr =>
+                                    (!selectedGameEventId || pr.eventId === selectedGameEventId) &&
+                                    (periodFilter === 'all' || periodOf(pr) === periodFilter)
+                                )
+                            }
+                        }
+                        : x)
+                    .filter(x => !applies(x.p) || x.p.props.length > 0);
+            }, [preGameFilterPlayers, selectedGameEventId, periodFilter]);
 
             // CHEAP part — filter by the debounced query + sort by precomputed grade.
             // The grid order is FROZEN for anything that isn't an EXPLICIT user
@@ -20465,6 +20837,52 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     </div>
                     )}
 
+                    {currentView === 'browse' && (
+                    <div className="period-select-bar">
+                        {[
+                            { id: 'all', label: 'All Periods' },
+                            { id: 'FULL_GAME', label: 'Full Game' },
+                            { id: '1Q', label: '1Q' },
+                            { id: '1H', label: '1H' },
+                            { id: '2H', label: '2H' }
+                        ].map(pd => (
+                            <button
+                                key={pd.id}
+                                className={`period-select-chip ${periodFilter === pd.id ? 'active' : ''}`}
+                                onClick={() => setPeriodFilter(pd.id)}
+                                title={pd.id === 'all' ? 'Show every period' : `Show only ${pd.label} provider lines`}
+                            >{pd.label}</button>
+                        ))}
+                    </div>
+                    )}
+
+                    {/* Phase 4 — real games, grouped by each live prop's own
+                        ParlayAPI eventId (never ESPN's separate id space, never
+                        team-name matching). Click a game to filter Browse down
+                        to ONLY that game's props; click it again (or "All
+                        Games") to clear. */}
+                    {currentView === 'browse' && slateGames.length > 0 && (
+                    <div className="game-select-bar">
+                        <span className="game-select-label">Games:</span>
+                        <button
+                            className={`game-select-chip ${!selectedGameEventId ? 'active' : ''}`}
+                            onClick={() => setSelectedGameEventId(null)}
+                        >All Games</button>
+                        {slateGames.map(g => (
+                            <button
+                                key={g.eventId}
+                                className={`game-select-chip ${selectedGameEventId === g.eventId ? 'active' : ''}`}
+                                onClick={() => setSelectedGameEventId(selectedGameEventId === g.eventId ? null : g.eventId)}
+                                title={(g.homeTeam && g.awayTeam ? `${g.awayTeam} @ ${g.homeTeam}` : 'Real provider event — team names not supplied on this row')
+                                    + (g.status === 'STARTED' ? ' — commence time has passed; live/final status is not available from ParlayAPI, props may no longer be live-eligible' : '')}
+                            >
+                                {g.awayTeam && g.homeTeam ? `${g.awayTeam} @ ${g.homeTeam}` : `Game ${g.eventId}`}
+                                {g.status === 'STARTED' && <span className="game-select-status"> · started</span>}
+                            </button>
+                        ))}
+                    </div>
+                    )}
+
                     <main className="main-content">
                         {currentView === 'browse' && (
                         <React.Fragment>
@@ -20580,7 +20998,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 {(platforms.find(p => p.id === selectedPlatform)?.name || selectedPlatform)} Props
                                 {selectedSport === 'mlb' && (
                                     <span style={{ fontSize: '0.8rem', fontWeight: 400, color: 'var(--text-secondary)' }}>
-                                        {DFS_PLATFORMS.has(selectedPlatform) ? ' — every live line they post' : ' — live lines only'}
+                                        {selectedPlatform === ALL_BOOKS ? ' — every book, every real line, at once' : (DFS_PLATFORMS.has(selectedPlatform) ? ' — every live line they post' : ' — live lines only')}
                                     </span>
                                 )}
                             </div>
@@ -20675,7 +21093,16 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     <div className="loading" style={{ padding: '2.5rem' }}>
                                         {!isPro
                                             ? 'No research picks for this sport yet — check back when the slate loads.'
-                                            : (platforms.find(p => p.id === selectedPlatform) || {}).srcKey
+                                            // Phase 5: an honest, explicit empty state for a period with
+                                            // zero real provider markets right now — never manufactured,
+                                            // never silently identical to the generic "no players" text.
+                                            : (periodFilter !== 'all')
+                                                ? <>No {periodFilter === 'FULL_GAME' ? 'Full Game' : periodFilter} provider markets currently available{selectedGameEventId ? ' for this game' : ` for ${SPORT_LABELS[selectedSport]}`}.{' '}
+                                                    <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPeriodFilter('all')}>Show all periods</span></>
+                                                : selectedGameEventId
+                                                ? <>No props for this game right now.{' '}
+                                                    <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setSelectedGameEventId(null)}>Show all games</span></>
+                                                : (platforms.find(p => p.id === selectedPlatform) || {}).srcKey
                                                 ? <>{(platforms.find(p => p.id === selectedPlatform) || {}).name} hasn't posted {SPORT_LABELS[selectedSport]} lines for this slate (via ParlayAPI). Coverage varies by book, sport and day — try {' '}
                                                     <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setSelectedPlatform('prizepicks')}>PrizePicks</span>.</>
                                                 : <>No players{statFilter !== 'all' ? ` with a ${statFilter} prop` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}.{' '}
