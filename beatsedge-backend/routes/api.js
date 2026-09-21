@@ -23,6 +23,7 @@ const { computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory,
 const newsDb = require('../lib/newsDb');
 const newsIngest = require('../lib/newsIngest');
 const newsClassifier = require('../lib/newsClassifier');
+const newsImpact = require('../lib/newsImpact');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -939,6 +940,13 @@ router.get('/news', async (req, res) => {
   // only attaches a new `classifications` array. An article with no
   // resolved playerId always gets classifications: [] (Step 11).
   articles = articles.map(a => ({ ...a, ...newsClassifier.classifyArticle(a) }));
+  // Phase 2D — research-only impact signals derived from the Phase 2C
+  // classifications just attached above (see lib/newsImpact.js's header:
+  // same read-time-computation rationale as Phase 2C). Purely additive: a
+  // new `impactSignals` array, nothing else on `articles[i]` changes.
+  // Never touches the model — no probability/projection/edge/grade/Prime
+  // field is read or written here.
+  articles = articles.map(a => ({ ...a, ...newsImpact.computeArticleImpact(a) }));
   // Distinguish genuinely-empty from source-failed rather than always
   // saying "ok" — a real, currently-quiet news day looks identical to a
   // dead source unless this pass's own ingest reports are consulted.
