@@ -9020,12 +9020,24 @@
                 ROLE_UP: 'Role', ROLE_DOWN: 'Role',
                 MINUTES_UP: 'Minutes', MINUTES_DOWN: 'Minutes',
                 OPPORTUNITY_UP: 'Opportunity', OPPORTUNITY_DOWN: 'Opportunity',
-                TRANSACTION: 'Transaction', RETURN: 'Return',
+                TRANSACTION: 'Transaction', ROSTER_CHANGE: 'Roster', RETURN: 'Return',
                 GAME_CONTEXT: 'Game context', WEATHER_CONTEXT: 'Weather'
                 // NO_DIRECT_IMPACT is deliberately absent -- never shown (Step 7).
+                // Phase 2F fix: ROSTER_CHANGE (lib/newsImpact.js's real impact
+                // name for ROSTER_MOVE classifications -- call-ups, IL/IR
+                // placement, waivers, releases, etc.) had NO entry here since
+                // Phase 2E shipped, so real roster-move signals were silently
+                // never appearing in the context summary despite carrying a
+                // real, non-NO_DIRECT_IMPACT signal. Phase 2F's own Step 3
+                // explicitly names ROSTER as a required category, which is
+                // what surfaced the gap -- fixed here, not deferred.
             };
-            // Fixed display order matching Step 7's own listed category order.
-            const NEWS_CONTEXT_BUCKET_ORDER = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity', 'Transaction', 'Return', 'Game context', 'Weather'];
+            // Fixed display order matching Phase 2F Step 3's own listed
+            // category order (AVAILABILITY, STARTING_STATUS, ROLE, MINUTES,
+            // OPPORTUNITY, TRANSACTION, ROSTER, RETURN, GAME_CONTEXT, WEATHER;
+            // GENERAL is deliberately absent -- it has no qualifying signal to
+            // ever populate it with, same as NO_DIRECT_IMPACT above).
+            const NEWS_CONTEXT_BUCKET_ORDER = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity', 'Transaction', 'Roster', 'Return', 'Game context', 'Weather'];
             // Short, human-friendly words for the NEWS CONTEXT summary line
             // (Step 4's own example shows "Out"/"Increased"/"Restricted", not
             // raw enum strings). Derived from Phase 2C/2D's own real status
@@ -9103,6 +9115,98 @@
                     lastUpdateAgeLabel: list.length ? list[0].ageLabel : null
                 };
             };
+
+            // ── Phase 2F: research context layer ────────────────────────────
+            // Builds on buildPlayerNewsContext() above (Phase 2E) rather than
+            // duplicating its bucket-grouping logic -- adds the richer,
+            // fully-traceable shape this phase needs: CURRENT CONTEXT (same
+            // "newest signal per bucket" rule, now carrying source/url/
+            // articleId so every row can link back to its real article --
+            // Step 6/11), RECENT CHANGES (a chronological change LOG, one
+            // entry per non-NO_DIRECT_IMPACT signal -- Step 4: "a change
+            // requires an actual Phase 2D direction/event", never a static
+            // status alone), and CONFLICTS (the specific recent UP+DOWN
+            // change entries that justify Phase 2E's existing conflict
+            // boolean -- Step 7: "use Phase 2E's existing conflict
+            // behavior," never redefined here). Still a pure function over
+            // newsForPlayer()'s already-linked list -- no new player
+            // matching, no new fetch (Step 15/17).
+            const buildPlayerResearchContext = (newsList) => {
+                const list = Array.isArray(newsList) ? newsList : [];
+                const base = buildPlayerNewsContext(list);
+
+                // currentContext -- same newest-per-bucket rule as
+                // buildPlayerNewsContext's `categories`, re-derived here only
+                // to attach source/url/articleId (that function's own
+                // existing, already-tested return shape is left unchanged).
+                const byBucket = new Map();
+                list.forEach(n => {
+                    (Array.isArray(n.impactSignals) ? n.impactSignals : []).forEach(s => {
+                        const bucket = IMPACT_TO_BUCKET[s.impact];
+                        if (!bucket) return;
+                        const ts = Date.parse(s.publishedAt || n.published) || 0;
+                        const cur = byBucket.get(bucket);
+                        if (!cur || ts > cur.ts) byBucket.set(bucket, { n, s, ts });
+                    });
+                });
+                const currentContext = NEWS_CONTEXT_BUCKET_ORDER.filter(b => byBucket.has(b)).map(bucket => {
+                    const { n, s } = byBucket.get(bucket);
+                    return {
+                        bucket,
+                        emoji: newsImpactEmoji(s.direction, s.strength),
+                        statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
+                        sourceStatus: s.sourceStatus, source: n.source, ageLabel: n.ageLabel,
+                        publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId
+                    };
+                });
+
+                // recentChanges -- Step 4: EVERY non-NO_DIRECT_IMPACT signal is
+                // a real, source-grounded change event (UP/DOWN direction OR a
+                // NEUTRAL-but-real event like TRANSACTION/RETURN/GAME_CONTEXT/
+                // WEATHER_CONTEXT -- Phase 2D's own semantics, never redefined
+                // here). A static current status with no qualifying signal
+                // never becomes a fabricated "change."
+                const recentChanges = [];
+                list.forEach(n => {
+                    (Array.isArray(n.impactSignals) ? n.impactSignals : []).forEach(s => {
+                        if (s.impact === 'NO_DIRECT_IMPACT') return; // Step 4 -- never a change
+                        const bucket = IMPACT_TO_BUCKET[s.impact];
+                        if (!bucket) return;
+                        recentChanges.push({
+                            bucket, emoji: newsImpactEmoji(s.direction, s.strength), direction: s.direction,
+                            directionLabel: s.direction === 'UP' ? 'Up' : s.direction === 'DOWN' ? 'Down' : (NEWS_STATUS_LABELS[s.sourceStatus] || bucket),
+                            statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
+                            sourceStatus: s.sourceStatus, evidence: s.evidence, source: n.source, ageLabel: n.ageLabel,
+                            publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId
+                        });
+                    });
+                });
+                recentChanges.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
+
+                // conflicts -- ONLY populated when Phase 2E's own conflict
+                // rule already fired (base.conflict); never a separate/looser
+                // definition. Holds the actual recent UP/DOWN change entries,
+                // newest first, so the UI can show both underlying articles
+                // chronologically without picking a "winner" (Step 7).
+                const conflicts = base.conflict
+                    ? recentChanges.filter(c => c.freshness && c.freshness !== 'OLDER' && (c.direction === 'UP' || c.direction === 'DOWN'))
+                    : [];
+
+                const DAY_MS = 24 * 3600 * 1000;
+                const changesLast24h = recentChanges.filter(c => {
+                    const ts = Date.parse(c.publishedAt);
+                    return Number.isFinite(ts) && (Date.now() - ts) < DAY_MS;
+                }).length;
+
+                return {
+                    currentContext,
+                    recentChanges,
+                    conflicts,
+                    counts: { totalArticles: list.length, linkedArticles: list.length, recentChanges: recentChanges.length, changesLast24h },
+                    lastUpdateAgeLabel: base.lastUpdateAgeLabel
+                };
+            };
+
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             // Actual last successful data refresh (ms epoch) — drives the "Live
@@ -18936,17 +19040,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </React.Fragment>
                         )}
 
-                        {/* Phase 2E — player news timeline + context panel.
-                            Supersedes Phase 2B/2C/2D's flat 3-item list with:
-                            a NEWS CONTEXT summary (Step 4, newest signal per
-                            category, from buildPlayerNewsContext), a
-                            newest-first timeline (5 initially, "View more" up
-                            to 10 -- Step 2, "do not create a giant page"),
-                            and an honest empty state (Step 11) that stays a
-                            single muted line rather than a bordered section,
-                            so a player with no linked news doesn't add visual
-                            weight to the Browse grid (Step 10's "do not
-                            overwhelm the prop research"). Sourced ONLY from
+                        {/* Phase 2F — research context layer, built on Phase 2E's
+                            timeline (still the same newest-first, 5-initial/
+                            10-expanded article list below). The old "NEWS
+                            CONTEXT" summary is replaced in place -- not
+                            duplicated alongside a second block -- by a
+                            RESEARCH CONTEXT summary from buildPlayerResearchContext()
+                            (Step 9/10: "3-4 context rows then timeline,"
+                            never a second overlapping block). Each row is
+                            now a link straight to its own source article
+                            (Step 6/11 traceability -- "Player Card → Research
+                            Context → Article → Original source" -- no new
+                            modal, reusing the timeline's own existing
+                            "Read on X →" link pattern). Empty state (Step 11)
+                            unchanged from Phase 2E. Sourced ONLY from
                             newsForPlayer() -- same Phase 2A/2B canonical
                             identity join as every prior phase, no second
                             matcher, no re-fetch. */}
@@ -18959,7 +19066,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     </div>
                                 );
                             }
-                            const ctx = buildPlayerNewsContext(allNews);
+                            const research = buildPlayerResearchContext(allNews);
                             const INITIAL_NEWS_LIMIT = 5, EXPANDED_NEWS_LIMIT = 10;
                             const displayNews = allNews.slice(0, newsExpanded ? EXPANDED_NEWS_LIMIT : INITIAL_NEWS_LIMIT);
                             const moreCount = Math.min(allNews.length, EXPANDED_NEWS_LIMIT) - INITIAL_NEWS_LIMIT;
@@ -18967,23 +19074,36 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 <div className="player-news-section" style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
                                     <div className="news-section-title" style={{ fontSize: '0.78rem', marginBottom: '0.4rem' }}>📰 News</div>
 
-                                    {/* NEWS CONTEXT summary (Step 4) -- derived ONLY from
-                                        existing Phase 2C/2D signals, never invented. */}
-                                    {ctx.categories.length > 0 && (
-                                        <div className="news-context-summary" style={{ fontSize: '0.72rem', marginBottom: '0.6rem' }}>
-                                            <div style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>NEWS CONTEXT</div>
-                                            {ctx.categories.map((c, ci) => (
-                                                <div key={ci} style={{ marginBottom: '0.15rem' }} title={c.ageLabel ? `As of ${c.ageLabel}` : undefined}>
-                                                    {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>
-                                                </div>
-                                            ))}
-                                            {ctx.conflict && (
+                                    {/* RESEARCH CONTEXT summary (Step 9) -- derived ONLY from
+                                        existing Phase 2C/2D signals via buildPlayerResearchContext,
+                                        never invented. Each row links to its own source article. */}
+                                    {research.currentContext.length > 0 && (
+                                        <div className="news-research-context" style={{ fontSize: '0.72rem', marginBottom: '0.6rem' }}>
+                                            <div style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>RESEARCH CONTEXT</div>
+                                            {research.currentContext.map((c, ci) => {
+                                                const row = (
+                                                    <>
+                                                        <div style={{ color: 'var(--text-secondary)' }}>{c.bucket}</div>
+                                                        <div>{c.emoji} <strong>{c.statusLabel}</strong>{c.source ? ` · ${c.source}` : ''}{c.ageLabel ? ` · ${c.ageLabel}` : ''}</div>
+                                                    </>
+                                                );
+                                                return c.url ? (
+                                                    <a key={ci} href={c.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+                                                        style={{ display: 'block', marginBottom: '0.3rem', color: 'inherit', textDecoration: 'none' }}
+                                                        title="Open the source article this status is reported from">
+                                                        {row}
+                                                    </a>
+                                                ) : (
+                                                    <div key={ci} style={{ marginBottom: '0.3rem' }}>{row}</div>
+                                                );
+                                            })}
+                                            {research.conflicts.length > 0 && (
                                                 <div style={{ color: 'var(--accent-amber, #d9a441)', marginTop: '0.3rem' }} title="Recent reports about this player disagree -- BeatsEdge does not decide which is correct; check timestamps below">
-                                                    ⚠️ Conflicting recent news
+                                                    ⚠️ Conflicting recent reports
                                                 </div>
                                             )}
                                             <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-                                                Recent news: {ctx.articleCount} article{ctx.articleCount === 1 ? '' : 's'}{ctx.lastUpdateAgeLabel ? ` · Last update ${ctx.lastUpdateAgeLabel}` : ''}
+                                                Recent changes: {research.counts.changesLast24h} in last 24h{research.lastUpdateAgeLabel ? ` · Last update ${research.lastUpdateAgeLabel}` : ''}
                                             </div>
                                         </div>
                                     )}

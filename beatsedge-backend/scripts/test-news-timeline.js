@@ -36,17 +36,20 @@ function newsForPlayer(playerNewsIndex, player) {
   return playerNewsIndex.get(`${player.sport}:${source}:${player.id}`) || [];
 }
 
-// ---- Faithful extraction from BeatsEdge.html (Phase 2E, this phase) ----
+// ---- Faithful extraction from BeatsEdge.html (Phase 2E; ROSTER_CHANGE
+// entry added in Phase 2F after that phase's audit found it missing here
+// since Phase 2E shipped -- see scripts/test-news-research-context.js's
+// test #11 and the Phase 2F report's "Remaining limitations"/bugfix note) ----
 const IMPACT_TO_BUCKET = {
   AVAILABILITY_UP: 'Availability', AVAILABILITY_DOWN: 'Availability',
   STARTING_UP: 'Starting status', STARTING_DOWN: 'Starting status',
   ROLE_UP: 'Role', ROLE_DOWN: 'Role',
   MINUTES_UP: 'Minutes', MINUTES_DOWN: 'Minutes',
   OPPORTUNITY_UP: 'Opportunity', OPPORTUNITY_DOWN: 'Opportunity',
-  TRANSACTION: 'Transaction', RETURN: 'Return',
+  TRANSACTION: 'Transaction', ROSTER_CHANGE: 'Roster', RETURN: 'Return',
   GAME_CONTEXT: 'Game context', WEATHER_CONTEXT: 'Weather'
 };
-const NEWS_CONTEXT_BUCKET_ORDER = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity', 'Transaction', 'Return', 'Game context', 'Weather'];
+const NEWS_CONTEXT_BUCKET_ORDER = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity', 'Transaction', 'Roster', 'Return', 'Game context', 'Weather'];
 const NEWS_STATUS_LABELS = {
   OUT: 'Out', DOUBTFUL: 'Doubtful', QUESTIONABLE: 'Questionable', PROBABLE: 'Probable', AVAILABLE: 'Available', LIMITED: 'Limited',
   STARTING: 'Starting', NOT_STARTING: 'Not starting',
