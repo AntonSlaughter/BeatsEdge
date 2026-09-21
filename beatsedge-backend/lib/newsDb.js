@@ -33,11 +33,13 @@ db.exec(`
     sport TEXT NOT NULL,               -- BeatsEdge's internal sport key (mlb/nfl/ncaaf/nba/wnba/nhl)
     league TEXT,
     team TEXT,
-    player_name TEXT,                  -- the source's own athlete tag, verbatim -- never guessed/matched here (Phase 1 = no player linking)
-    player_id TEXT,                    -- always NULL in Phase 1 -- no player-id resolution exists yet
-    event_id TEXT,                     -- always NULL in Phase 1 -- no game/article join exists yet
+    player_name TEXT,                  -- the RESOLVED player's canonical name -- null unless lib/newsPlayerIdentity.js actually established identity (Phase 2A). Never the source's raw unverified tag.
+    player_id TEXT,                    -- real id in player_id_source's own id space, or NULL if identity could not be established
+    player_id_source TEXT,             -- 'espn' | 'mlb' | 'nflverse' -- which real id space player_id is in (Phase 2A). NULL alongside player_id.
+    player_match_method TEXT,          -- 'EXACT_ID' | 'EXACT_NAME' | 'EXACT_NAME_TEAM' | 'VERIFIED_ALIAS' | 'UNMATCHED' | 'AMBIGUOUS' (Phase 2A)
+    event_id TEXT,                     -- always NULL -- no game/article join exists yet
     category TEXT,                     -- classifyNewsKind() taxonomy: lineup/injury/roster/weather/recap/news
-    importance TEXT,                   -- always NULL in Phase 1 -- no importance scoring exists yet
+    importance TEXT,                   -- always NULL -- no importance scoring exists yet
     first_seen_at TEXT DEFAULT (datetime('now')),
     last_seen_at TEXT DEFAULT (datetime('now'))
   );
@@ -45,23 +47,44 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_news_dedupe ON news_articles(dedupe_key);
 `);
 
+// Phase 2A migration -- news_articles already existed from Phase 1 without
+// player_id_source/player_match_method, so CREATE TABLE IF NOT EXISTS above
+// is a no-op on an already-migrated database and never adds the new
+// columns by itself. Guarded so this is a one-time, idempotent add, same
+// pattern as lib/nflSchema.js's own migration guard. Existing Phase 1 rows
+// simply get NULL in the two new columns (accurate -- their identity was
+// never resolved) and remain valid; nothing about them is rewritten here.
+{
+  const existingCols = db.prepare(`PRAGMA table_info(news_articles)`).all().map(c => c.name);
+  if (!existingCols.includes('player_id_source')) db.exec(`ALTER TABLE news_articles ADD COLUMN player_id_source TEXT`);
+  if (!existingCols.includes('player_match_method')) db.exec(`ALTER TABLE news_articles ADD COLUMN player_match_method TEXT`);
+}
+
 // Insert a new article, or -- if its dedupe_key already exists -- just
 // bump last_seen_at (and refresh fields that can legitimately change after
 // first ingest: summary/image/updated_at, since an outlet sometimes edits
 // a live story). Never overwrites published_at once set (the moment a
-// story was first published doesn't change), never touches player_id/
-// event_id/importance (Phase 1 leaves those alone entirely).
+// story was first published doesn't change). Player identity fields ARE
+// refreshed on re-ingest (Phase 2A) -- the canonical historical index a
+// name is matched against can genuinely improve as more history is
+// ingested by the existing nightly jobs, so a re-resolve is real
+// freshness, not drift. event_id/importance are left alone (still no
+// resolver exists for either).
 const upsertStmt = db.prepare(`
   INSERT INTO news_articles
-    (dedupe_key, source, source_article_id, title, summary, url, image_url, published_at, raw_published_at, updated_at, sport, league, team, player_name, category)
+    (dedupe_key, source, source_article_id, title, summary, url, image_url, published_at, raw_published_at, updated_at, sport, league, team, player_name, player_id, player_id_source, player_match_method, category)
   VALUES
-    (@dedupeKey, @source, @sourceArticleId, @title, @summary, @url, @imageUrl, @publishedAt, @rawPublishedAt, @updatedAt, @sport, @league, @team, @playerName, @category)
+    (@dedupeKey, @source, @sourceArticleId, @title, @summary, @url, @imageUrl, @publishedAt, @rawPublishedAt, @updatedAt, @sport, @league, @team, @playerName, @playerId, @playerIdSource, @playerMatchMethod, @category)
   ON CONFLICT(dedupe_key) DO UPDATE SET
     title = excluded.title,
     summary = excluded.summary,
     url = excluded.url,
     image_url = excluded.image_url,
     updated_at = excluded.updated_at,
+    player_name = excluded.player_name,
+    player_id = excluded.player_id,
+    player_id_source = excluded.player_id_source,
+    player_match_method = excluded.player_match_method,
     last_seen_at = datetime('now')
 `);
 
@@ -75,6 +98,7 @@ function upsertArticles(articles) {
         title: a.title, summary: a.summary || null, url: a.url || null, imageUrl: a.imageUrl || null,
         publishedAt: a.publishedAt || null, rawPublishedAt: a.rawPublishedAt || null, updatedAt: a.updatedAt || null,
         sport: a.sport, league: a.league || null, team: a.team || null, playerName: a.playerName || null,
+        playerId: a.playerId || null, playerIdSource: a.playerIdSource || null, playerMatchMethod: a.playerMatchMethod || null,
         category: a.category || null
       });
       if (before) updated++; else inserted++;
@@ -115,6 +139,13 @@ function toApiShape(row) {
     team: row.team,
     playerName: row.player_name,
     playerId: row.player_id,
+    playerIdSource: row.player_id_source,
+    playerMatchMethod: row.player_match_method,
+    // No separate numeric/percentage confidence exists or is claimed --
+    // playerMatchMethod IS the confidence tier (a real categorical signal,
+    // never a fabricated statistic). Exposed under both names because
+    // Step 8 lists both as potential fields.
+    playerMatchConfidence: row.player_match_method,
     eventId: row.event_id,
     category: row.category,
     importance: row.importance,

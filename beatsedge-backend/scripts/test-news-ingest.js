@@ -57,8 +57,17 @@ ok(newsIngest.buildDedupeKey({ source: 'ESPN', sourceArticleId: '1' }) !== newsI
   ok(n.url === 'https://www.espn.com/nba/story/_/id/123456/real-article', '7. Canonical article URL is preserved exactly, never fabricated', n.url);
   ok(n.sourceArticleId === '123456', 'Real ESPN numeric article id is preserved as sourceArticleId (a genuine improvement over a url-only fallback)', n.sourceArticleId);
   ok(n.imageUrl === 'https://a.espncdn.com/photo/real.jpg', 'Real image URL is preserved when the source supplies one', n.imageUrl);
-  ok(n.playerName === 'Test Player' && n.team === 'BOS', 'Real athlete/team tags are preserved verbatim when ESPN supplies them (still no playerId -- Phase 1 does not resolve identity)', { playerName: n.playerName, team: n.team });
-  ok(n.playerId === undefined, 'playerId is never set by normalization -- Phase 1 explicitly does not invent/resolve player identity', n.playerId);
+  // Phase 2A: "Test Player" has no real athlete.id in this fixture (Tier 1
+  // doesn't apply) and is not a real name in any canonical index (Tier 2/3
+  // correctly find no candidate) -- playerName/playerId both null is the
+  // CORRECT behavior here, proving the resolver never fabricates a match
+  // for an unrecognized name just because ESPN tagged SOME athlete
+  // category. `team` is raw article metadata (from ESPN's own team
+  // category tag), independent of whether player identity resolved --
+  // still preserved.
+  ok(n.playerName === null && n.playerId === null, 'Phase 2A: an athlete tag with no real id, referring to a name not in any real canonical index, correctly resolves to null identity rather than trusting the raw unverified tag', { playerName: n.playerName, playerId: n.playerId });
+  ok(n.team === 'BOS', 'Real team tag is still preserved verbatim as article metadata, independent of player identity resolution', n.team);
+  ok(n.playerMatchMethod === 'UNMATCHED', 'playerMatchMethod explicitly records WHY (UNMATCHED), never silently blank', n.playerMatchMethod);
 }
 
 // 8. Missing player identity does NOT break ingestion.

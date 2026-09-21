@@ -54,7 +54,16 @@ const REQUIRED_FIELDS = ['id', 'source', 'sourceArticleId', 'title', 'summary', 
       const a = data.articles[0];
       const missing = REQUIRED_FIELDS.filter(f => !(f in a));
       ok(missing.length === 0, '1f. Every returned article has all 18 required contract fields present (value may be null, but the KEY exists)', { missing, sample: a });
-      ok(a.playerId === null && a.eventId === null && a.importance === null, '1g. playerId/eventId/importance are null in Phase 1 -- never invented', { playerId: a.playerId, eventId: a.eventId, importance: a.importance });
+      // Phase 2A: playerId is now a REAL resolved id when identity
+      // resolution actually succeeded (never invented -- see
+      // scripts/test-news-player-identity.js for the full identity
+      // regression suite). eventId/importance remain always-null -- no
+      // resolver exists for either yet.
+      ok(a.eventId === null && a.importance === null, '1g. eventId/importance are still always null -- no resolver exists for either yet, never invented', { eventId: a.eventId, importance: a.importance });
+      ok(a.playerId === null || (typeof a.playerId === 'string' && a.playerId.length > 0), '1g2. playerId is either null (unresolved) or a real non-empty resolved id string -- never a placeholder/fabricated value', { playerId: a.playerId, playerIdSource: a.playerIdSource, playerMatchMethod: a.playerMatchMethod });
+      ok('playerIdSource' in a && 'playerMatchMethod' in a && 'playerMatchConfidence' in a, '1g3. Phase 2A contract extension fields (playerIdSource, playerMatchMethod, playerMatchConfidence) are present on every real returned article', { playerIdSource: a.playerIdSource, playerMatchMethod: a.playerMatchMethod });
+      ok((a.playerId === null) === (a.playerName === null), '1g4. playerId and playerName are always null TOGETHER or resolved TOGETHER -- never one without the other (Step 1\'s core principle)', { playerId: a.playerId, playerName: a.playerName });
+      ok((a.playerId === null) === (a.playerIdSource === null), '1g5. playerIdSource is null exactly when playerId is null', { playerId: a.playerId, playerIdSource: a.playerIdSource });
       // 1h. newest -> oldest
       const timestamps = data.articles.map(x => x.publishedAt);
       let sortedOk = true;

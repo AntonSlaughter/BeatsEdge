@@ -16,6 +16,7 @@
 // taxonomy -- not a second, drifting classifier.
 
 const newsDb = require('./newsDb');
+const newsPlayerIdentity = require('./newsPlayerIdentity');
 
 const ESPN_NEWS_SPORT_PATHS = {
   nba: 'basketball/nba',
@@ -139,12 +140,25 @@ function normalizeEspnArticle(a, sport) {
   const athleteCat = (a.categories || []).find(c => c.type === 'athlete' && c.athlete);
   const teamCat = (a.categories || []).find(c => c.type === 'team' && c.team);
   const image = (Array.isArray(a.images) && a.images[0] && strOf(a.images[0].url)) || null;
+  const team = strOf(teamCat && teamCat.team && (teamCat.team.abbreviation || teamCat.team.name)) || null;
+  // Phase 2A -- reliable player identity. ESPN's own athlete category often
+  // carries a real, explicit athlete.id (Tier 1 -- see lib/newsPlayerIdentity.js);
+  // when it doesn't, the resolver falls back to this sport's own canonical
+  // historical-stats index by name(+team), never a raw unverified passthrough.
+  const espnAthleteId = athleteCat && athleteCat.athlete && athleteCat.athlete.id != null ? athleteCat.athlete.id : null;
+  // Confirmed live (2026-09-21, real NBA/NFL/MLB articles): ESPN's athlete
+  // category object uses `description` for the tagged name ("Trae Young",
+  // "Kyle Lowry", "LeBron James") -- NOT displayName/fullName, which this
+  // shape never actually carries. Checked in order of decreasing
+  // specificity in case a richer shape ever supplies them.
+  const espnAthleteName = strOf(athleteCat && athleteCat.athlete && (athleteCat.athlete.description || athleteCat.athlete.displayName || athleteCat.athlete.fullName)) || strOf(athleteCat && athleteCat.description) || null;
+  const identity = newsPlayerIdentity.resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawName: espnAthleteName, team });
   const base = {
     source: 'ESPN', sourceArticleId, title, summary, url, imageUrl: image,
     publishedAt, rawPublishedAt: strOf(a.published) || null, updatedAt,
-    sport, league: null,
-    team: strOf(teamCat && teamCat.team && (teamCat.team.abbreviation || teamCat.team.name)) || null,
-    playerName: strOf(athleteCat && athleteCat.athlete && (athleteCat.athlete.displayName || athleteCat.athlete.fullName)) || null,
+    sport, league: null, team,
+    playerName: identity.playerName, playerId: identity.playerId,
+    playerIdSource: identity.playerIdSource, playerMatchMethod: identity.playerMatchMethod,
     category: classifyNewsKind(title, summary)
   };
   return { ...base, dedupeKey: buildDedupeKey(base) };
@@ -159,10 +173,18 @@ function normalizeRssItem(item, sport, sourceName) {
   const publishedAt = normalizeTimestamp(item.pubDate, { assumeUtcNoZone: true });
   const sourceArticleId = strOf(item.guid) || null;
   const image = strOf(item.thumbnail) || null;
+  // Phase 2A: RSS items carry no structured athlete/player field at all
+  // (confirmed in Phase 1 -- rss2json's item shape has no athlete tag).
+  // Scanning the free-text title/description for a candidate player name
+  // would be exactly the "loose/fuzzy" inference this phase must avoid, so
+  // RSS articles always resolve UNMATCHED here -- explicit, not silent.
+  const identity = newsPlayerIdentity.resolvePlayerForArticle({ sport, espnAthleteId: null, espnAthleteName: null, rawName: null, team: null });
   const base = {
     source: sourceName, sourceArticleId, title, summary, url, imageUrl: image,
     publishedAt, rawPublishedAt: strOf(item.pubDate) || null, updatedAt: null,
-    sport, league: null, team: null, playerName: null,
+    sport, league: null, team: null,
+    playerName: identity.playerName, playerId: identity.playerId,
+    playerIdSource: identity.playerIdSource, playerMatchMethod: identity.playerMatchMethod,
     category: classifyNewsKind(title, summary)
   };
   return { ...base, dedupeKey: buildDedupeKey(base) };
