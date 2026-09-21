@@ -9006,6 +9006,103 @@
                 const source = player.sport === 'mlb' ? 'mlb' : 'espn';
                 return playerNewsIndex.get(`${player.sport}:${source}:${player.id}`) || [];
             };
+
+            // ── Phase 2E: player news timeline / context panel ─────────────────
+            // Pure, non-React helpers -- take the already-built newsForPlayer()
+            // list (newest-first, Phase 2A/2B identity + Phase 2C/2D signals
+            // already attached) and derive a compact "what's happening with
+            // this player" summary. No new player matching, no re-reading
+            // article text, no second fetch -- purely a read of data that
+            // already exists on each article (Step 1/2/15).
+            const IMPACT_TO_BUCKET = {
+                AVAILABILITY_UP: 'Availability', AVAILABILITY_DOWN: 'Availability',
+                STARTING_UP: 'Starting status', STARTING_DOWN: 'Starting status',
+                ROLE_UP: 'Role', ROLE_DOWN: 'Role',
+                MINUTES_UP: 'Minutes', MINUTES_DOWN: 'Minutes',
+                OPPORTUNITY_UP: 'Opportunity', OPPORTUNITY_DOWN: 'Opportunity',
+                TRANSACTION: 'Transaction', RETURN: 'Return',
+                GAME_CONTEXT: 'Game context', WEATHER_CONTEXT: 'Weather'
+                // NO_DIRECT_IMPACT is deliberately absent -- never shown (Step 7).
+            };
+            // Fixed display order matching Step 7's own listed category order.
+            const NEWS_CONTEXT_BUCKET_ORDER = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity', 'Transaction', 'Return', 'Game context', 'Weather'];
+            // Short, human-friendly words for the NEWS CONTEXT summary line
+            // (Step 4's own example shows "Out"/"Increased"/"Restricted", not
+            // raw enum strings). Derived from Phase 2C/2D's own real status
+            // vocabulary (confirmed by reading lib/newsClassifier.js/
+            // lib/newsImpact.js this phase) -- never invented wording that
+            // implies something the source didn't say.
+            const NEWS_STATUS_LABELS = {
+                OUT: 'Out', DOUBTFUL: 'Doubtful', QUESTIONABLE: 'Questionable', PROBABLE: 'Probable', AVAILABLE: 'Available', LIMITED: 'Limited',
+                STARTING: 'Starting', NOT_STARTING: 'Not starting',
+                INCREASED_ROLE: 'Increased', REDUCED_ROLE: 'Reduced',
+                RESTRICTED: 'Restricted', INCREASED: 'Increased',
+                INJURED: 'Injury reported', RETURNING: 'Returning',
+                TRADE: 'Trade', SIGNED: 'Signed',
+                PLACED_ON_IL: 'Placed on IL', PLACED_ON_IR: 'Placed on IR', RETURNED_FROM_LIST: 'Returned from list',
+                ACTIVATED: 'Activated', CALLED_UP: 'Called up', OPTIONED: 'Optioned', DESIGNATED: 'Designated for assignment',
+                WAIVED: 'Waived', RELEASED: 'Released',
+                INCREASED_OPPORTUNITY: 'Increased', REDUCED_OPPORTUNITY: 'Reduced',
+                ROTATION_MOVED_UP: 'Moved up', ROTATION_MOVED_DOWN: 'Moved down', ROTATION_CHANGE: 'Rotation change',
+                POSTPONED_OR_SUSPENDED: 'Postponed / suspended', WEATHER_IMPACT: 'Weather impact'
+            };
+            const newsImpactEmoji = (direction, strength) =>
+                direction === 'UP' ? '🟢' : direction === 'DOWN' ? (strength === 'HIGH' ? '🔴' : '🟡') : '⚪';
+
+            // buildPlayerNewsContext(newsList) -- newsList must already be the
+            // player's own newest-first linked articles (from newsForPlayer()).
+            // Returns:
+            //   categories: [{bucket, emoji, statusLabel, sourceStatus,
+            //                 ageLabel, publishedAt, freshness}, ...] -- the
+            //     NEWEST signal per bucket across ALL linked articles (Step 8:
+            //     "the newest relevant signal", not age-limited) in a fixed
+            //     display order; a bucket with no signal is simply absent
+            //     (Step 7 -- never an empty/invented row).
+            //   conflict: true only when a genuinely RECENT (freshness !==
+            //     'OLDER', i.e. Phase 2D's own <48h bucket -- no new decay
+            //     math) UP-direction signal and DOWN-direction signal both
+            //     exist (Step 6's own example: STARTING then QUESTIONABLE).
+            //     Never resolves which is "correct" -- just flags it.
+            //   articleCount / lastUpdateAgeLabel: for the "Recent news: N
+            //     articles · Last update X ago" line (Step 4).
+            const buildPlayerNewsContext = (newsList) => {
+                const list = Array.isArray(newsList) ? newsList : [];
+                const byBucket = new Map(); // bucket -> {signal, ts, ageLabel}
+                let hasRecentUp = false, hasRecentDown = false;
+                list.forEach(n => {
+                    (Array.isArray(n.impactSignals) ? n.impactSignals : []).forEach(s => {
+                        const bucket = IMPACT_TO_BUCKET[s.impact];
+                        if (!bucket) return; // NO_DIRECT_IMPACT / unrecognized -- never shown
+                        const ts = Date.parse(s.publishedAt || n.published) || 0;
+                        const cur = byBucket.get(bucket);
+                        if (!cur || ts > cur.ts) byBucket.set(bucket, { signal: s, ts, ageLabel: n.ageLabel });
+                        if (s.freshness && s.freshness !== 'OLDER') {
+                            if (s.direction === 'UP') hasRecentUp = true;
+                            if (s.direction === 'DOWN') hasRecentDown = true;
+                        }
+                    });
+                });
+                const categories = NEWS_CONTEXT_BUCKET_ORDER
+                    .filter(b => byBucket.has(b))
+                    .map(bucket => {
+                        const { signal, ageLabel } = byBucket.get(bucket);
+                        return {
+                            bucket,
+                            emoji: newsImpactEmoji(signal.direction, signal.strength),
+                            statusLabel: NEWS_STATUS_LABELS[signal.sourceStatus] || (signal.sourceStatus ? signal.sourceStatus.replace(/_/g, ' ') : bucket),
+                            sourceStatus: signal.sourceStatus,
+                            ageLabel,
+                            publishedAt: signal.publishedAt,
+                            freshness: signal.freshness
+                        };
+                    });
+                return {
+                    categories,
+                    conflict: hasRecentUp && hasRecentDown,
+                    articleCount: list.length,
+                    lastUpdateAgeLabel: list.length ? list[0].ageLabel : null
+                };
+            };
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             // Actual last successful data refresh (ms epoch) — drives the "Live
@@ -18511,6 +18608,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 // indices around. Tracking by index would silently swap the
                 // displayed prop for a different one mid-view.
                 const [selectedPropId, setSelectedPropId] = useState(null);
+                // Phase 2E -- local, per-card "View more" toggle for the news
+                // timeline (Step 2). Deliberately separate from detailModal
+                // (that's the prop-research popup, a different concept) --
+                // this is a small in-place expand, not a redesign.
+                const [newsExpanded, setNewsExpanded] = useState(false);
 
                 const getHitRateClass = (rate) => {
                     if (rate >= 80) return 'high';
@@ -18834,28 +18936,62 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </React.Fragment>
                         )}
 
-                        {/* Phase 2B — player-card news. Reuses NewsView's own
-                            CSS classes (news-item/news-source-tag/news-age/
-                            news-headline/news-desc/news-read) for visual
-                            consistency rather than inventing new styles.
-                            Sourced ONLY from playerNewsIndex (Phase 2A
-                            canonical playerId/playerIdSource -- never a
-                            name/team re-match here). Capped at the latest 3;
-                            no "View all" -- the card has no existing
-                            expansion hook for a longer list without a larger
-                            modal change than this phase calls for, so this
-                            is documented as a known limitation rather than
-                            built. No injury/role/impact interpretation of
-                            any kind -- exactly the verified source fields,
-                            nothing inferred. */}
+                        {/* Phase 2E — player news timeline + context panel.
+                            Supersedes Phase 2B/2C/2D's flat 3-item list with:
+                            a NEWS CONTEXT summary (Step 4, newest signal per
+                            category, from buildPlayerNewsContext), a
+                            newest-first timeline (5 initially, "View more" up
+                            to 10 -- Step 2, "do not create a giant page"),
+                            and an honest empty state (Step 11) that stays a
+                            single muted line rather than a bordered section,
+                            so a player with no linked news doesn't add visual
+                            weight to the Browse grid (Step 10's "do not
+                            overwhelm the prop research"). Sourced ONLY from
+                            newsForPlayer() -- same Phase 2A/2B canonical
+                            identity join as every prior phase, no second
+                            matcher, no re-fetch. */}
                         {(() => {
-                            const news = newsForPlayer(player).slice(0, 3);
-                            if (!news.length) return null;
+                            const allNews = newsForPlayer(player);
+                            if (!allNews.length) {
+                                return (
+                                    <div style={{ marginTop: '0.5rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                        No recent player-linked news.
+                                    </div>
+                                );
+                            }
+                            const ctx = buildPlayerNewsContext(allNews);
+                            const INITIAL_NEWS_LIMIT = 5, EXPANDED_NEWS_LIMIT = 10;
+                            const displayNews = allNews.slice(0, newsExpanded ? EXPANDED_NEWS_LIMIT : INITIAL_NEWS_LIMIT);
+                            const moreCount = Math.min(allNews.length, EXPANDED_NEWS_LIMIT) - INITIAL_NEWS_LIMIT;
                             return (
                                 <div className="player-news-section" style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
                                     <div className="news-section-title" style={{ fontSize: '0.78rem', marginBottom: '0.4rem' }}>📰 News</div>
+
+                                    {/* NEWS CONTEXT summary (Step 4) -- derived ONLY from
+                                        existing Phase 2C/2D signals, never invented. */}
+                                    {ctx.categories.length > 0 && (
+                                        <div className="news-context-summary" style={{ fontSize: '0.72rem', marginBottom: '0.6rem' }}>
+                                            <div style={{ fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.3rem' }}>NEWS CONTEXT</div>
+                                            {ctx.categories.map((c, ci) => (
+                                                <div key={ci} style={{ marginBottom: '0.15rem' }} title={c.ageLabel ? `As of ${c.ageLabel}` : undefined}>
+                                                    {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>
+                                                </div>
+                                            ))}
+                                            {ctx.conflict && (
+                                                <div style={{ color: 'var(--accent-amber, #d9a441)', marginTop: '0.3rem' }} title="Recent reports about this player disagree -- BeatsEdge does not decide which is correct; check timestamps below">
+                                                    ⚠️ Conflicting recent news
+                                                </div>
+                                            )}
+                                            <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                                                Recent news: {ctx.articleCount} article{ctx.articleCount === 1 ? '' : 's'}{ctx.lastUpdateAgeLabel ? ` · Last update ${ctx.lastUpdateAgeLabel}` : ''}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Recent article timeline -- newest first (Step 16: by
+                                        publishedAt only, never reordered by impact strength). */}
                                     <div className="news-wire">
-                                        {news.map((n, i) => (
+                                        {displayNews.map((n, i) => (
                                             <div key={n.articleId || i} className="news-item">
                                                 <div className="news-item-head">
                                                     {n.source && <span className="news-source-tag">{n.source}</span>}
@@ -18864,17 +19000,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 </div>
                                                 <div className="news-headline">{n.headline}</div>
                                                 {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
-                                                {/* Phase 2D -- compact research-impact badge(s), superseding
-                                                    Phase 2C's raw classification tag (same underlying fact,
-                                                    shown once, not twice). Informational only -- never
-                                                    "BET THIS"/FADE/OVER/UNDER/BOOST/LOCK/SMASH. NO_DIRECT_IMPACT
-                                                    (GENERAL_NEWS/RECAP/etc.) is deliberately never shown as a
-                                                    badge. Emoji encodes direction+strength only: green=UP,
-                                                    red=confident DOWN, yellow=cautious/uncertain DOWN,
-                                                    white=neutral context (transaction/game/weather) -- never a
-                                                    bet-quality signal. Label prefers the actual source-reported
-                                                    status (e.g. "QUESTIONABLE", "STARTING") since that's the
-                                                    most concrete, recognizable, verbatim-grounded term. */}
+                                                {/* Compact research-impact badge(s) -- informational only,
+                                                    never "BET THIS"/FADE/OVER/UNDER/BOOST/LOCK/SMASH.
+                                                    NO_DIRECT_IMPACT is never shown as a badge. Each article's
+                                                    own Phase 2D dedup already prevents duplicate badges for
+                                                    identical classifications within one article (Step 17) --
+                                                    nothing extra needed here. */}
                                                 {Array.isArray(n.impactSignals) && n.impactSignals
                                                     .filter(s => s.impact !== 'NO_DIRECT_IMPACT')
                                                     .slice(0, 2)
@@ -18892,6 +19023,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             </div>
                                         ))}
                                     </div>
+
+                                    {allNews.length > INITIAL_NEWS_LIMIT && (
+                                        <button
+                                            type="button"
+                                            className="news-view-more"
+                                            onClick={(e) => { e.stopPropagation(); setNewsExpanded(v => !v); }}
+                                            style={{ background: 'none', border: 'none', color: 'var(--accent-blue, #4a9eff)', fontSize: '0.7rem', cursor: 'pointer', padding: '0.2rem 0', marginTop: '0.2rem' }}
+                                        >
+                                            {newsExpanded ? 'Show less' : `View more${moreCount > 0 ? ` (${moreCount} more)` : ''}`}
+                                        </button>
+                                    )}
                                 </div>
                             );
                         })()}
