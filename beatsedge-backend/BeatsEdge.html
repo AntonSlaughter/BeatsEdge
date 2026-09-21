@@ -10226,7 +10226,11 @@
                             // re-matched here -- the backend resolver is the
                             // only source of truth for these).
                             playerId: a.playerId, playerIdSource: a.playerIdSource,
-                            playerMatchMethod: a.playerMatchMethod, isNew: a.isNew
+                            playerMatchMethod: a.playerMatchMethod, isNew: a.isNew,
+                            // Phase 2C -- source-grounded classifications,
+                            // carried through unchanged (backend is the only
+                            // source of truth; never recomputed here).
+                            classifications: Array.isArray(a.classifications) ? a.classifications : []
                         }))
                         .filter(n => n.headline);
                     setMultiSportNews(results);
@@ -18840,6 +18844,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 </div>
                                                 <div className="news-headline">{n.headline}</div>
                                                 {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
+                                                {/* Phase 2C -- small, non-betting informational label(s) for
+                                                    what the SOURCE reported (never what we think will happen).
+                                                    GENERAL_NEWS is the "nothing specific to say" fallback and
+                                                    is deliberately never shown as a tag. No color-coding, no
+                                                    OVER/UNDER/BOOST/FADE language -- category + status + a
+                                                    short verbatim evidence quote only. */}
+                                                {Array.isArray(n.classifications) && n.classifications
+                                                    .filter(c => c.category !== 'GENERAL_NEWS')
+                                                    .slice(0, 2)
+                                                    .map((c, ci) => (
+                                                        <div key={ci} className="news-classification-tag" style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.3 }}>
+                                                            <strong>{c.category.replace(/_/g, ' ')}</strong>{c.status ? ` · ${c.status.replace(/_/g, ' ')}` : ''}{c.evidence ? ` — "${c.evidence}"` : ''}
+                                                        </div>
+                                                    ))}
                                                 {n.url && (
                                                     <a className="news-read" href={n.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
                                                         Read on {n.source || 'source'} →

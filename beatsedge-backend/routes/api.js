@@ -22,6 +22,7 @@ const { buildAvailabilityRoleSignal } = require('../lib/playerAvailabilitySignal
 const { computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool: nflBacktestPool } = require('../lib/nflMatchupSignal');
 const newsDb = require('../lib/newsDb');
 const newsIngest = require('../lib/newsIngest');
+const newsClassifier = require('../lib/newsClassifier');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -931,6 +932,13 @@ router.get('/news', async (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: 'news storage read failed: ' + e.message });
   }
+  // Phase 2C — source-grounded classification, computed at read time (see
+  // lib/newsClassifier.js's header for why: cheap, deterministic, and a
+  // rule change applies retroactively with no migration/backfill). Purely
+  // additive: every existing field on `articles[i]` is untouched, this
+  // only attaches a new `classifications` array. An article with no
+  // resolved playerId always gets classifications: [] (Step 11).
+  articles = articles.map(a => ({ ...a, ...newsClassifier.classifyArticle(a) }));
   // Distinguish genuinely-empty from source-failed rather than always
   // saying "ok" — a real, currently-quiet news day looks identical to a
   // dead source unless this pass's own ingest reports are consulted.
