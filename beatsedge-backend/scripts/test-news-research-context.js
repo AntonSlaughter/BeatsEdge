@@ -128,7 +128,9 @@ function buildPlayerResearchContext(newsList) {
         directionLabel: s.direction === 'UP' ? 'Up' : s.direction === 'DOWN' ? 'Down' : (NEWS_STATUS_LABELS[s.sourceStatus] || bucket),
         statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
         sourceStatus: s.sourceStatus, evidence: s.evidence, source: n.source, ageLabel: n.ageLabel,
-        publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId
+        publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId,
+        // impact/strength added in Phase 2G (additive; see scripts/test-news-prop-context.js)
+        impact: s.impact, strength: s.strength
       });
     });
   });

@@ -9177,7 +9177,13 @@
                             directionLabel: s.direction === 'UP' ? 'Up' : s.direction === 'DOWN' ? 'Down' : (NEWS_STATUS_LABELS[s.sourceStatus] || bucket),
                             statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
                             sourceStatus: s.sourceStatus, evidence: s.evidence, source: n.source, ageLabel: n.ageLabel,
-                            publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId
+                            publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId,
+                            // impact/strength added in Phase 2G -- a strict
+                            // additive superset (every existing field/test from
+                            // Phase 2F is untouched) so buildPropNewsContext()
+                            // below can retain them per its own Step 17 shape
+                            // without a second pass over impactSignals.
+                            impact: s.impact, strength: s.strength
                         });
                     });
                 });
@@ -9204,6 +9210,70 @@
                     conflicts,
                     counts: { totalArticles: list.length, linkedArticles: list.length, recentChanges: recentChanges.length, changesLast24h },
                     lastUpdateAgeLabel: base.lastUpdateAgeLabel
+                };
+            };
+
+            // ── Phase 2G: news + prop research cross-check ──────────────────
+            // Connects the existing Research Context (Phase 2F) to individual
+            // props WITHOUT touching the prediction engine anywhere -- this is
+            // a pure UI relevance filter, not a probability input. No new
+            // fetch, no new player matcher: it only re-filters
+            // buildPlayerResearchContext()'s already-computed `recentChanges`
+            // by the prop's own stat family (Step 2/16).
+            //
+            // Step 4/5: not every category is relevant to every stat. Per the
+            // phase spec's own explicit examples, POINTS/REBOUNDS/ASSISTS/3PM/
+            // PRA/TURNOVERS-style counting stats are relevant to Availability/
+            // Starting status/Role/Minutes/Opportunity; STEALS/BLOCKS-style
+            // stats are relevant to the same list MINUS Opportunity (the
+            // spec's own stated exception). TRANSACTION/ROSTER/RETURN/
+            // GAME_CONTEXT/WEATHER are deliberately never in either list --
+            // Step 5 explicitly warns a transaction article "should not
+            // automatically appear as relevant to every stat," and the spec
+            // never lists those five categories as relevant to any stat
+            // family, so they stay visible only in the player-level Research
+            // Context (PlayerCard), never surfaced as prop-relevant.
+            //
+            // This applies identically across every sport (Step 13) --
+            // matching is purely by bucket name (already sport-agnostic
+            // research-category text), never by stat-family text that would
+            // need per-sport enumeration. A steals/blocks-style prop is
+            // detected by its own statKey/type text, which stays reliable
+            // across NBA/WNBA without needing an exhaustive per-sport table.
+            const PROP_RELEVANT_CATEGORIES_DEFAULT = ['Availability', 'Starting status', 'Role', 'Minutes', 'Opportunity'];
+            const PROP_RELEVANT_CATEGORIES_NO_OPPORTUNITY = ['Availability', 'Starting status', 'Role', 'Minutes'];
+            const relevantCategoriesForProp = (prop) => {
+                const text = `${(prop && prop.statKey) || ''} ${(prop && prop.type) || ''}`.toLowerCase();
+                return /\bsteal|\bblock/.test(text) ? PROP_RELEVANT_CATEGORIES_NO_OPPORTUNITY : PROP_RELEVANT_CATEGORIES_DEFAULT;
+            };
+
+            // buildPropNewsContext(prop, player, researchContext) -- pure
+            // function, returns structured data only (Step 17), never HTML.
+            // `researchContext` is buildPlayerResearchContext(newsForPlayer(player))'s
+            // own output -- computed ONCE per player (Step 16), never
+            // per-prop, never a new fetch. This function is just an in-memory
+            // filter over its already-built `recentChanges` array.
+            const buildPropNewsContext = (prop, player, researchContext) => {
+                const relevantBuckets = new Set(relevantCategoriesForProp(prop));
+                const relevantSignals = ((researchContext && researchContext.recentChanges) || [])
+                    .filter(c => relevantBuckets.has(c.bucket))
+                    .map(c => ({
+                        category: c.bucket, impact: c.impact, direction: c.direction, strength: c.strength,
+                        statusLabel: c.statusLabel, freshness: c.freshness, source: c.source, ageLabel: c.ageLabel,
+                        publishedAt: c.publishedAt, articleId: c.articleId, url: c.url
+                    }));
+                // Conflict is scoped to THIS prop's relevant signals only --
+                // not the player's whole-context conflict flag, which could
+                // be driven by an irrelevant category (Step 5's own warning
+                // applies here too: an unrelated category's conflict must
+                // never bleed into a prop it has nothing to do with).
+                const recentUp = relevantSignals.some(s => s.freshness && s.freshness !== 'OLDER' && s.direction === 'UP');
+                const recentDown = relevantSignals.some(s => s.freshness && s.freshness !== 'OLDER' && s.direction === 'DOWN');
+                return {
+                    hasNews: relevantSignals.length > 0,
+                    relevantSignals,
+                    recentCount: relevantSignals.length,
+                    conflict: recentUp && recentDown
                 };
             };
 
@@ -18771,6 +18841,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     if (player.sport === 'wnba' && !player._detailLoaded) fetchWnbaPlayerDetail(player);
                 }, [activeInModal, detailModal && detailModal.propId, detailModal && detailModal.propIdx]);
 
+                // Phase 2G -- computed ONCE per card render (not per prop),
+                // reused by every prop pill below AND the Details modal.
+                // Zero new fetches: newsForPlayer/buildPlayerResearchContext
+                // are the exact same Phase 2B/2F functions every other News
+                // Intelligence phase already uses (Step 2/16).
+                const playerNewsForCard = newsForPlayer(player);
+                const playerResearch = playerNewsForCard.length ? buildPlayerResearchContext(playerNewsForCard) : null;
+
                 const cardProps = Array.isArray(player.props) ? player.props : [];
                 // With a stat-category chip active, deep-links open the first
                 // prop of that category rather than prop 0.
@@ -18961,6 +19039,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             // for it to read. null here, not a fabricated result.
                                             const edge = prop.modelSupported === false ? null : calculateEdgeScore(player, prop);
                                             const isActive = activeInModal && (prop.id != null ? detailModal.propId === prop.id : detailModal.propIdx === idx);
+                                            // Phase 2G -- pure UI relevance filter over the already-computed
+                                            // playerResearch (Step 16: in-memory only, zero new requests).
+                                            // Applies identically whether `edge` is null (provider-only market,
+                                            // Step 11) or a real model result -- this is display plumbing, never
+                                            // a model input either way.
+                                            const propNews = playerResearch ? buildPropNewsContext(prop, player, playerResearch) : null;
                                             return (
                                             <div
                                                 key={prop.id || idx}
@@ -19033,6 +19117,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         Model not supported yet
                                                     </div>
                                                 )}
+                                                {/* Phase 2G -- compact news research cross-check (Step 3/10:
+                                                    a small indicator here, NOT the full timeline -- that stays
+                                                    on the card below). Shown for provider-only props too
+                                                    (Step 11) since it carries no probability/grade/edge/Prime
+                                                    of any kind, model-supported or not. Never rendered when
+                                                    the player has no verified linked news, or when none of
+                                                    that news is relevant to THIS prop's stat family. */}
+                                                {propNews && propNews.hasNews && (
+                                                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}
+                                                        title={`${propNews.recentCount} relevant research signal${propNews.recentCount === 1 ? '' : 's'} for this stat -- see Details for the full breakdown`}>
+                                                        📰 {propNews.recentCount} relevant signal{propNews.recentCount === 1 ? '' : 's'}
+                                                        {propNews.conflict && ' ⚠️'}
+                                                    </div>
+                                                )}
                                             </div>
                                             );
                                         })}
@@ -19058,7 +19156,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             identity join as every prior phase, no second
                             matcher, no re-fetch. */}
                         {(() => {
-                            const allNews = newsForPlayer(player);
+                            const allNews = playerNewsForCard; // Phase 2G: reuse the card-level compute, not a second call
                             if (!allNews.length) {
                                 return (
                                     <div style={{ marginTop: '0.5rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
@@ -19066,7 +19164,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     </div>
                                 );
                             }
-                            const research = buildPlayerResearchContext(allNews);
+                            const research = playerResearch;
                             const INITIAL_NEWS_LIMIT = 5, EXPANDED_NEWS_LIMIT = 10;
                             const displayNews = allNews.slice(0, newsExpanded ? EXPANDED_NEWS_LIMIT : INITIAL_NEWS_LIMIT);
                             const moreCount = Math.min(allNews.length, EXPANDED_NEWS_LIMIT) - INITIAL_NEWS_LIMIT;
@@ -19181,6 +19279,42 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         ))} at {player.position} — so {player.name.split(' ').slice(-1)[0]} projects for extra {VOLUME_WORD[player.sport] || 'run'}. Recent-form / volume numbers below may run light of tonight.
                                     </div>
                                 )}
+                                {/* Phase 2G — NEWS RESEARCH CONTEXT (Step 9). Compact, for the
+                                    CURRENTLY-VIEWED prop (cardProp, the same resolved prop the
+                                    pill grid above and the matchup analysis below both use) --
+                                    not a second copy of the full player timeline (that stays on
+                                    the card, Step 10). Shown identically for provider-only props
+                                    (Step 11) since it carries no probability/grade/edge/Prime.
+                                    Never a betting recommendation -- source/publishedAt/URL only,
+                                    descriptive language (Step 6/18). */}
+                                {cardProp && playerResearch && (() => {
+                                    const propNews = buildPropNewsContext(cardProp, player, playerResearch);
+                                    if (!propNews.hasNews) return null;
+                                    return (
+                                        <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+                                            <div style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                                                📰 NEWS RESEARCH CONTEXT
+                                                {propNews.conflict && <span style={{ color: 'var(--accent-amber, #d9a441)', marginLeft: '0.5rem', fontWeight: 400 }}>⚠️ Conflicting recent news</span>}
+                                            </div>
+                                            {propNews.relevantSignals.map((s, si) => (
+                                                <div key={si} style={{ marginBottom: '0.3rem' }}>
+                                                    •{' '}
+                                                    {s.url ? (
+                                                        <a href={s.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'underline' }}>
+                                                            {s.category} — {s.statusLabel}
+                                                        </a>
+                                                    ) : (
+                                                        <span>{s.category} — {s.statusLabel}</span>
+                                                    )}
+                                                    {s.strength ? ` — ${s.strength}` : ''}{s.source ? ` — ${s.source}` : ''}{s.ageLabel ? ` — ${s.ageLabel}` : ''}
+                                                </div>
+                                            ))}
+                                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                                                Relevant research context for {cardProp.type} — not a prediction. Decide for yourself how this affects your research.
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                                 {player.props && player.props.length > 0 && (() => {
                                     // Reuse the SAME id-resolved prop the summary card above is
                                     // showing — never a separately-recomputed index into
