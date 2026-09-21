@@ -20,6 +20,8 @@ const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvi
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
 const { buildAvailabilityRoleSignal } = require('../lib/playerAvailabilitySignal');
 const { computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool: nflBacktestPool } = require('../lib/nflMatchupSignal');
+const newsDb = require('../lib/newsDb');
+const newsIngest = require('../lib/newsIngest');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
@@ -880,6 +882,63 @@ router.get('/snapshots', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── News (Phase 1 — feed foundation only) ──────────────────────────────
+// GET /api/news?sport=nba&limit=50
+//
+// Lazily refreshes from the real sources (ESPN + verified RSS outlets, see
+// lib/newsIngest.js) at most once per NEWS_STALE_MS per sport, then serves
+// from lib/newsDb.js's SQLite cache. This is a per-request freshness check,
+// NOT a standing interval/cron — nothing polls in the background, and
+// nothing here runs on every request once a sport is fresh, so it can't
+// interfere with the existing sports-data ingestion pipelines. In-flight
+// requests for the same sport share one ingest instead of firing twice.
+const NEWS_STALE_MS = 5 * 60 * 1000;
+const _newsIngestState = {}; // sport -> { lastAttempt, inFlight }
+
+async function ensureNewsFresh(sport) {
+  const sportsToCheck = sport ? [sport] : Object.keys(newsIngest.ESPN_NEWS_SPORT_PATHS);
+  const now = Date.now();
+  const reports = [];
+  for (const s of sportsToCheck) {
+    const st = _newsIngestState[s] || (_newsIngestState[s] = {});
+    if (st.inFlight) { reports.push(await st.inFlight); continue; }
+    if (st.lastAttempt && (now - st.lastAttempt) < NEWS_STALE_MS) continue; // already fresh, skip re-fetching
+    st.lastAttempt = now;
+    st.inFlight = newsIngest.ingestSport(s)
+      .catch(e => ({ sport: s, error: e.message }))
+      .finally(() => { st.inFlight = null; });
+    reports.push(await st.inFlight);
+  }
+  return reports;
+}
+
+router.get('/news', async (req, res) => {
+  const sport = req.query.sport ? String(req.query.sport).toLowerCase() : null;
+  if (sport && !newsIngest.ESPN_NEWS_SPORT_PATHS[sport]) {
+    return res.status(400).json({ error: `unsupported sport "${sport}"`, supportedSports: Object.keys(newsIngest.ESPN_NEWS_SPORT_PATHS) });
+  }
+  let ingestReports = [];
+  try {
+    ingestReports = await ensureNewsFresh(sport);
+  } catch (e) {
+    ingestReports = [{ error: e.message }];
+  }
+  let articles;
+  try {
+    articles = newsDb.getArticles({ sport, limit: req.query.limit });
+  } catch (e) {
+    return res.status(500).json({ error: 'news storage read failed: ' + e.message });
+  }
+  // Distinguish genuinely-empty from source-failed rather than always
+  // saying "ok" — a real, currently-quiet news day looks identical to a
+  // dead source unless this pass's own ingest reports are consulted.
+  const thisPassFailed = ingestReports.length > 0 && ingestReports.every(r =>
+    r && (r.error || (Array.isArray(r.sourceReports) && r.sourceReports.every(sr => !sr.ok)))
+  );
+  const status = articles.length ? 'ok' : (thisPassFailed ? 'source_unavailable' : 'empty');
+  res.json({ status, sport: sport || 'all', count: articles.length, articles, ingest: ingestReports });
 });
 
 module.exports = router;

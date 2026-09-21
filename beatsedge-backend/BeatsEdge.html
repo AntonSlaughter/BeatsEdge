@@ -9104,27 +9104,14 @@
                 ncaaf: 'football/college-football'
             };
 
-            // Additional real outlet RSS feeds for the News page, layered on
-            // top of the ESPN site-API feed (unchanged, still the primary
-            // source for every sport). Fetched through the same public
-            // rss2json.com proxy the app already leans on for CORS bypass
-            // (fetchJSONWithFallback uses an equivalent allorigins.win proxy).
-            // Every entry here was live-verified this session to return real,
-            // current articles before being added -- WNBA has no verified
-            // outlet feed yet, so it intentionally has none (ESPN only,
-            // rather than guessing a URL that was never confirmed to work).
-            // rss2json's free/anonymous tier is rate-limited; a failed fetch
-            // here just means fewer sources for that refresh, never a
-            // fabricated article (see fetchMultiSportNews's per-source
-            // try/catch).
-            const NEWS_RSS_SOURCES = {
-                nba: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nba/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nba/' }],
-                nfl: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nfl/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nfl/' }],
-                mlb: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/mlb/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/mlb/' }],
-                nhl: [{ name: 'Yahoo Sports', url: 'https://sports.yahoo.com/nhl/rss.xml' }, { name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/nhl/' }],
-                ncaaf: [{ name: 'CBS Sports', url: 'https://www.cbssports.com/rss/headlines/college-football/' }],
-                wnba: []
-            };
+            // News Intelligence Phase 1: the multi-sport News page's RSS
+            // source list now lives server-side (lib/newsIngest.js's
+            // NEWS_RSS_SOURCES, the exact same verified list that used to be
+            // here) since fetchMultiSportNews reads the backend's normalized
+            // /api/news feed instead of fetching ESPN/RSS directly from the
+            // browser. slateNews (fetchLiveInjuries, below) still fetches
+            // ESPN directly for the CURRENTLY SELECTED sport only and is
+            // unaffected by this change.
 
             // Only books our data sources (ParlayAPI) actually carry prop
             // lines for. ParlayPlay / Betr / Pick6 return nothing from the
@@ -10142,101 +10129,50 @@
                 }
             };
 
-            // A single RSS feed via the rss2json.com proxy (JSON in, JSON out --
-            // no XML parsing needed client-side). Throws on failure; callers
-            // catch per-source so one dead/rate-limited feed never blocks the
-            // others or the page.
-            const fetchRssViaProxy = async (url) => {
-                const proxied = 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(url);
-                const res = await fetch(proxied);
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const data = await res.json();
-                if (data.status !== 'ok' || !Array.isArray(data.items)) throw new Error('rss2json status: ' + (data.status || 'unknown'));
-                return data.items;
-            };
-            // rss2json returns titles/descriptions HTML-entity-encoded (e.g.
-            // "&#39;" for an apostrophe) -- decode via a detached textarea
-            // (never inserted into the DOM/rendered, so this can't execute
-            // anything) so React doesn't then re-escape the raw entity text
-            // and double-encode it on screen.
-            const decodeHtmlEntities = (s) => {
-                if (!s) return '';
-                const ta = document.createElement('textarea');
-                // Some outlet feeds (observed live: Yahoo Sports) double-encode
-                // entities at the source ("&amp;#39;" for an apostrophe) --
-                // decode twice; a second pass on already-plain text is a no-op,
-                // so this is safe for correctly-encoded feeds too.
-                ta.innerHTML = s;
-                const once = ta.value;
-                ta.innerHTML = once;
-                return ta.value;
-            };
-            const stripHtml = (s) => decodeHtmlEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-            const normalizeRssItem = (item, sport, sourceName) => {
-                const headline = decodeHtmlEntities(strOf(item.title));
-                const description = stripHtml(item.description).slice(0, 400);
-                if (!headline || NEWS_PROMO_RE.test(`${headline} ${description}`)) return null; // not real sports news
-                const url = strOf(item.link);
-                const ts = strOf(item.pubDate);
-                return {
-                    headline, description,
-                    published: ts, ageLabel: agoLabel(ts),
-                    url, athlete: null, teams: [],
-                    kind: classifyNewsKind(headline, description),
-                    sport, source: sourceName,
-                    image: strOf(item.thumbnail) || null,
-                    articleId: `${sourceName}:${url || headline}`
-                };
-            };
-
-            // Multi-sport, multi-source News page fetch. Covers every
-            // BeatsEdge-supported sport (not just selectedSport) via ESPN's
-            // real site-API news endpoint plus, where a real outlet feed has
-            // been verified to work (NEWS_RSS_SOURCES), 1-2 additional real
-            // outlets. Runs ONCE per session (multiSportNewsLoadedRef) when
-            // the News tab is first opened -- not on app load, not polled --
-            // per-source failures are caught individually and simply mean
-            // fewer articles that refresh, never a fabricated one.
+            // Multi-sport, multi-source News page fetch. News Intelligence
+            // Phase 1: this now reads from the backend's own normalized,
+            // deduped, cached feed (GET /api/news) instead of calling ESPN/
+            // RSS directly from the browser -- the backend does the ESPN +
+            // verified-outlet-RSS fetching, normalization, dedup and SQLite
+            // caching once for every visitor (see lib/newsIngest.js /
+            // lib/newsDb.js), lazily refreshed server-side at most every 5
+            // minutes per sport. The article shape returned here is mapped
+            // back onto the EXACT same local object shape this function
+            // always produced (headline/description/published/kind/etc.) so
+            // NewsView/NewsItem below are completely unchanged -- only the
+            // data source moved. Runs ONCE per session (multiSportNewsLoadedRef)
+            // when the News tab is first opened, same as before.
             const fetchMultiSportNews = async () => {
                 if (multiSportNewsLoadedRef.current) return;
                 multiSportNewsLoadedRef.current = true;
                 setMultiSportNewsStatus('loading');
-                const seen = new Set();
-                const results = [];
-                const add = (article) => {
-                    if (!article || !article.headline || seen.has(article.articleId)) return;
-                    seen.add(article.articleId);
-                    results.push(article);
-                };
-                await Promise.all(sports.map(async (sport) => {
-                    const espnPath = ESPN_SPORT_PATHS[sport];
-                    if (espnPath) {
-                        try {
-                            const data = await fetchJSONWithFallback(`https://site.api.espn.com/apis/site/v2/sports/${espnPath}/news?limit=50`);
-                            ((data && data.articles) || []).forEach(a => {
-                                const headline = strOf(a.headline);
-                                if (!headline) return;
-                                const description = strOf(a.description);
-                                const url = strOf(a.links && a.links.web && a.links.web.href);
-                                const ts = strOf(a.published || a.lastModified);
-                                add({
-                                    headline, description, published: ts, ageLabel: agoLabel(ts), url,
-                                    athlete: null, teams: [], kind: classifyNewsKind(headline, description),
-                                    sport, source: 'ESPN', articleId: `ESPN:${url || headline}`
-                                });
-                            });
-                        } catch (e) { console.warn(`[News] ESPN fetch failed for ${sport}:`, e.message); }
-                    }
-                    await Promise.all((NEWS_RSS_SOURCES[sport] || []).map(async (src) => {
-                        try {
-                            const items = await fetchRssViaProxy(src.url);
-                            items.forEach(item => add(normalizeRssItem(item, sport, src.name)));
-                        } catch (e) { console.warn(`[News] ${src.name} fetch failed for ${sport}:`, e.message); }
-                    }));
-                }));
-                results.sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
-                setMultiSportNews(results);
-                setMultiSportNewsStatus('loaded');
+                if (!backendUrl) {
+                    console.warn('[News] No backend URL configured in Data Sources -- multi-sport news needs "Your Backend" set.');
+                    setMultiSportNews([]);
+                    setMultiSportNewsStatus('loaded');
+                    return;
+                }
+                try {
+                    const res = await fetch(`${backendUrl}/api/news?limit=300`);
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const data = await res.json();
+                    if (data.status === 'source_unavailable') console.warn('[News] Backend reports every source failed this pass:', data.ingest);
+                    const results = (Array.isArray(data.articles) ? data.articles : [])
+                        .map(a => ({
+                            headline: a.title, description: a.summary || '',
+                            published: a.publishedAt, ageLabel: agoLabel(a.publishedAt || ''),
+                            url: a.url, athlete: a.playerName, teams: a.team ? [a.team] : [],
+                            kind: a.category, sport: a.sport, source: a.source, image: a.imageUrl,
+                            articleId: `${a.source}:${a.sourceArticleId || a.url || a.title}`
+                        }))
+                        .filter(n => n.headline);
+                    setMultiSportNews(results);
+                } catch (e) {
+                    console.warn('[News] Backend /api/news fetch failed:', e.message);
+                    setMultiSportNews([]);
+                } finally {
+                    setMultiSportNewsStatus('loaded');
+                }
             };
 
             const fetchLiveScoreboard = async (isStale) => {
