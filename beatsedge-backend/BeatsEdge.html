@@ -8910,12 +8910,19 @@
                 }
             }, [currentView]);
             // Multi-sport News data is loaded lazily, once, the first time the
-            // user actually opens the News tab -- not on app load, not on
-            // every sport switch, not polled. multiSportNewsLoadedRef (not
-            // state) gates the one-time fetch so this effect can safely
+            // user actually opens the News tab OR Browse -- not on app load,
+            // not on every sport switch, not polled. multiSportNewsLoadedRef
+            // (not state) gates the one-time fetch so this effect can safely
             // re-run on every currentView change without re-fetching.
+            // Phase 2B: also triggers on 'browse' (not just 'news') so
+            // player-card news (sourced from this same multiSportNews array
+            // -- see playerNewsIndex below) is available without requiring
+            // the user to separately visit the News tab first. Still exactly
+            // ONE request total per session either way -- multiSportNewsLoadedRef
+            // is unchanged, so whichever view is opened first triggers it and
+            // the other view's effect run is then a no-op.
             useEffect(() => {
-                if (currentView === 'news' && isPro) fetchMultiSportNews();
+                if ((currentView === 'news' || currentView === 'browse') && isPro) fetchMultiSportNews();
             }, [currentView, isPro]);
             useEffect(() => {
                 if (!detailModal) return;
@@ -8938,6 +8945,51 @@
             const [multiSportNews, setMultiSportNews] = useState([]);
             const [multiSportNewsStatus, setMultiSportNewsStatus] = useState('idle'); // 'idle' | 'loading' | 'loaded'
             const multiSportNewsLoadedRef = React.useRef(false);
+
+            // ── Phase 2B: player-card news index ──────────────────────────────
+            // Groups the SAME already-fetched multiSportNews (one request per
+            // session, see the effect above) by player -- never a second
+            // fetch, never one request per card (Step 12). Uses ONLY Phase
+            // 2A's canonical identity fields (playerId/playerIdSource),
+            // never a name/team re-match here -- this is display plumbing,
+            // not a second identity resolver.
+            //
+            // The join key MUST respect which id space each sport's OWN
+            // player.id is actually in (see this phase's report / lib/
+            // newsPlayerIdentity.js's own comments, confirmed by reading
+            // every sport's roster-build code): MLB's card id is the MLB
+            // Stats API person id (matches playerIdSource:'mlb' news only);
+            // NFL/CFB/NBA/WNBA's card id is ESPN's own athlete id (matches
+            // playerIdSource:'espn' news only). NFL news resolved via
+            // Phase 2A's nflverse/GSIS fallback tier (playerIdSource:
+            // 'nflverse') is a DIFFERENT id space than the live NFL card's
+            // own id and is deliberately excluded here -- it still shows in
+            // the general News feed, just not forced onto a player card it
+            // can't be safely verified against. sport is included in the key
+            // too, as a hard boundary, even though 'mlb'/'espn' sources are
+            // already namespaced by construction.
+            const playerNewsIndex = React.useMemo(() => {
+                const idx = new Map();
+                (multiSportNews || []).forEach(n => {
+                    if (!n.playerId || !n.playerIdSource) return; // unresolved/ambiguous -- never included (Step 8)
+                    const key = `${n.sport}:${n.playerIdSource}:${n.playerId}`;
+                    const arr = idx.get(key) || [];
+                    arr.push(n);
+                    idx.set(key, arr);
+                });
+                idx.forEach(arr => arr.sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0)));
+                return idx;
+            }, [multiSportNews]);
+            // Real join rule per sport, derived directly from how each
+            // sport's OWN player.id is actually built (see comment above) --
+            // not a guess, not "try espn then mlb". A card's own `player`
+            // object always has exactly one canonical id space; this returns
+            // the matching news list or an empty array, never invents one.
+            const newsForPlayer = (player) => {
+                if (!player || player.id == null) return [];
+                const source = player.sport === 'mlb' ? 'mlb' : 'espn';
+                return playerNewsIndex.get(`${player.sport}:${source}:${player.id}`) || [];
+            };
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             // Actual last successful data refresh (ms epoch) — drives the "Live
@@ -10153,7 +10205,12 @@
                     return;
                 }
                 try {
-                    const res = await fetch(`${backendUrl}/api/news?limit=300`);
+                    // Phase 2B: bumped to the backend's own real max (500,
+                    // see lib/newsDb.js's getArticles cap) -- still ONE
+                    // request, covering every sport's news in one shot so
+                    // player cards can group locally (Step 12) instead of
+                    // firing a request per card.
+                    const res = await fetch(`${backendUrl}/api/news?limit=500`);
                     if (!res.ok) throw new Error('HTTP ' + res.status);
                     const data = await res.json();
                     if (data.status === 'source_unavailable') console.warn('[News] Backend reports every source failed this pass:', data.ingest);
@@ -10163,7 +10220,13 @@
                             published: a.publishedAt, ageLabel: agoLabel(a.publishedAt || ''),
                             url: a.url, athlete: a.playerName, teams: a.team ? [a.team] : [],
                             kind: a.category, sport: a.sport, source: a.source, image: a.imageUrl,
-                            articleId: `${a.source}:${a.sourceArticleId || a.url || a.title}`
+                            articleId: `${a.source}:${a.sourceArticleId || a.url || a.title}`,
+                            // Phase 2B -- Phase 2A's canonical identity fields,
+                            // carried through unchanged (never recomputed/
+                            // re-matched here -- the backend resolver is the
+                            // only source of truth for these).
+                            playerId: a.playerId, playerIdSource: a.playerIdSource,
+                            playerMatchMethod: a.playerMatchMethod, isNew: a.isNew
                         }))
                         .filter(n => n.headline);
                     setMultiSportNews(results);
@@ -18746,6 +18809,48 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 </div>
                             </React.Fragment>
                         )}
+
+                        {/* Phase 2B — player-card news. Reuses NewsView's own
+                            CSS classes (news-item/news-source-tag/news-age/
+                            news-headline/news-desc/news-read) for visual
+                            consistency rather than inventing new styles.
+                            Sourced ONLY from playerNewsIndex (Phase 2A
+                            canonical playerId/playerIdSource -- never a
+                            name/team re-match here). Capped at the latest 3;
+                            no "View all" -- the card has no existing
+                            expansion hook for a longer list without a larger
+                            modal change than this phase calls for, so this
+                            is documented as a known limitation rather than
+                            built. No injury/role/impact interpretation of
+                            any kind -- exactly the verified source fields,
+                            nothing inferred. */}
+                        {(() => {
+                            const news = newsForPlayer(player).slice(0, 3);
+                            if (!news.length) return null;
+                            return (
+                                <div className="player-news-section" style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+                                    <div className="news-section-title" style={{ fontSize: '0.78rem', marginBottom: '0.4rem' }}>📰 News</div>
+                                    <div className="news-wire">
+                                        {news.map((n, i) => (
+                                            <div key={n.articleId || i} className="news-item">
+                                                <div className="news-item-head">
+                                                    {n.source && <span className="news-source-tag">{n.source}</span>}
+                                                    {n.ageLabel && <span className="news-age">{n.ageLabel}</span>}
+                                                    {n.isNew && <span className="news-source-tag" style={{ background: 'var(--accent-red)', color: '#fff' }} title="Published within the last 2 hours">NEW</span>}
+                                                </div>
+                                                <div className="news-headline">{n.headline}</div>
+                                                {n.description && n.description !== n.headline && <div className="news-desc">{n.description}</div>}
+                                                {n.url && (
+                                                    <a className="news-read" href={n.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+                                                        Read on {n.source || 'source'} →
+                                                    </a>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })()}
 
                         {activeInModal && player.status !== 'OUT' && (
                           <div className="modal-overlay" onClick={() => setDetailModal(null)}>
