@@ -9277,6 +9277,128 @@
                 };
             };
 
+            // ── Phase 2H: game / slate research context ──────────────────────
+            // Connects the SAME existing News Intelligence pipeline to the
+            // EXISTING game/slate selection UI (slateGames/selectedGameEventId/
+            // periodFilter -- Phase 4/5, defined further below in this same
+            // component; see that code's own header for why eventId is
+            // ParlayAPI's own real id, never a fabricated cross-reference).
+            // No new fetch, no new player matcher, no second impact taxonomy
+            // -- reuses IMPACT_TO_BUCKET/NEWS_STATUS_LABELS/newsImpactEmoji/
+            // NEWS_CONTEXT_BUCKET_ORDER exactly as Phase 2E/2F/2G already do.
+            //
+            // Matching hierarchy (Step 2), first match wins:
+            //   1. exact eventId match -- article.eventId === game.eventId,
+            //      both real and non-null. This NEVER fires on real data
+            //      today: lib/newsDb.js's own schema comment says event_id
+            //      is "always NULL -- no game/article join exists yet".
+            //      Kept so a future backend resolver is picked up for free.
+            //   2. sport match AND team match -- article.teams[0] (ESPN's
+            //      own verified team category tag, see lib/newsIngest.js)
+            //      equals the game's real homeTeam or awayTeam, case-
+            //      normalized (trim+uppercase) ONLY -- never a fuzzy match,
+            //      never a hand-built name/abbreviation lookup table. This
+            //      is a DELIBERATE, DOCUMENTED limitation: slateGames's own
+            //      header comment (below, ~"no live-verified confirmation
+            //      of ParlayAPI's exact NBA/WNBA home_team/away_team string
+            //      format exists") already establishes that ESPN's news
+            //      team field is a short abbreviation ("BOS", "LAL") while
+            //      ParlayAPI's homeTeam/awayTeam has been observed as a FULL
+            //      team name for at least MLB ("Boston Red Sox" -- see
+            //      fetchMlbSlate's own comment). Building an unverified
+            //      full-name<->abbreviation table (32+ NFL teams, 130+
+            //      NCAAF teams) to bridge that gap would be exactly the
+            //      "infer an event from article wording" Step 2 forbids,
+            //      just applied to team names instead of article text -- so
+            //      this tier only matches when the two systems' strings
+            //      already agree, and honestly returns no match otherwise.
+            //      Expect this tier to rarely or never fire on real data --
+            //      that is the correct behavior given the underlying data
+            //      formats, not a bug (documented in the Phase 2H report).
+            //   3. no match -- a player-only article (playerId set, no
+            //      verified team tag) never attaches to a game here; it
+            //      stays exactly where Phase 2A-2G already place it: the
+            //      player's own research context.
+            const articleMatchesGame = (article, game) => {
+                if (!article || !game) return false;
+                if (article.eventId != null && game.eventId != null && String(article.eventId) === String(game.eventId)) return true;
+                if (!article.sport || article.sport !== game.sport) return false;
+                const teams = Array.isArray(article.teams) ? article.teams : [];
+                if (!teams.length) return false;
+                const home = game.homeTeam ? String(game.homeTeam).trim().toUpperCase() : null;
+                const away = game.awayTeam ? String(game.awayTeam).trim().toUpperCase() : null;
+                return teams.some(t => {
+                    const teamNorm = t ? String(t).trim().toUpperCase() : '';
+                    return !!teamNorm && ((!!home && teamNorm === home) || (!!away && teamNorm === away));
+                });
+            };
+
+            // buildGameResearchContext(game, newsList) -- newsList is the FULL
+            // already-fetched multiSportNews array (one fetch per session,
+            // Phase 1/2B -- never a second request). Pure function, returns
+            // structured data only (Step 3's shape), never HTML.
+            const buildGameResearchContext = (game, newsList) => {
+                const list = (Array.isArray(newsList) ? newsList : [])
+                    .filter(a => articleMatchesGame(a, game))
+                    .slice()
+                    .sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+
+                const byBucket = new Map();
+                const recentChanges = [];
+                let hasRecentUp = false, hasRecentDown = false;
+                list.forEach(n => {
+                    (Array.isArray(n.impactSignals) ? n.impactSignals : []).forEach(s => {
+                        if (s.impact === 'NO_DIRECT_IMPACT') return; // Step 4 -- never a fabricated change
+                        const bucket = IMPACT_TO_BUCKET[s.impact];
+                        if (!bucket) return;
+                        const ts = Date.parse(s.publishedAt || n.published) || 0;
+                        const cur = byBucket.get(bucket);
+                        if (!cur || ts > cur.ts) byBucket.set(bucket, { n, s, ts });
+                        recentChanges.push({
+                            bucket, emoji: newsImpactEmoji(s.direction, s.strength), direction: s.direction,
+                            directionLabel: s.direction === 'UP' ? 'Up' : s.direction === 'DOWN' ? 'Down' : (NEWS_STATUS_LABELS[s.sourceStatus] || bucket),
+                            statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
+                            sourceStatus: s.sourceStatus, evidence: s.evidence, source: n.source, ageLabel: n.ageLabel,
+                            publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId,
+                            impact: s.impact, strength: s.strength, team: (Array.isArray(n.teams) && n.teams[0]) || null
+                        });
+                        if (s.freshness && s.freshness !== 'OLDER') {
+                            if (s.direction === 'UP') hasRecentUp = true;
+                            if (s.direction === 'DOWN') hasRecentDown = true;
+                        }
+                    });
+                });
+                recentChanges.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
+
+                const currentContext = NEWS_CONTEXT_BUCKET_ORDER.filter(b => byBucket.has(b)).map(bucket => {
+                    const { n, s } = byBucket.get(bucket);
+                    return {
+                        bucket, emoji: newsImpactEmoji(s.direction, s.strength),
+                        statusLabel: NEWS_STATUS_LABELS[s.sourceStatus] || (s.sourceStatus ? s.sourceStatus.replace(/_/g, ' ') : bucket),
+                        sourceStatus: s.sourceStatus, source: n.source, ageLabel: n.ageLabel,
+                        publishedAt: s.publishedAt, freshness: s.freshness, url: n.url, articleId: n.articleId
+                    };
+                });
+
+                const conflicts = (hasRecentUp && hasRecentDown)
+                    ? recentChanges.filter(c => c.freshness && c.freshness !== 'OLDER' && (c.direction === 'UP' || c.direction === 'DOWN'))
+                    : [];
+
+                const DAY_MS = 24 * 3600 * 1000;
+                const changesLast24h = recentChanges.filter(c => {
+                    const ts = Date.parse(c.publishedAt);
+                    return Number.isFinite(ts) && (Date.now() - ts) < DAY_MS;
+                }).length;
+
+                return {
+                    game,
+                    currentContext,
+                    recentChanges,
+                    conflicts,
+                    counts: { totalArticles: list.length, linkedArticles: list.length, recentChanges: recentChanges.length, changesLast24h }
+                };
+            };
+
             const [lineups, setLineups] = useState([]);               // per-game starting lineups / probables
             const [lineupSource, setLineupSource] = useState('checking'); // 'live' | 'partial' | 'unavailable' | 'checking'
             // Actual last successful data refresh (ms epoch) — drives the "Live
@@ -10521,7 +10643,15 @@
                             // Phase 2D -- research-only impact signals,
                             // carried through unchanged (backend is the
                             // only source of truth; never recomputed here).
-                            impactSignals: Array.isArray(a.impactSignals) ? a.impactSignals : []
+                            impactSignals: Array.isArray(a.impactSignals) ? a.impactSignals : [],
+                            // Phase 2H -- carried through additively for the
+                            // game-research eventId tier (Step 2's tier 1).
+                            // Always null today (lib/newsDb.js's own schema
+                            // comment: "always NULL -- no game/article join
+                            // exists yet") -- included so a future backend
+                            // resolver is picked up for free with zero
+                            // frontend change, never a fabricated value here.
+                            eventId: a.eventId
                         }))
                         .filter(n => n.headline);
                     setMultiSportNews(results);
@@ -21079,6 +21209,19 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     .sort((a, b) => (a.commenceTimeMs || 0) - (b.commenceTimeMs || 0));
             }, [basePlayers]);
 
+            // Phase 2H — one buildGameResearchContext() pass per real game in
+            // the current slate, computed HERE (once per multiSportNews/
+            // slateGames change) and reused by both the game-select chip
+            // badge and the expanded "GAME RESEARCH CONTEXT" panel below —
+            // never recomputed per prop, per render, or per click (Step 11).
+            // No new fetch: multiSportNews is the exact same already-fetched
+            // array every player-level News Intelligence phase already uses.
+            const gameResearchByEventId = React.useMemo(() => {
+                const map = new Map();
+                slateGames.forEach(g => { map.set(g.eventId, buildGameResearchContext(g, multiSportNews)); });
+                return map;
+            }, [slateGames, multiSportNews]);
+
             // Phase 4/5 — narrow to the selected game (real eventId) and/or
             // period (real, normalized — never guessed). 'all'/null (the
             // defaults) mean exactly today's unfiltered behavior. This wraps
@@ -21349,20 +21492,64 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             className={`game-select-chip ${!selectedGameEventId ? 'active' : ''}`}
                             onClick={() => setSelectedGameEventId(null)}
                         >All Games</button>
-                        {slateGames.map(g => (
+                        {slateGames.map(g => {
+                            // Phase 2H -- compact research indicator (Step 5).
+                            // Shown only when real, relevant game-level context
+                            // exists; otherwise this chip renders exactly as
+                            // before (no empty box, no gap).
+                            const gr = gameResearchByEventId.get(g.eventId);
+                            const grCount = gr ? gr.counts.recentChanges : 0;
+                            return (
                             <button
                                 key={g.eventId}
                                 className={`game-select-chip ${selectedGameEventId === g.eventId ? 'active' : ''}`}
                                 onClick={() => setSelectedGameEventId(selectedGameEventId === g.eventId ? null : g.eventId)}
                                 title={(g.homeTeam && g.awayTeam ? `${g.awayTeam} @ ${g.homeTeam}` : 'Real provider event — team names not supplied on this row')
-                                    + (g.status === 'STARTED' ? ' — commence time has passed; live/final status is not available from ParlayAPI, props may no longer be live-eligible' : '')}
+                                    + (g.status === 'STARTED' ? ' — commence time has passed; live/final status is not available from ParlayAPI, props may no longer be live-eligible' : '')
+                                    + (grCount > 0 ? ` — ${grCount} recent research change${grCount === 1 ? '' : 's'}` : '')}
                             >
                                 {g.awayTeam && g.homeTeam ? `${g.awayTeam} @ ${g.homeTeam}` : `Game ${g.eventId}`}
                                 {g.status === 'STARTED' && <span className="game-select-status"> · started</span>}
+                                {grCount > 0 && <span className="game-select-status"> · 📰 {grCount}</span>}
                             </button>
-                        ))}
+                            );
+                        })}
                     </div>
                     )}
+
+                    {/* Phase 2H — GAME RESEARCH CONTEXT (Step 6). Compact,
+                        reuses this same game-select-bar location rather than a
+                        new modal (no existing per-game Details interaction
+                        exists to reuse -- confirmed by audit). Shown only for
+                        the currently-selected game, only when real relevant
+                        context exists -- never an empty box, never duplicating
+                        the separate PLAYER research context (Phase 2F/2G). */}
+                    {currentView === 'browse' && selectedGameEventId && (() => {
+                        const gr = gameResearchByEventId.get(selectedGameEventId);
+                        if (!gr || gr.currentContext.length === 0) return null;
+                        return (
+                            <div className="game-research-context" style={{ padding: '0.6rem 1rem', margin: '0 0 0.5rem', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}>
+                                <div style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+                                    📰 GAME RESEARCH CONTEXT
+                                    {gr.conflicts.length > 0 && <span style={{ color: 'var(--accent-amber, #d9a441)', marginLeft: '0.5rem', fontWeight: 400 }}>⚠️ Conflicting recent news</span>}
+                                </div>
+                                {gr.currentContext.map((c, ci) => (
+                                    c.url ? (
+                                        <a key={ci} href={c.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', marginBottom: '0.2rem', color: 'inherit', textDecoration: 'none' }}>
+                                            {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>{c.source ? ` · ${c.source}` : ''}{c.ageLabel ? ` · ${c.ageLabel}` : ''}
+                                        </a>
+                                    ) : (
+                                        <div key={ci} style={{ marginBottom: '0.2rem' }}>
+                                            {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>{c.source ? ` · ${c.source}` : ''}{c.ageLabel ? ` · ${c.ageLabel}` : ''}
+                                        </div>
+                                    )
+                                ))}
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                                    {gr.counts.totalArticles} article{gr.counts.totalArticles === 1 ? '' : 's'} · {gr.counts.changesLast24h} in last 24h
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     <main className="main-content">
                         {currentView === 'browse' && (
