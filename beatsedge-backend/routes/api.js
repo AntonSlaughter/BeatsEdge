@@ -15,6 +15,7 @@ const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
 const dataSourceHealth = require('../lib/dataSourceHealth');
 const parlayCache = require('../lib/parlayCache');
+const wnbaProviderLineArchive = require('../lib/wnbaProviderLineArchive');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
@@ -752,7 +753,20 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
         if (v != null) headers[h] = v;
       });
       const result = { status: upstream.status, contentType: upstream.headers.get('content-type') || 'application/json', body, headers };
-      if (upstream.status >= 200 && upstream.status < 300) parlayCache.set(cacheKey, result);
+      if (upstream.status >= 200 && upstream.status < 300) {
+        parlayCache.set(cacheKey, result);
+        // Phase 2I-I: archive real WNBA observations from this SAME
+        // upstream fetch -- fires only for provider='parlayapi' requests to
+        // the WNBA props path, costs no additional upstream call (this
+        // response already happened), and never blocks or affects the
+        // response being sent to the real caller. Fire-and-forget: a
+        // failure here must never turn a good 200 into an error for the
+        // actual user, so it's caught and logged, never thrown.
+        if (provider === 'parlayapi') {
+          wnbaProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[wnba-archive] failed to archive this refresh:', e.message));
+        }
+      }
       return result;
     })();
 

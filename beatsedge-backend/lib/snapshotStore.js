@@ -85,7 +85,51 @@ const SCHEMA_STATEMENTS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_prop_snap_unique
      ON prop_snapshots(snap_date, sport, player, stat, line, dir, model_variant)`,
   `CREATE INDEX IF NOT EXISTS idx_prop_snap_slate ON prop_snapshots(snap_date, sport)`,
-  `CREATE INDEX IF NOT EXISTS idx_prop_snap_ungraded ON prop_snapshots(result, snap_date)`
+  `CREATE INDEX IF NOT EXISTS idx_prop_snap_ungraded ON prop_snapshots(result, snap_date)`,
+
+  // Phase 2I-H -- raw historical provider-line archive (research only, not
+  // read by cron/settleSnapshots.js or any grading/settlement path). APPEND
+  // ONLY: unlike prop_snapshots (one row per day, upserted in place -- see
+  // lib/snapshotDb.js's ON CONFLICT ... DO UPDATE), this table has no
+  // update-in-place path anywhere in this codebase. A new provider
+  // observation always gets a new row; line movement (19.5 -> 20.5 -> 19.5)
+  // is three separate rows, never a single row overwritten twice. See
+  // lib/wnbaProviderLineArchive.js for the insert helper, which decides
+  // whether an observation is genuinely new by comparing against the most
+  // recent row for the same identity tuple, not via a DB uniqueness
+  // constraint (a real line returning to a prior value must still be a new
+  // row, so no UNIQUE index on the identity+line combination is used here).
+  `CREATE TABLE IF NOT EXISTS wnba_provider_line_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at INTEGER NOT NULL,
+    provider_last_update TEXT,
+    age_seconds REAL,
+    sport TEXT NOT NULL DEFAULT 'wnba',
+    event_id TEXT NOT NULL,
+    home_team TEXT, away_team TEXT, commence_time TEXT, game_status TEXT,
+    player_raw TEXT NOT NULL,
+    player_id TEXT,
+    market_key_raw TEXT NOT NULL,
+    market_label TEXT,
+    period TEXT,
+    source TEXT NOT NULL,
+    source_type TEXT,
+    projection_type TEXT,
+    odds_type TEXT,
+    side TEXT,
+    line REAL,
+    over_price REAL,
+    under_price REAL,
+    projection_metadata TEXT,
+    raw_json TEXT,
+    semantics_status TEXT DEFAULT 'CONFIRMED'
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_identity ON wnba_provider_line_archive(sport, event_id, player_raw, market_key_raw, source, projection_type, period)`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_event ON wnba_provider_line_archive(event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_captured ON wnba_provider_line_archive(captured_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_source ON wnba_provider_line_archive(source)`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_market ON wnba_provider_line_archive(market_key_raw)`,
+  `CREATE INDEX IF NOT EXISTS idx_wpla_player ON wnba_provider_line_archive(player_raw, market_key_raw)`
 ];
 
 // ── SQLite implementation (local dev / default) ─────────────────────────
@@ -119,6 +163,16 @@ function createSqliteImpl() {
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_prop_snap_slate ON prop_snapshots(snap_date, sport)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_prop_snap_ungraded ON prop_snapshots(result, snap_date)`);
+
+  // Any SCHEMA_STATEMENTS entry that isn't about prop_snapshots (which has
+  // its own migration-sensitive handling above/below) is executed generically
+  // here -- this is how new additive tables (e.g. wnba_provider_line_archive,
+  // Phase 2I-H) reach the local SQLite backend, mirroring what the Turso
+  // implementation's ensureSchema() loop already does for every statement.
+  for (const stmt of SCHEMA_STATEMENTS) {
+    if (/prop_snapshots/i.test(stmt)) continue;
+    db.exec(stmt);
+  }
 
   // Unique index must include model_variant. Rebuilding an INDEX (unlike a
   // table) never touches row data -- safe on every boot, verified via a
