@@ -12986,7 +12986,23 @@
                             : stds.reduce((a, b) => b.line > a.line ? b : a));
                         const anchor = marketLine != null ? marketLine : median(arr.map(e => e.line));
                         const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
-                        if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(3, Math.abs(marketLine) * 0.6)) { byBook[bk] = []; return; }
+                        if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(3, Math.abs(marketLine) * 0.6)) {
+                            // Line-integrity fix (Phase 2I-O): this used to WIPE the
+                            // entire book+stat array (byBook[bk] = []) when the DFS
+                            // standard line looked implausible vs the sharp-book
+                            // consensus -- which deleted the real provider row
+                            // before buildProviderOnlyProps ever got a chance to
+                            // show it as "Model not supported yet". A real main
+                            // line would silently vanish from the whole app instead
+                            // of falling back. Now: keep the raw rows (so the real
+                            // line/source/DFS type still surfaces via the
+                            // provider-only path) but flag every entry unreliable
+                            // so no *_BuildProps loop builds a modeled prop off it
+                            // -- see the matching `_lineSanitySuspect` check there.
+                            arr.forEach(e => { e.primary = false; e._lineSanitySuspect = true; });
+                            byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);
+                            return;
+                        }
                         arr.forEach(e => { e.primary = (e === primary); });
                         byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);
                     });
@@ -14444,23 +14460,45 @@
                 // instead of once for a single selected book — see the
                 // identical pattern/comment in mlbBuildProps.
                 const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                // Phase 2I-O (main-line visibility fix): `knownForBook` used to be
+                // a STATIC prediction of which keys "should" be known for a book,
+                // computed separately from the build loop below -- every time the
+                // build loop grew a new reason to skip a key for THIS player/slate
+                // (requiresHistory, the primaryLine sanity guard, and now the
+                // _lineSanitySuspect flag from nflConsolidate), that skip had to be
+                // manually re-mirrored in knownForBook too, or the key would be
+                // marked "known" without ever actually being built -- meaning
+                // buildProviderOnlyProps ALSO skipped it (already "known"), and the
+                // real provider row vanished completely instead of falling back to
+                // "Model not supported yet". `builtForBook` replaces the static
+                // prediction with ground truth: a key only ever counts as known
+                // once a prop for it was ACTUALLY pushed, so every skip reason --
+                // present or future -- automatically falls through correctly.
+                const builtForBook = {};
                 booksToBuild.forEach(bk => {
                     nbaAllKeys.forEach(k => {
                         const def = NBA_PROP_DEFS[k];
                         // Some defs (e.g. fantasyPoints) are only confirmed correct
                         // for a specific book's scoring rules -- skip building a
                         // real model prop for any other book. Handled here, not in
-                        // fetchParlayProps, so ingestion stays untouched; the
-                        // matching per-book knownKeys filter below (feeding
-                        // buildProviderOnlyProps) makes sure a skipped book's row
-                        // still surfaces as a real "Model not supported yet" prop
-                        // instead of being silently dropped.
+                        // fetchParlayProps, so ingestion stays untouched; falling
+                        // out of builtForBook makes sure a skipped book's row still
+                        // surfaces as a real "Model not supported yet" prop instead
+                        // of being silently dropped.
                         if (def.books && !def.books.includes(bk)) return;
                         const byBook = allLines[k] || {};
                         // ONLY this book. Never borrow another book's line —
                         // each tab (or each book, in All Books) shows exactly
                         // what that book has posted.
                         if (!byBook[bk] || !byBook[bk].length) return;
+                        // Phase 2I-O: nflConsolidate flags every entry in a book+
+                        // stat when the DFS standard line looked too far from the
+                        // sharp-book consensus to trust -- no modeled prop gets
+                        // built from it (same safety intent as before), but unlike
+                        // before, the raw rows were NOT deleted, so falling out of
+                        // builtForBook here correctly routes them to
+                        // buildProviderOnlyProps instead of vanishing entirely.
+                        if (byBook[bk].every(e => e._lineSanitySuspect)) return;
                         const useBook = bk, crossBook = false;
                         const pg = perGameFor(k);
                         const w = statsByKey[k];
@@ -14470,12 +14508,7 @@
                         // real hit-rate calculation. This is what keeps WNBA (no
                         // backend source at all) and any NBA player with no
                         // hoopR-backed history correctly provider-only, without
-                        // a separate WNBA-specific or OREB-specific check: any
-                        // future requiresHistory market gets the same safety for
-                        // free. Matched by the identical check in knownForBook
-                        // below, so a skipped player+stat here still surfaces as
-                        // a real "Model not supported yet" prop instead of
-                        // silently disappearing.
+                        // a separate WNBA-specific or OREB-specific check.
                         if (def.requiresHistory && (!w || (w.season.games || 0) === 0)) return;
                         if (w && (w.season.games || 0) >= 4) {
                             const primaryLine = ((byBook[useBook].find(e => e.primary)) || byBook[useBook][0] || {}).line || 0;
@@ -14487,6 +14520,7 @@
                         const multi = sorted.length > 1;
                         const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
                         const mktLine = marketLineFor(byBook);
+                        (builtForBook[bk] || (builtForBook[bk] = new Set())).add(k);
                         sorted.forEach(e => pushLine(k, def, e, {
                             lineSource: crossBook ? `${useBook} line — not posted on ${bk}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                             book: useBook, crossBook, setAt: e.setAt, move: e.move,
@@ -14499,29 +14533,8 @@
                         }));
                     });
                 });
-                // A book-restricted def (see the `def.books` guard above) is
-                // only "known" for the book(s) it's actually confirmed for --
-                // for every other book it must still count as unmapped, so a
-                // real row under that key falls through to buildProviderOnlyProps
-                // and renders as a real "Model not supported yet" prop rather
-                // than being silently dropped (bca62e6's core invariant,
-                // unchanged here — only the knownKeys list passed in is
-                // per-book now, buildProviderOnlyProps itself is untouched).
                 booksToBuild.forEach(bk => {
-                    const knownForBook = nbaAllKeys.filter(k => {
-                        const d = NBA_PROP_DEFS[k];
-                        if (d.books && !d.books.includes(bk)) return false;
-                        // Mirrors the requiresHistory guard in the build loop
-                        // above -- a stat with zero real historical games for
-                        // THIS player must not count as "known", so its real
-                        // provider row falls through to buildProviderOnlyProps
-                        // instead of being silently dropped.
-                        if (d.requiresHistory) {
-                            const w = statsByKey[k];
-                            if (!w || (w.season.games || 0) === 0) return false;
-                        }
-                        return true;
-                    });
+                    const knownForBook = [...(builtForBook[bk] || [])];
                     props.push(...buildProviderOnlyProps(allLines, knownForBook, bk));
                 });
                 return props;
