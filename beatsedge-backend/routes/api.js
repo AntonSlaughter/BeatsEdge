@@ -16,6 +16,7 @@ const nbaHist = require('../lib/nbaHistDb');
 const dataSourceHealth = require('../lib/dataSourceHealth');
 const parlayCache = require('../lib/parlayCache');
 const wnbaProviderLineArchive = require('../lib/wnbaProviderLineArchive');
+const nbaProviderLineArchive = require('../lib/nbaProviderLineArchive');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
@@ -762,9 +763,14 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
         // response being sent to the real caller. Fire-and-forget: a
         // failure here must never turn a good 200 into an error for the
         // actual user, so it's caught and logged, never thrown.
+        // Phase 2I-Q: same fire-and-forget archiving, extended to NBA --
+        // both calls are no-ops for any path that doesn't match their own
+        // sport, so this line costs nothing on every other sport's traffic.
         if (provider === 'parlayapi') {
           wnbaProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
             .catch(e => console.warn('[wnba-archive] failed to archive this refresh:', e.message));
+          nbaProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[nba-archive] failed to archive this refresh:', e.message));
         }
       }
       return result;

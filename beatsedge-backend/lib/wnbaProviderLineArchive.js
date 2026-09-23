@@ -242,12 +242,16 @@ async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
         playerRaw: row.player,
         playerId: row.player_id != null ? String(row.player_id) : null,
         marketKeyRaw: row.market_key,
-        // Not resolved at capture time: the human-readable label and
-        // normalized period both require BeatsEdge.html's own PARLAY_BB_MKT/
-        // PERIOD_MARKET_MAP, which are client-side-only and were not
-        // duplicated here (duplicating them risks the two copies drifting
-        // apart) -- see the Phase 2I-I report's documented limitation.
-        marketLabel: null, period: null,
+        // Phase 2I-Q fix: the raw ParlayAPI row already carries both of
+        // these directly (row.market / row.period, confirmed against live
+        // captures -- e.g. {"market":"Points","period":"Q1"}), so no
+        // client-side BeatsEdge.html lookup table needs to be duplicated
+        // here after all. The prior version of this code assumed they
+        // required PARLAY_BB_MKT/PERIOD_MARKET_MAP and hardcoded null,
+        // which silently dropped period identity for every archived row --
+        // exactly the field Phase I's real-line period-market matching
+        // depends on. Preserved exactly as supplied, never inferred.
+        marketLabel: row.market || null, period: row.period || null,
         source: row.bookmaker, sourceType: sourceTypeFor(row.bookmaker),
         // Preserved EXACTLY as supplied -- never inferred from line size.
         projectionType: row.projection_type || null,

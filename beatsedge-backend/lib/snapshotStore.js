@@ -129,7 +129,43 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_wpla_captured ON wnba_provider_line_archive(captured_at)`,
   `CREATE INDEX IF NOT EXISTS idx_wpla_source ON wnba_provider_line_archive(source)`,
   `CREATE INDEX IF NOT EXISTS idx_wpla_market ON wnba_provider_line_archive(market_key_raw)`,
-  `CREATE INDEX IF NOT EXISTS idx_wpla_player ON wnba_provider_line_archive(player_raw, market_key_raw)`
+  `CREATE INDEX IF NOT EXISTS idx_wpla_player ON wnba_provider_line_archive(player_raw, market_key_raw)`,
+
+  // Phase 2I-Q -- NBA sibling of wnba_provider_line_archive, identical
+  // schema/discipline (append-only, no update-in-place, see
+  // lib/nbaProviderLineArchive.js). Entirely separate table; never merged
+  // with the WNBA archive.
+  `CREATE TABLE IF NOT EXISTS nba_provider_line_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at INTEGER NOT NULL,
+    provider_last_update TEXT,
+    age_seconds REAL,
+    sport TEXT NOT NULL DEFAULT 'nba',
+    event_id TEXT NOT NULL,
+    home_team TEXT, away_team TEXT, commence_time TEXT, game_status TEXT,
+    player_raw TEXT NOT NULL,
+    player_id TEXT,
+    market_key_raw TEXT NOT NULL,
+    market_label TEXT,
+    period TEXT,
+    source TEXT NOT NULL,
+    source_type TEXT,
+    projection_type TEXT,
+    odds_type TEXT,
+    side TEXT,
+    line REAL,
+    over_price REAL,
+    under_price REAL,
+    projection_metadata TEXT,
+    raw_json TEXT,
+    semantics_status TEXT DEFAULT 'CONFIRMED'
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_identity ON nba_provider_line_archive(sport, event_id, player_raw, market_key_raw, source, projection_type, period)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_event ON nba_provider_line_archive(event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_captured ON nba_provider_line_archive(captured_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_source ON nba_provider_line_archive(source)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_market ON nba_provider_line_archive(market_key_raw)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_player ON nba_provider_line_archive(player_raw, market_key_raw)`
 ];
 
 // ── SQLite implementation (local dev / default) ─────────────────────────
