@@ -220,14 +220,32 @@ async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
   let rows;
   try {
     rows = JSON.parse(bodyText);
-    if (!Array.isArray(rows)) return { archived: 0, applicable: true, error: 'non-array response body' };
+    if (!Array.isArray(rows)) {
+      // Phase 2I-Q observability fix: this used to return silently with no
+      // log line at all -- a malformed-but-non-throwing response would
+      // vanish with zero trace anywhere. Never logs bodyText itself (could
+      // contain arbitrarily-shaped upstream data); only the fixed reason.
+      console.warn('[wnba-archive] archive error: non-array response body');
+      return { archived: 0, applicable: true, error: 'non-array response body' };
+    }
   } catch (e) {
+    console.warn('[wnba-archive] archive error: unparseable response body:', e.message);
     return { archived: 0, applicable: true, error: 'unparseable response body: ' + e.message };
   }
   const capturedAt = Date.now();
   let inserted = 0, unchanged = 0, skipped = 0;
+  // Phase 2I-Q observability fix: parallel counters for the single summary
+  // log line below. Never change any existing counter's value/meaning or
+  // any row's written/skipped outcome -- these only re-tally the SAME
+  // decisions the loop below already makes, split into the categories
+  // requested (`eligible`/`failed` didn't exist as separate concepts
+  // before; `skipped` here intentionally also folds in `unchanged`, since
+  // an unchanged repeat-poll is exactly the kind of "existing skip
+  // condition" being asked for, distinct from a genuine write failure).
+  let eligible = 0, failedCount = 0;
   for (const row of rows) {
     if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
+    eligible++;
     const lastUpdate = row.last_update || null;
     const lastUpdateMs = lastUpdate ? Date.parse(lastUpdate) : NaN;
     const ageSeconds = Number.isFinite(lastUpdateMs) ? (capturedAt - lastUpdateMs) / 1000 : null;
@@ -265,8 +283,11 @@ async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
       if (r.inserted) inserted++; else unchanged++;
     } catch (e) {
       skipped++;
+      failedCount++;
     }
   }
+  const skippedForLog = skipped - failedCount + unchanged;
+  console.log(`[wnba-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
   return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
 }
 

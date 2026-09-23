@@ -140,14 +140,28 @@ async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
   let rows;
   try {
     rows = JSON.parse(bodyText);
-    if (!Array.isArray(rows)) return { archived: 0, applicable: true, error: 'non-array response body' };
+    if (!Array.isArray(rows)) {
+      // Phase 2I-Q observability fix: this used to return silently with no
+      // log line at all -- a malformed-but-non-throwing response would
+      // vanish with zero trace anywhere. Never logs bodyText itself (could
+      // contain arbitrarily-shaped upstream data); only the fixed reason.
+      console.warn('[nba-archive] archive error: non-array response body');
+      return { archived: 0, applicable: true, error: 'non-array response body' };
+    }
   } catch (e) {
+    console.warn('[nba-archive] archive error: unparseable response body:', e.message);
     return { archived: 0, applicable: true, error: 'unparseable response body: ' + e.message };
   }
   const capturedAt = Date.now();
   let inserted = 0, unchanged = 0, skipped = 0;
+  // Phase 2I-Q observability fix: parallel counters for the single summary
+  // log line below -- see lib/wnbaProviderLineArchive.js's identical
+  // comment for the full reasoning. Never changes any existing counter's
+  // value/meaning or any row's written/skipped outcome.
+  let eligible = 0, failedCount = 0;
   for (const row of rows) {
     if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
+    eligible++;
     const lastUpdate = row.last_update || null;
     const lastUpdateMs = lastUpdate ? Date.parse(lastUpdate) : NaN;
     const ageSeconds = Number.isFinite(lastUpdateMs) ? (capturedAt - lastUpdateMs) / 1000 : null;
@@ -181,8 +195,11 @@ async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
       if (r.inserted) inserted++; else unchanged++;
     } catch (e) {
       skipped++;
+      failedCount++;
     }
   }
+  const skippedForLog = skipped - failedCount + unchanged;
+  console.log(`[nba-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
   return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
 }
 
