@@ -5682,12 +5682,45 @@
             player_kicking_points: 'kickingPts',
             player_field_goal_made: 'fgMade', player_field_goals_made: 'fgMade', player_fg_made: 'fgMade', player_field_goals: 'fgMade'
         };
+        // DISPLAY-ONLY formatter for a provider line value. Real captured
+        // provider data (2026-09-24, tmp/check-float-noise.js against the
+        // live archive) confirmed float32-precision noise is baked into the
+        // RAW provider JSON itself in some rows -- e.g. Underdog rows for
+        // "32.55" arrive as 32.549999237060547 -- this is not introduced by
+        // any BeatsEdge arithmetic. Rounding to 2 decimal places absorbs
+        // that noise (a real line is never finer than a half-point) while
+        // leaving a genuinely clean value (47.5, 10) untouched -- JS's own
+        // number-to-string conversion never pads/forces a fixed decimal
+        // count, so this never blindly forces one decimal place. Used for
+        // DISPLAY ONLY -- never for identity keys, archive rows, or model
+        // math, all of which must keep using the raw numeric line exactly
+        // as provided.
+        const formatProviderLine = (value) => {
+            const n = typeof value === 'number' ? value : parseFloat(value);
+            if (!Number.isFinite(n)) return value;
+            return Math.round(n * 100) / 100;
+        };
         const PARLAY_BB_MKT = {
             player_points: 'points', player_pts: 'points',
             player_rebounds: 'rebounds', player_reb: 'rebounds', player_total_rebounds: 'rebounds',
             player_assists: 'assists', player_ast: 'assists',
             'player_3-pt_made': 'threes', player_threes: 'threes', player_three_pointers_made: 'threes', player_3pt_made: 'threes',
+            // Confirmed equivalent via real captured provider data (2026-09-24,
+            // tmp/check-3pm-keys.js against the live wnba_provider_line_archive):
+            // both raw keys carry the provider's OWN label confirming the same
+            // stat -- player_three_pointers is PrizePicks' Goblin/Demon-variant
+            // key (label "3-PT Made", same as the already-mapped standard key,
+            // just a different payout tier/line -- the projectionType field
+            // already preserves that distinction separately from this mapping),
+            // and player_threes_made is Pinnacle's own key (label "Threes Made").
+            // player_3_pt_made_combo deliberately stays UNMAPPED below --
+            // its real label is "3-PT Made (Combo)", and "Combo" is real
+            // evidence of a same-game-combo market, not a plain 3PT-made line.
+            player_three_pointers: 'threes', player_threes_made: 'threes',
             player_points_rebounds_assists: 'pra', player_pts_rebs_asts: 'pra', 'player_pts+rebs+asts': 'pra',
+            // Confirmed equivalent the same way (real label "Pts + Rebs + Asts",
+            // identical to player_pts_rebs_asts) -- Underdog's own separate key.
+            player_pra: 'pra',
             player_points_rebounds: 'pr', player_pts_rebs: 'pr', 'player_pts+rebs': 'pr',
             player_points_assists: 'pa', player_pts_asts: 'pa', 'player_pts+asts': 'pa',
             player_rebounds_assists: 'ra', player_rebs_asts: 'ra', 'player_rebs+asts': 'ra',
@@ -5709,11 +5742,13 @@
             //   player_points_1st_quarter, player_points_1st_half,
             //     player_fantasy_points_1st_half -- no period-level data
             //     exists anywhere in this app's live or historical pipeline.
-            //   player_three_pointers, player_threes_made, player_3_pt_made_combo
-            //     -- three DIFFERENT raw keys from the already-working
-            //     player_threes, each used by a non-overlapping bookmaker
-            //     set with no field available to confirm they mean the same
-            //     thing. Left unmapped rather than assumed equivalent by name.
+            //   player_3_pt_made_combo -- real captured label is "3-PT Made
+            //     (Combo)" (2026-09-24 diagnostic); "Combo" is real evidence
+            //     of a same-game-combo market, not a plain 3PT-made line.
+            //     Left unmapped rather than assumed equivalent by name.
+            //   (player_three_pointers and player_threes_made used to be
+            //   listed here too -- both confirmed equivalent to player_threes
+            //   via their own provider-supplied labels and aliased above.)
             player_fg_made: 'fgMade', player_fg_attempted: 'fgAttempted',
             player_free_throws_made: 'ftMade', player_free_throws_attempted: 'ftAttempted',
             player_two_pointers_made: 'twoPtMade', player_two_pointers_attempted: 'twoPtAttempted',
@@ -6338,7 +6373,7 @@
                                     Factor confluence <strong>{e.greenCount}/{e.totalFactors}</strong> ({confPct}%) — at or above the two-thirds Prime bar. Model edge <strong>{e.edgeSignalPct >= 0 ? '+' : ''}{e.edgeSignalPct}%</strong> of the line — at or above the +11% Prime bar.
                                 </div>
                                 <div className="prime-why-line">Supporting factors: {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}</div>
-                                <div className="prime-why-line">Model projects <strong>{e.projection}</strong> vs the <strong>{p.prop.line}</strong> line ({e.edge >= 0 ? '+' : ''}{e.edge}) · {e.matchupLabel}</div>
+                                <div className="prime-why-line">Model projects <strong>{e.projection}</strong> vs the <strong>{formatProviderLine(p.prop.line)}</strong> line ({e.edge >= 0 ? '+' : ''}{e.edge}) · {e.matchupLabel}</div>
                             </div>
                         </details>
                     </div>
@@ -6390,7 +6425,7 @@
                             <span className="top-pick-why-label">Why:</span>{' '}
                             {why.length ? why.join(' · ') : 'model edge only — factors are mixed'}
                         </div>
-                        <div className="top-pick-meta">Edge: {p.edge.edgePct >= 0 ? '+' : ''}{p.edge.edgePct}% · Model: {p.edge.projection} vs {p.prop.line} ({p.edge.edge >= 0 ? '+' : ''}{p.edge.edge})</div>
+                        <div className="top-pick-meta">Edge: {p.edge.edgePct >= 0 ? '+' : ''}{p.edge.edgePct}% · Model: {p.edge.projection} vs {formatProviderLine(p.prop.line)} ({p.edge.edge >= 0 ? '+' : ''}{p.edge.edge})</div>
                         <button
                             className="top-pick-details-btn"
                             onClick={(e) => { e.stopPropagation(); onOpenPick(p.player, p.propIdx); }}
@@ -9001,10 +9036,46 @@
             // not a guess, not "try espn then mlb". A card's own `player`
             // object always has exactly one canonical id space; this returns
             // the matching news list or an empty array, never invents one.
+            //
+            // Relevance-window fix: a news article's ONLY freshness signal
+            // up to this point was `isNew` (published within the last 2h of
+            // right now) -- unrelated to which GAME the story is actually
+            // about. Checked directly: news_articles has no usable
+            // structured "which game" link (lib/newsDb.js's own `eventId`
+            // is confirmed never written by lib/newsIngest.js -- always
+            // null in practice), so a genuine per-article game match isn't
+            // available. The best REAL structured signal that IS already
+            // canonical and in scope is `selectedDate` (the exact slate
+            // date the user is browsing, same Eastern-day convention as
+            // todayEasternDate()) -- an article published on an EARLIER
+            // calendar day than the slate being viewed is, by definition,
+            // reporting on a game that already happened relative to what's
+            // on screen, which is exactly the "yesterday's regular-season
+            // finale" failure mode. A 1-day trailing grace window is kept
+            // so a legitimate night-before pregame injury report (a real,
+            // common, CURRENT-game-relevant pattern) still shows. This does
+            // NOT catch a same-day article about an already-finished
+            // EARLIER game on the same calendar date -- no structured field
+            // exists to distinguish that case, and guessing from headline
+            // text was explicitly ruled out rather than used as a stand-in.
+            const easternDateOf = (iso) => {
+                const ms = Date.parse(iso);
+                if (!Number.isFinite(ms)) return null;
+                const d = new Date(ms - 4 * 3600 * 1000);
+                return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+            };
             const newsForPlayer = (player) => {
                 if (!player || player.id == null) return [];
                 const source = player.sport === 'mlb' ? 'mlb' : 'espn';
-                return playerNewsIndex.get(`${player.sport}:${source}:${player.id}`) || [];
+                const all = playerNewsIndex.get(`${player.sport}:${source}:${player.id}`) || [];
+                const slateDate = selectedDate || todayEasternDate();
+                const cutoff = new Date(`${slateDate}T00:00:00Z`);
+                cutoff.setUTCDate(cutoff.getUTCDate() - 1); // 1-day trailing grace window
+                const cutoffStr = `${cutoff.getUTCFullYear()}-${String(cutoff.getUTCMonth() + 1).padStart(2, '0')}-${String(cutoff.getUTCDate()).padStart(2, '0')}`;
+                return all.filter(n => {
+                    const d = easternDateOf(n.published || n.publishedAt);
+                    return d === null || d >= cutoffStr; // no parseable date -- never drop on a technicality
+                });
             };
 
             // ── Phase 2E: player news timeline / context panel ─────────────────
@@ -13981,10 +14052,21 @@
                 { providerKey: 'player_points_1st_quarter', sport: 'wnba', displayName: 'Points 1st Quarter', period: '1q', state: MARKET_STATE.DATA_REQUIRED, reason: 'No period-level (quarter/half) player statistics exist anywhere in this app\'s data sources -- ESPN gamelog and hoopR box scores are both full-game only.' },
                 { providerKey: 'player_points_1st_half', sport: 'wnba', displayName: 'Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter.' },
                 { providerKey: 'player_fantasy_points_1st_half', sport: 'wnba', displayName: 'Fantasy Points 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Same as Points 1st Quarter -- also compounds with Fantasy Points\' own source-specific formula requirement.' },
-                { providerKey: 'player_three_pointers', sport: 'wnba', displayName: '3PT Made (PrizePicks demon/goblin variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Distinct raw key from the confirmed player_threes mapping, used by a non-overlapping bookmaker set (PrizePicks-only demon/goblin vs. player_threes\' sportsbook+Underdog standard lines). No field available to confirm these represent the identical market; not assumed equivalent by name.' },
-                { providerKey: 'player_threes_made', sport: 'wnba', displayName: '3PT Made (Pinnacle variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Distinct raw key from player_threes, Pinnacle-only in the confirmed diagnostic. Same non-assumption as above.' },
-                { providerKey: 'player_3_pt_made_combo', sport: 'wnba', displayName: '3PT Made (combo variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: '"Combo" semantics unconfirmed -- could be a same-game combo market, not a plain 3PT-made line. Not assumed.' },
-                { providerKey: 'player_pra', sport: 'wnba', displayName: 'Pts+Reb+Ast (Underdog variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: 'Underdog\'s own separate raw key for what looks like Pts+Reb+Ast, distinct from the confirmed player_pts_rebs_asts. Not assumed equivalent without a field to confirm it.' },
+                // player_three_pointers / player_threes_made used to be listed
+                // here as FORMULA_UNKNOWN -- 2026-09-24: real captured provider
+                // data (tmp/check-3pm-keys.js against the live archive) showed
+                // both carry provider-supplied labels ("3-PT Made", "Threes
+                // Made") confirming the same stat as player_threes. Aliased
+                // into PARLAY_BB_MKT; no longer "unresolved".
+                { providerKey: 'player_3_pt_made_combo', sport: 'wnba', displayName: '3PT Made (combo variant)', period: 'full_game', state: MARKET_STATE.FORMULA_UNKNOWN, reason: '"Combo" semantics unconfirmed -- could be a same-game combo market, not a plain 3PT-made line. Not assumed. (Real captured label "3-PT Made (Combo)" reinforces this caution rather than resolving it.)' },
+                // player_pra used to be listed here as FORMULA_UNKNOWN -- this
+                // was the exact bug behind a normal, modeled WNBA PRA line
+                // showing "Model not supported yet" purely because it came
+                // from Underdog instead of PrizePicks. 2026-09-24: real
+                // captured provider data (tmp/check-pra-key.js) showed
+                // Underdog's own label for player_pra is "Pts + Rebs + Asts",
+                // identical to the already-mapped player_pts_rebs_asts.
+                // Aliased into PARLAY_BB_MKT; no longer "unresolved".
                 { providerKey: 'player_pra_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (Underdog)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
                 { providerKey: 'player_pts_rebs_asts_1st_half', sport: 'wnba', displayName: 'Pts+Reb+Ast 1st Half (PrizePicks)', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
                 { providerKey: 'player_assists_1st_half', sport: 'wnba', displayName: 'Assists 1st Half', period: '1h', state: MARKET_STATE.DATA_REQUIRED, reason: 'Period market -- no period-level data available (see Points 1st Quarter).' },
@@ -18992,7 +19074,34 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const playerNewsForCard = newsForPlayer(player);
                 const playerResearch = playerNewsForCard.length ? buildPlayerResearchContext(playerNewsForCard) : null;
 
-                const cardProps = Array.isArray(player.props) ? player.props : [];
+                // Display-order priority ONLY -- never touches Top Picks/Prime/
+                // model ranking math, calculateEdgeScore, or grades (those all
+                // read `player.props` / individual prop objects directly and
+                // are untouched by array order). Reuses the SAME existing,
+                // canonical flags the rest of the app already uses for this
+                // exact "deprioritize" distinction (`altLine` -- Goblin/Demon/
+                // alt-line variant, already used the identical way for Prime
+                // pick selection's own sort at this file's `a.alt - b.alt`
+                // pattern; `modelSupported` -- the same flag that already
+                // drives "Model not supported yet"; `period` -- the same
+                // canonical field periodFilter/periodOf already read, never a
+                // label guess). Milestone/exotic ladders (Receiving Yards
+                // Milestones, First TD Scorer, etc.) carry no dedicated flag
+                // anywhere in this app, so a narrow, explicit name-pattern
+                // check is used for that one tier only, matching exactly the
+                // examples named in the request -- not a broad guess.
+                const EXOTIC_TYPE_RE = /milestone|first .*scorer|to score \d|anytime|quarters with/i;
+                const cardPropPriority = (p) => {
+                    if (p.altLine || EXOTIC_TYPE_RE.test(p.type || '')) return 4;
+                    const isPeriod = p.period && p.period !== 'FULL_GAME' && p.period !== 'full_game';
+                    if (p.modelSupported && !isPeriod) return 0;
+                    if (!p.modelSupported && !isPeriod) return 1;
+                    if (p.modelSupported && isPeriod) return 2;
+                    return 3; // unsupported period market
+                };
+                const cardProps = Array.isArray(player.props)
+                    ? player.props.map((p, i) => [p, i]).sort((a, b) => (cardPropPriority(a[0]) - cardPropPriority(b[0])) || (a[1] - b[1])).map(x => x[0])
+                    : [];
                 // With a stat-category chip active, deep-links open the first
                 // prop of that category rather than prop 0.
                 const firstCatIdx = statFilter === 'all' ? 0 : Math.max(0, cardProps.findIndex(p => p.type === statFilter));
@@ -19228,7 +19337,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         return <span className="prop-pill-unavail" title={msg}>Line unavailable</span>;
                                                     })() : (
                                                         <>
-                                                            {prop.line}
+                                                            {formatProviderLine(prop.line)}
                                                             {typeof prop.odds === 'number' && <span className="prop-pill-odds">{prop.odds > 0 ? '+' : ''}{prop.odds}</span>}
                                                             {prop.lineSource && <span title={prop.lineSource} style={{ fontSize: '0.6rem', color: 'var(--success-green)', marginLeft: '0.3rem' }}>●</span>}
                                                         </>
@@ -19480,7 +19589,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {player.name} — {activeProp.type}
                                                     </div>
                                                     <div style={{ marginBottom: '0.75rem' }}>
-                                                        Line: {activeProp.line}
+                                                        Line: {formatProviderLine(activeProp.line)}
                                                         {typeof activeProp.odds === 'number' && <> ({activeProp.odds > 0 ? '+' : ''}{activeProp.odds})</>}
                                                         {' · '}{bookLabel(activeProp.book) || activeProp.lineSource}
                                                         {activeProp.ppKind && <> · {activeProp.ppKind === 'demon' ? '😈 Demon' : '👺 Goblin'}</>}
@@ -19545,7 +19654,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 );
                                                             })() : (
                                                                 <>
-                                                                    Line: {activeProp.line}
+                                                                    Line: {formatProviderLine(activeProp.line)}
                                                                     {activeProp.direction === 'over' ? ' O' : ' U'}
                                                                     {typeof activeProp.odds === 'number' ? ` (${activeProp.odds > 0 ? '+' : ''}${activeProp.odds})` : ''}
                                                                 </>
@@ -19605,7 +19714,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             const bookName = activeProp.book === 'prizepicks' ? 'PrizePicks' : (activeProp.book || 'DFS');
                                                             return (
                                                                 <div className="edge-prop-line line-vs-book">
-                                                                    {bookName} <span className="val">{activeProp.line}</span> vs sportsbooks <span className="val">{activeProp.marketLine}</span>
+                                                                    {bookName} <span className="val">{formatProviderLine(activeProp.line)}</span> vs sportsbooks <span className="val">{activeProp.marketLine}</span>
                                                                     {Math.abs(gap) >= 0.5
                                                                         ? <span className={better ? 'good' : 'bad'}> — {gap > 0 ? '+' : ''}{gap}, the {better ? 'better' : 'worse'} number for the {activeProp.direction}</span>
                                                                         : <span> — in line with the market</span>}
@@ -19666,7 +19775,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                             {rows.map(r => (
                                                                                 <tr key={r.id} className={r.id === activeProp.book ? 'edge-compare-active' : ''}>
                                                                                     <td>{r.name}{r.ppKind === 'goblin' ? ' 👺' : r.ppKind === 'demon' ? ' 😈' : ''}</td>
-                                                                                    <td className="num">{r.line}</td>
+                                                                                    <td className="num">{formatProviderLine(r.line)}</td>
                                                                                     <td className="num">{fmtOdds(r.over)}</td>
                                                                                     <td className="num">{r.oneWay ? '—' : fmtOdds(r.under)}</td>
                                                                                 </tr>
@@ -19745,7 +19854,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         </div>
                                                         <div className="edge-descriptor">
                                                             <div className="edge-descriptor-val" style={{ color: edge.edge >= 0 ? 'var(--success-green)' : 'var(--danger-red)' }}>{edge.edge >= 0 ? '+' : ''}{edge.edge}</div>
-                                                            <div className="edge-descriptor-lbl">Edge vs {activeProp.line} line</div>
+                                                            <div className="edge-descriptor-lbl">Edge vs {formatProviderLine(activeProp.line)} line</div>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -19769,7 +19878,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         <div className="projection-label" title={activeProp.isProjection ? 'No live book posts this stat — there is no real sportsbook/PrizePicks line' : 'The real posted line from the source book'}>Line</div>
                                                         {activeProp.isProjection
                                                             ? <div className="projection-value prop-pill-unavail" style={{ fontSize: '1rem' }}>Line unavailable</div>
-                                                            : <div className="projection-value">{activeProp.line}</div>}
+                                                            : <div className="projection-value">{formatProviderLine(activeProp.line)}</div>}
                                                     </div>
                                                     <div className="projection-item">
                                                         <div className="projection-label">Edge</div>
@@ -20413,7 +20522,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                 {inParlay
                                                                     ? '✓ In Smart Parlay — tap to remove'
                                                                     : (eligible
-                                                                        ? `➕ Add ${activeProp.direction === 'under' ? 'UNDER' : 'OVER'} ${activeProp.line} to Smart Parlay`
+                                                                        ? `➕ Add ${activeProp.direction === 'under' ? 'UNDER' : 'OVER'} ${formatProviderLine(activeProp.line)} to Smart Parlay`
                                                                         : `Smart Parlay needs an 80%+ hit rate — this ${activeProp.direction} is ${gateHR}%`)}
                                                             </button>
                                                         </div>
@@ -20460,7 +20569,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             <div className="hit-rate-header">
                                                 <div>
                                                     <div className="hit-rate-title">
-                                                        Hit Rate{cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${cardProp.line}` : ''}
+                                                        Hit Rate{cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${formatProviderLine(cardProp.line)}` : ''}
                                                     </div>
                                                     <div className="hit-rate-main">{headline ?? '—'}%</div>
                                                 </div>
@@ -21065,7 +21174,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {prop.player} ({prop.team})
                                                     </div>
                                                     <div className="parlay-item-prop">
-                                                        {prop.prop} {prop.direction === 'under' ? 'U' : 'O'}{prop.line} • Hit Rate: {Math.round(prop.hitRate)}%
+                                                        {prop.prop} {prop.direction === 'under' ? 'U' : 'O'}{formatProviderLine(prop.line)} • Hit Rate: {Math.round(prop.hitRate)}%
                                                     </div>
                                                 </div>
                                                 <div className="parlay-item-odds">
@@ -21493,76 +21602,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     </div>
                     )}
 
-                    {/* Phase 4 — real games, grouped by each live prop's own
-                        ParlayAPI eventId (never ESPN's separate id space, never
-                        team-name matching). Click a game to filter Browse down
-                        to ONLY that game's props; click it again (or "All
-                        Games") to clear. */}
-                    {currentView === 'browse' && slateGames.length > 0 && (
-                    <div className="game-select-bar">
-                        <span className="game-select-label">Games:</span>
-                        <button
-                            className={`game-select-chip ${!selectedGameEventId ? 'active' : ''}`}
-                            onClick={() => setSelectedGameEventId(null)}
-                        >All Games</button>
-                        {slateGames.map(g => {
-                            // Phase 2H -- compact research indicator (Step 5).
-                            // Shown only when real, relevant game-level context
-                            // exists; otherwise this chip renders exactly as
-                            // before (no empty box, no gap).
-                            const gr = gameResearchByEventId.get(g.eventId);
-                            const grCount = gr ? gr.counts.recentChanges : 0;
-                            return (
-                            <button
-                                key={g.eventId}
-                                className={`game-select-chip ${selectedGameEventId === g.eventId ? 'active' : ''}`}
-                                onClick={() => setSelectedGameEventId(selectedGameEventId === g.eventId ? null : g.eventId)}
-                                title={(g.homeTeam && g.awayTeam ? `${g.awayTeam} @ ${g.homeTeam}` : 'Real provider event — team names not supplied on this row')
-                                    + (g.status === 'STARTED' ? ' — commence time has passed; live/final status is not available from ParlayAPI, props may no longer be live-eligible' : '')
-                                    + (grCount > 0 ? ` — ${grCount} recent research change${grCount === 1 ? '' : 's'}` : '')}
-                            >
-                                {g.awayTeam && g.homeTeam ? `${g.awayTeam} @ ${g.homeTeam}` : `Game ${g.eventId}`}
-                                {g.status === 'STARTED' && <span className="game-select-status"> · started</span>}
-                                {grCount > 0 && <span className="game-select-status"> · 📰 {grCount}</span>}
-                            </button>
-                            );
-                        })}
-                    </div>
-                    )}
-
-                    {/* Phase 2H — GAME RESEARCH CONTEXT (Step 6). Compact,
-                        reuses this same game-select-bar location rather than a
-                        new modal (no existing per-game Details interaction
-                        exists to reuse -- confirmed by audit). Shown only for
-                        the currently-selected game, only when real relevant
-                        context exists -- never an empty box, never duplicating
-                        the separate PLAYER research context (Phase 2F/2G). */}
-                    {currentView === 'browse' && selectedGameEventId && (() => {
-                        const gr = gameResearchByEventId.get(selectedGameEventId);
-                        if (!gr || gr.currentContext.length === 0) return null;
-                        return (
-                            <div className="game-research-context" style={{ padding: '0.6rem 1rem', margin: '0 0 0.5rem', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}>
-                                <div style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
-                                    📰 GAME RESEARCH CONTEXT
-                                    {gr.conflicts.length > 0 && <span style={{ color: 'var(--accent-amber, #d9a441)', marginLeft: '0.5rem', fontWeight: 400 }}>⚠️ Conflicting recent news</span>}
-                                </div>
-                                {gr.currentContext.map((c, ci) => (
-                                    c.url ? (
-                                        <a key={ci} href={c.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', marginBottom: '0.2rem', color: 'inherit', textDecoration: 'none' }}>
-                                            {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>{c.source ? ` · ${c.source}` : ''}{c.ageLabel ? ` · ${c.ageLabel}` : ''}
-                                        </a>
-                                    ) : (
-                                        <div key={ci} style={{ marginBottom: '0.2rem' }}>
-                                            {c.emoji} {c.bucket}: <strong>{c.statusLabel}</strong>{c.source ? ` · ${c.source}` : ''}{c.ageLabel ? ` · ${c.ageLabel}` : ''}
-                                        </div>
-                                    )
-                                ))}
-                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
-                                    {gr.counts.totalArticles} article{gr.counts.totalArticles === 1 ? '' : 's'} · {gr.counts.changesLast24h} in last 24h
-                                </div>
-                            </div>
-                        );
-                    })()}
+                    {/* Game switcher UI removed per explicit request (UI-only
+                        removal -- eventId identity, slateGames data, and the
+                        gameResearchByEventId map are all untouched; nothing
+                        below reads selectedGameEventId anymore since it can
+                        no longer be set to anything but its initial null,
+                        so those branches are permanently-inert dead code
+                        left in place rather than chased through the file). */}
 
                     <main className="main-content">
                         {currentView === 'browse' && (
