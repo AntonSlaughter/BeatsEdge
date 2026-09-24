@@ -13548,7 +13548,21 @@
                 matchedNames.forEach(nm => {
                     const slot = bySlot[nm];
                     const posKeys = nflPosKeys(slot.pos).filter(k => linesByName[nm][k]);
-                    if (!posKeys.length) return;
+                    // Provider-first fallback fix (2026-09-24): this used to
+                    // `return` (drop the player entirely) whenever they had
+                    // real ParlayAPI rows but NONE of them mapped to a
+                    // canonical, position-appropriate stat key -- e.g. a
+                    // player whose only real line is an unmapped market like
+                    // Anytime TD. That deleted a real provider player BEFORE
+                    // nflBuildProps' own buildProviderOnlyProps fallback ever
+                    // got a chance to run. posKeys may now be empty here --
+                    // nflBuildProps handles that safely (its posKeys.forEach
+                    // loop just does zero modeled builds) and its OWN
+                    // buildProviderOnlyProps call still iterates every raw
+                    // key in `linesByName[nm]` (mapped or not), so a
+                    // real-but-unmodeled row now correctly survives as a
+                    // modelSupported:false provider-only prop instead of
+                    // vanishing. No canonical stat is invented anywhere.
                     const glRows = glMap[slot.id] || [];
                     const lineFor = {};
                     Object.keys(linesByName[nm]).forEach(k => {
@@ -13795,7 +13809,15 @@
                     seenPlayer.add(slot.id);
                     const lines = linesByName[nn];
                     const posKeys = nflPosKeys(slot.pos).filter(k => lines[k]);
-                    if (!posKeys.length) return;
+                    // Provider-first fallback fix (2026-09-24) -- identical
+                    // reasoning/fix as fetchNflPropLines' own copy of this
+                    // exact line (see its comment): a real PrizePicks/etc.
+                    // CFB row whose only market is unmapped (e.g. Anytime
+                    // TD) no longer causes the whole player to be dropped
+                    // here. nflBuildProps' buildProviderOnlyProps fallback
+                    // now gets the chance to run and surface it as
+                    // modelSupported:false, instead of the player vanishing
+                    // before that machinery is ever reached.
                     const glRows = glMap[slot.id] || [];
                     const lineFor = {};
                     Object.keys(lines).forEach(k => {
