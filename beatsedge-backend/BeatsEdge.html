@@ -13659,6 +13659,15 @@
             const CFB_ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/college-football';
             const CFB_ESPN_COMMON = 'https://site.api.espn.com/apis/common/v3/sports/football/college-football';
             const cfbCache = React.useRef({ byId: {}, byNorm: {}, teamMeta: {}, games: [] });
+            // Roster-universe widening fix (2026-09-24): persistent,
+            // cross-refresh cache of already-fetched team rosters, keyed by
+            // ESPN team id -> raw `athletes` groups array. CFB rosters don't
+            // meaningfully change within a session/day, so once a team's
+            // roster is fetched it is never re-fetched again this session.
+            // Without this, widening roster discovery from ~2 teams to
+            // potentially ~140 would turn a cheap per-refresh cost into a
+            // genuinely expensive one on every single CFB refresh.
+            const cfbRosterCache = React.useRef({});
 
             // Multi-season concat (oldest → newest). CFB weeks 1-4 have almost
             // no current-season games, and one CFB season is only ~13, so the
@@ -13713,29 +13722,97 @@
                     });
                 });
 
-                // Rosters for the ~15-25 teams actually on the slate. CFB
-                // rosters are big; keep skill positions only. (No defense-rank
-                // factor — 130+ teams make a keyless DvP ranking too noisy.)
-                const teamIds = [...new Set(games.flatMap(g => [g.homeId, g.awayId]))];
-                const rosters = await Promise.all(teamIds.map(async tid => {
-                    for (const u of [`${CFB_ESPN}/teams/${tid}/roster`, `${CFB_ESPN}/teams/${tid}?enable=roster`]) {
-                        try {
-                            const res = await fetch(u);
-                            if (!res.ok) continue;
-                            const r = await res.json();
-                            const groups = r.athletes || (r.team && r.team.athletes) || [];
-                            if (groups.length) return { tid, groups };
-                        } catch (e) { }
-                    }
-                    return { tid, groups: [] };
-                }));
+                // Roster-universe widening fix (2026-09-24): `games` above
+                // (the returned/cached "selected date" slate -- UNCHANGED,
+                // still exactly what the Starting Lineups view and every
+                // other existing consumer expects) is scoped to ONLY the
+                // exact calendar date requested. Real evidence, checked
+                // live: dates=20260924&groups=80 returned 1 game/2 teams,
+                // while the SAME endpoint with no dates= filter returned 71
+                // games/142 teams spanning Thu-Sat/Sun. A real PrizePicks
+                // player whose game is later in the week was structurally
+                // impossible to match before this fix, because their
+                // team's roster was never fetched at all -- not a name,
+                // position, or model problem, a roster-universe problem.
+                // This block widens ONLY which teams' rosters get fetched
+                // for player-identity matching. Each newly-discovered
+                // player gets their OWN real game/opponent/kickoff from
+                // this broader response -- a dated-slate team is never
+                // overwritten (`if (gameByTeamId[...]) return` below), so a
+                // player from today's actual game can never inherit a
+                // different game's context, and a future-slate player can
+                // never inherit today's game/opponent either.
+                const gameByTeamId = {};
+                games.forEach(g => {
+                    gameByTeamId[g.homeId] = { gameId: g.gameId, oppId: g.awayId, isHome: true, kickoffMs: g.kickoffMs, gameTime: g.gameTime, state: g.state };
+                    gameByTeamId[g.awayId] = { gameId: g.gameId, oppId: g.homeId, isHome: false, kickoffMs: g.kickoffMs, gameTime: g.gameTime, state: g.state };
+                });
+                let broadEvents = [];
+                try {
+                    const sbBroad = await nflFetch(`${CFB_ESPN}/scoreboard?groups=80&limit=200`);
+                    broadEvents = (sbBroad && sbBroad.events) || [];
+                } catch (e) { /* non-fatal -- roster universe just stays date-scoped if this fails */ }
+                broadEvents.forEach(e => {
+                    const c = (e.competitions || [])[0]; if (!c) return;
+                    const home = (c.competitors || []).find(x => x.homeAway === 'home');
+                    const away = (c.competitors || []).find(x => x.homeAway === 'away');
+                    if (!home || !away) return;
+                    if (gameByTeamId[home.team.id] || gameByTeamId[away.team.id]) return; // already covered by the dated slate -- that stays the source of truth
+                    if (!teamMeta[home.team.id]) teamMeta[home.team.id] = { abbr: home.team.abbreviation || home.team.shortDisplayName, name: home.team.displayName };
+                    if (!teamMeta[away.team.id]) teamMeta[away.team.id] = { abbr: away.team.abbreviation || away.team.shortDisplayName, name: away.team.displayName };
+                    const when = new Date(e.date);
+                    const st = e.status && e.status.type;
+                    const gameTime = when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                        + (st && st.state === 'post' ? ' · Final' : (st && st.state === 'in' ? ' · Live' : ''));
+                    const kickoffMs = Date.parse(e.date || '');
+                    gameByTeamId[home.team.id] = { gameId: e.id, oppId: away.team.id, isHome: true, kickoffMs, gameTime, state: st && st.state };
+                    gameByTeamId[away.team.id] = { gameId: e.id, oppId: home.team.id, isHome: false, kickoffMs, gameTime, state: st && st.state };
+                });
+                // Exposed so fetchCfbPropLines can widen its ParlayAPI
+                // commenceWindow to match this same widened discovery scope
+                // -- otherwise a genuinely-matched future-slate player's
+                // real line could still be filtered out by a commenceWindow
+                // computed from only the (narrow) dated `games` list. This
+                // does not change the provider REQUEST itself (still one
+                // bulk fetchParlayPropsBulk call, same endpoint/books/
+                // architecture) -- only the existing derived time-window
+                // parameter it was already designed to be fed from `games`.
+                const rosterKickoffs = Object.values(gameByTeamId).map(g => g.kickoffMs).filter(Number.isFinite);
+
+                // Rosters for every team discovered above. CFB rosters are
+                // big; keep skill positions only. Cross-refresh cache
+                // (cfbRosterCache.current) means an already-fetched team is
+                // never re-fetched this session, and bounded batches of 12
+                // concurrent requests (never all ~140 teams at once on a
+                // cold load) avoid tripping ESPN's own rate limiting.
+                const teamIds = Object.keys(gameByTeamId);
+                const rosterCache = cfbRosterCache.current;
+                const uncachedIds = teamIds.filter(tid => !rosterCache[tid]);
+                const ROSTER_FETCH_BATCH = 12;
+                for (let i = 0; i < uncachedIds.length; i += ROSTER_FETCH_BATCH) {
+                    const batch = uncachedIds.slice(i, i + ROSTER_FETCH_BATCH);
+                    const results = await Promise.all(batch.map(async tid => {
+                        for (const u of [`${CFB_ESPN}/teams/${tid}/roster`, `${CFB_ESPN}/teams/${tid}?enable=roster`]) {
+                            try {
+                                const res = await fetch(u);
+                                if (!res.ok) continue;
+                                const r = await res.json();
+                                const groups = r.athletes || (r.team && r.team.athletes) || [];
+                                if (groups.length) return { tid, groups };
+                            } catch (e) { }
+                        }
+                        return { tid, groups: [] };
+                    }));
+                    results.forEach(r => { rosterCache[r.tid] = r.groups; });
+                }
+                const rosters = teamIds.map(tid => ({ tid, groups: rosterCache[tid] || [] }));
 
                 const byId = {}, byNorm = {}, slots = [];
                 rosters.forEach(({ tid, groups }) => {
-                    const g = games.find(x => x.homeId === tid || x.awayId === tid);
+                    const g = gameByTeamId[tid];
                     if (!g) return;
-                    const isHome = g.homeId === tid;
-                    const oppId = isHome ? g.awayId : g.homeId;
+                    const isHome = g.isHome;
+                    const oppId = g.oppId;
                     const athletes = groups.flatMap(grp => Array.isArray(grp.items) ? grp.items : [grp]);
                     athletes.forEach(a => {
                         const pos = NFL_SKILL_POS[a.position && a.position.abbreviation];
@@ -13756,7 +13833,7 @@
                         slots.push(rec);
                     });
                 });
-                cfbCache.current = { byId, byNorm, teamMeta, games };
+                cfbCache.current = { byId, byNorm, teamMeta, games, rosterKickoffs };
                 return { slots, games };
             };
 
@@ -13768,7 +13845,20 @@
                 if (gone()) return [];
                 if (!parlayApiKey) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — CFB lines come from ParlayAPI only.'); return []; }
 
-                const _kMs = games.map(g => g.kickoffMs).filter(Number.isFinite);
+                // Roster-universe widening fix (2026-09-24): use the WIDER
+                // rosterKickoffs set (every team fetchCfbSlate actually
+                // discovered rosters for, not just the narrow selected-date
+                // `games` list) so a genuinely-matched future-slate player's
+                // real ParlayAPI row isn't filtered out by a commenceWindow
+                // that never accounted for their game. Falls back to
+                // `games` alone if rosterKickoffs is unavailable for any
+                // reason. This does not change the provider request itself
+                // -- same one bulk call, same endpoint/books -- only widens
+                // an existing derived time-window parameter to match the
+                // now-wider roster discovery it depends on.
+                const _kMs = (cfbCache.current.rosterKickoffs && cfbCache.current.rosterKickoffs.length)
+                    ? cfbCache.current.rosterKickoffs
+                    : games.map(g => g.kickoffMs).filter(Number.isFinite);
                 const commenceWindow = _kMs.length
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
