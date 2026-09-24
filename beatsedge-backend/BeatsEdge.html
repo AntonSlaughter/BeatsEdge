@@ -13256,6 +13256,26 @@
                 // instead of once for a single selected book — see the
                 // identical pattern/comment in mlbBuildProps.
                 const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                // CFB main-line visibility fix (2026-09-24, mirrors the exact
+                // fix already shipped for nbaBuildProps in 633e276): this loop
+                // used to call buildProviderOnlyProps with a STATIC
+                // Object.keys(NFL_PROP_DEFS) list -- every NFL_PROP_DEFS key is
+                // always "known" by that definition, regardless of whether a
+                // prop for THIS specific book was actually built below. Any
+                // skip below (line-sanity check, missing byBook[bk], etc.) is
+                // silent -- no flag, no marker -- so buildProviderOnlyProps'
+                // `known.has(rawKey)` check saw the key as already-handled and
+                // refused to add a provider-only fallback. The real row (e.g.
+                // a legitimate PrizePicks Pass Yards/Receiving Yards main
+                // line) vanished from player.props entirely instead of
+                // showing as "Model not supported yet" -- confirmed by
+                // reading the code, same root cause class the NBA fix's own
+                // commit message describes. CFB shares this exact function
+                // (nflBuildProps), so it was affected identically to NFL.
+                // builtForBook replaces the static prediction with ground
+                // truth: a key only ever counts as known once a prop for it
+                // was ACTUALLY pushed for that specific book.
+                const builtForBook = {};
                 booksToBuild.forEach(bk => {
                     posKeys.forEach(k => {
                         const def = NFL_PROP_DEFS[k];
@@ -13278,6 +13298,7 @@
                         const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                         const multi = sorted.length > 1;
                         const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
+                        (builtForBook[bk] || (builtForBook[bk] = new Set())).add(k);
                         sorted.forEach(e => pushLine(k, def, e, {
                             lineSource: crossBook ? `${useBook} line — not posted on ${bk}` : `${e._src === 'parlayapi' ? 'ParlayAPI' : 'PropLine'} · ${useBook}`,
                             book: useBook, crossBook, setAt: e.setAt, move: e.move,
@@ -13289,7 +13310,10 @@
                         }));
                     });
                 });
-                booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(NFL_PROP_DEFS), bk)));
+                booksToBuild.forEach(bk => {
+                    const knownForBook = [...(builtForBook[bk] || [])];
+                    props.push(...buildProviderOnlyProps(allLines, knownForBook, bk));
+                });
                 return props;
             };
 
