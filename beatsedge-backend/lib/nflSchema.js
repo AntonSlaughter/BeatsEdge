@@ -73,7 +73,8 @@ function runNflMigrations(db) {
     receiving_tds_allowed REAL,
     fantasy_points_allowed REAL,
     rank INTEGER,                       -- ranked by fantasy_points_allowed within this window_type: 1 = fewest allowed (toughest defense)
-    games_sampled INTEGER,
+    games_sampled INTEGER,              -- ACTUAL DEFENSIVE TEAM GAMES (fixed 2026-09-26 audit: previously counted player-position rows, e.g. 3 WRs in one team-game inflated this to 3 -- see player_games_sampled below for that raw count)
+    player_games_sampled INTEGER,       -- raw player-position-observation row count (the OLD games_sampled meaning) -- kept as an honest secondary diagnostic, never used for rank/averages
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (team, position, window_type)
   );
@@ -126,6 +127,15 @@ function runNflMigrations(db) {
   ].forEach(([col, def]) => {
     if (!existingCols.has(col)) db.exec(`ALTER TABLE nfl_player_game_stats ADD COLUMN ${col} ${def}`);
   });
+
+  // 2026-09-26 defense sample-size audit fix: nfl_defense_by_position already
+  // existed with `games_sampled` meaning player-position rows. Added via
+  // ALTER (not a schema rewrite) so already-computed rows survive until the
+  // next recompute overwrites them with the corrected team-game meaning.
+  const existingDvpCols = new Set(db.prepare(`PRAGMA table_info(nfl_defense_by_position)`).all().map(c => c.name));
+  if (!existingDvpCols.has('player_games_sampled')) {
+    db.exec(`ALTER TABLE nfl_defense_by_position ADD COLUMN player_games_sampled INTEGER`);
+  }
 }
 
 module.exports = { runNflMigrations };

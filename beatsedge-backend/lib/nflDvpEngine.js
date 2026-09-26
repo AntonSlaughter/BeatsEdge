@@ -78,15 +78,37 @@ function currentAndCompleteSeasons(db) {
   return { current, complete };
 }
 
-// One (team, position, gameRows) -> averaged "allowed" stat line. Every
-// field is computed for every position (a QB row's targets_allowed is
-// always 0, e.g.) — harmless, and keeps this one function correct for all
-// four positions instead of four near-duplicate branches. Which fields are
-// actually meaningful per position is a UI/display concern, not a data-
-// shape concern.
-function averageAllowed(games) {
-  if (!games.length) return null;
-  const avg = key => games.reduce((s, g) => s + (g[key] || 0), 0) / games.length;
+const SUM_FIELDS = ['pass_attempts', 'completions', 'passing_yards', 'passing_tds', 'rush_attempts', 'rushing_yards', 'rushing_tds', 'targets', 'receptions', 'receiving_yards', 'receiving_tds', 'fantasy_points_ppr'];
+
+// 2026-09-26 defense sample-size audit fix: a single defensive team-game
+// can involve MULTIPLE players at one position (e.g. 3 WRs who all saw
+// targets against this defense in the same game) -- these must be SUMMED
+// into one team-game total FIRST, and only THEN averaged across actual
+// team games. The previous version averaged directly over player-position
+// ROWS, silently treating "3 WRs in 1 game" as 3 separate "games" both in
+// the displayed averages and in games_sampled. rows here are already
+// filtered to one (team, position); grouping key is (season, week) = one
+// real defensive team-game.
+function sumByTeamGame(rows) {
+  const byGame = new Map();
+  for (const r of rows) {
+    const key = `${r.season}-${r.week}`;
+    if (!byGame.has(key)) byGame.set(key, { season: r.season, week: r.week, sums: Object.fromEntries(SUM_FIELDS.map(f => [f, 0])) });
+    const g = byGame.get(key);
+    for (const f of SUM_FIELDS) g.sums[f] += (r[f] || 0);
+  }
+  return byGame;
+}
+
+// One (team, position) -> averaged "allowed" stat line, computed PER
+// ACTUAL DEFENSIVE TEAM GAME (gameSums = one entry per team-game, each
+// already summed across every player at this position in that game).
+// playerRowCount is preserved separately (section: "preserve player
+// observation count") purely as an honest secondary diagnostic -- never
+// used for the averages, rank, or the primary games_sampled meaning.
+function averageAllowed(gameSums, playerRowCount) {
+  if (!gameSums.length) return null;
+  const avg = key => gameSums.reduce((s, g) => s + (g.sums[key] || 0), 0) / gameSums.length;
   return {
     pass_attempts_allowed: round1(avg('pass_attempts')),
     completions_allowed: round1(avg('completions')),
@@ -100,7 +122,8 @@ function averageAllowed(games) {
     receiving_yards_allowed: round1(avg('receiving_yards')),
     receiving_tds_allowed: round2(avg('receiving_tds')),
     fantasy_points_allowed: round1(avg('fantasy_points_ppr')),
-    games_sampled: games.length
+    games_sampled: gameSums.length,           // ACTUAL DEFENSIVE TEAM GAMES (the fix)
+    player_games_sampled: playerRowCount      // raw player-position rows (old meaning, kept as diagnostic)
   };
 }
 
@@ -113,11 +136,11 @@ function recomputeNflDefenseByPosition(db) {
       (team, position, window_type, season_year, pass_attempts_allowed, completions_allowed,
        passing_yards_allowed, passing_tds_allowed, rush_attempts_allowed, rushing_yards_allowed,
        rushing_tds_allowed, targets_allowed, receptions_allowed, receiving_yards_allowed,
-       receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled, updated_at)
+       receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled, player_games_sampled, updated_at)
     VALUES (@team, @position, @window_type, @season_year, @pass_attempts_allowed, @completions_allowed,
        @passing_yards_allowed, @passing_tds_allowed, @rush_attempts_allowed, @rushing_yards_allowed,
        @rushing_tds_allowed, @targets_allowed, @receptions_allowed, @receiving_yards_allowed,
-       @receiving_tds_allowed, @fantasy_points_allowed, @rank, @games_sampled, datetime('now'))
+       @receiving_tds_allowed, @fantasy_points_allowed, @rank, @games_sampled, @player_games_sampled, datetime('now'))
     ON CONFLICT(team, position, window_type) DO UPDATE SET
       season_year=excluded.season_year,
       pass_attempts_allowed=excluded.pass_attempts_allowed, completions_allowed=excluded.completions_allowed,
@@ -126,43 +149,42 @@ function recomputeNflDefenseByPosition(db) {
       rushing_tds_allowed=excluded.rushing_tds_allowed, targets_allowed=excluded.targets_allowed,
       receptions_allowed=excluded.receptions_allowed, receiving_yards_allowed=excluded.receiving_yards_allowed,
       receiving_tds_allowed=excluded.receiving_tds_allowed, fantasy_points_allowed=excluded.fantasy_points_allowed,
-      rank=excluded.rank, games_sampled=excluded.games_sampled, updated_at=datetime('now')
+      rank=excluded.rank, games_sampled=excluded.games_sampled, player_games_sampled=excluded.player_games_sampled, updated_at=datetime('now')
   `);
 
-  const qByLimit = db.prepare(`
-    SELECT pass_attempts, completions, passing_yards, passing_tds,
+  // Fetch ALL rows for (team, position) once -- every window (L3/L5/L10/
+  // season/multiseason) is derived from grouping THIS set by team-game
+  // (season, week), never from a raw player-row LIMIT/date filter, so a
+  // "last 3" window means 3 actual team-games, not 3 player-position rows.
+  const qAllForTeamPos = db.prepare(`
+    SELECT season, week, pass_attempts, completions, passing_yards, passing_tds,
            rush_attempts, rushing_yards, rushing_tds,
            targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
     FROM nfl_player_game_stats WHERE opponent = ? AND position = ?
-    ORDER BY season DESC, week DESC LIMIT ?
-  `);
-  const qBySeason = db.prepare(`
-    SELECT pass_attempts, completions, passing_yards, passing_tds,
-           rush_attempts, rushing_yards, rushing_tds,
-           targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
-    FROM nfl_player_game_stats WHERE opponent = ? AND position = ? AND season = ?
-    ORDER BY week DESC
-  `);
-  const qBySeasonSet = db.prepare(`
-    SELECT pass_attempts, completions, passing_yards, passing_tds,
-           rush_attempts, rushing_yards, rushing_tds,
-           targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
-    FROM nfl_player_game_stats WHERE opponent = ? AND position = ? AND season IN (?, ?, ?)
-    ORDER BY season DESC, week DESC
   `);
 
   const results = {};
   const windowDefs = [
-    ...ROLLING_WINDOWS.map(w => ({ type: w.type, seasonYear: null, fetch: (team, pos) => qByLimit.all(team, pos, w.limitGames) })),
-    { type: 'season', seasonYear: current, fetch: (team, pos) => current == null ? [] : qBySeason.all(team, pos, current) },
-    { type: 'multiseason', seasonYear: null, fetch: (team, pos) => complete.length < 3 ? [] : qBySeasonSet.all(team, pos, ...complete) }
+    ...ROLLING_WINDOWS.map(w => ({ type: w.type, seasonYear: null, mode: 'limit', limitGames: w.limitGames })),
+    { type: 'season', seasonYear: current, mode: 'seasons', seasons: current == null ? null : [current] },
+    { type: 'multiseason', seasonYear: null, mode: 'seasons', seasons: complete.length < 3 ? null : complete }
   ];
 
-  windowDefs.forEach(({ type, seasonYear, fetch }) => {
+  windowDefs.forEach(({ type, mode, limitGames, seasons, seasonYear }) => {
     POSITIONS.forEach(position => {
       const rows = teams.map(team => {
-        const games = fetch(team, position);
-        const avgd = averageAllowed(games);
+        if (mode === 'seasons' && seasons === null) return null; // matches prior "no result" behavior (no current season yet / <3 complete seasons)
+        const allRows = qAllForTeamPos.all(team, position);
+        const byGame = sumByTeamGame(allRows);
+        let gameKeys = [...byGame.keys()].sort((a, b) => {
+          const ga = byGame.get(a), gb = byGame.get(b);
+          return gb.season - ga.season || gb.week - ga.week;
+        });
+        gameKeys = mode === 'seasons' ? gameKeys.filter(k => seasons.includes(byGame.get(k).season)) : gameKeys.slice(0, limitGames);
+        if (!gameKeys.length) return null;
+        const gameSums = gameKeys.map(k => byGame.get(k));
+        const playerRowCount = allRows.filter(r => gameKeys.includes(`${r.season}-${r.week}`)).length;
+        const avgd = averageAllowed(gameSums, playerRowCount);
         return avgd ? { team, ...avgd } : null;
       }).filter(Boolean);
 
@@ -260,7 +282,7 @@ function getNflDefenseByPosition(db, team) {
     SELECT position, window_type, season_year, pass_attempts_allowed, completions_allowed,
            passing_yards_allowed, passing_tds_allowed, rush_attempts_allowed, rushing_yards_allowed,
            rushing_tds_allowed, targets_allowed, receptions_allowed, receiving_yards_allowed,
-           receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled
+           receiving_tds_allowed, fantasy_points_allowed, rank, games_sampled, player_games_sampled
     FROM nfl_defense_by_position WHERE team = ?
   `).all(team);
 
@@ -277,7 +299,9 @@ function getNflDefenseByPosition(db, team) {
       rushingTdsAllowed: r.rushing_tds_allowed, targetsAllowed: r.targets_allowed,
       receptionsAllowed: r.receptions_allowed, receivingYardsAllowed: r.receiving_yards_allowed,
       receivingTdsAllowed: r.receiving_tds_allowed, fantasyPointsAllowed: r.fantasy_points_allowed,
-      rank: r.rank, games: r.games_sampled
+      rank: r.rank,
+      games: r.games_sampled,             // ACTUAL DEFENSIVE TEAM GAMES (fixed 2026-09-26)
+      playerGames: r.player_games_sampled  // raw player-position-observation rows (new, additive diagnostic)
     };
   });
 

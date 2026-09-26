@@ -20888,6 +20888,18 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     </div>
                                                 </div>
                                                 <div className="chart-foot">Tap a window above (L5 · L10 · L15 · L20 · Season · Vs {player.opponent}) to change the range.</div>
+                                                {player.sport === 'nfl' && selectedPropTab !== 'trueSeason' && selectedPropTab !== 'vsOpp' && (() => {
+                                                    // Context-only, factual indicator (Part 7 of the 2026-09-26 NFL
+                                                    // context-accuracy fix): rolling windows (L5/L10/L15/L20) cross
+                                                    // season boundaries by design (see nflComputeWindows) — this
+                                                    // never labels that good or bad, it only exposes it. The
+                                                    // separate "Season" tab (trueSeason) already shows current-
+                                                    // season-only numbers side by side, so this note only needs to
+                                                    // appear on the rolling-window tabs.
+                                                    const seasonsInWindow = [...new Set(shownGames.map(g => g.season).filter(v => v != null))].sort();
+                                                    if (seasonsInWindow.length <= 1) return null;
+                                                    return <div className="chart-foot" style={{ paddingTop: '0.2rem' }}>Cross-season sample · includes {seasonsInWindow.join(' + ')}</div>;
+                                                })()}
                                             </React.Fragment>
                                         )}
                                     </div>
@@ -21038,10 +21050,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             // since QB can resolve to a different window than RB/WR/TE
                                                             // for the same team when 2026 is still thin) — never
                                                             // presented as more stable than it is.
+                                                            //
+                                                            // 2026-09-26 sample-size audit fix: resolvedGames is now the
+                                                            // ACTUAL defensive team-game count (was previously counting
+                                                            // one row per opposing player at this position, e.g. 3 WRs
+                                                            // in a single team-game inflated this to 3 "games"). The raw
+                                                            // player-position-row count is preserved, never discarded,
+                                                            // as the secondary `playerGames` line below.
                                                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', paddingTop: '0.4rem' }}>
-                                                                {stats.resolvedWindow === 'multiseason' ? `3-season baseline · ${stats.resolvedGames} games`
-                                                                    : stats.resolvedWindow === 'season' ? `${stats.seasonYear || ''} season · ${stats.resolvedGames} games so far`
-                                                                    : `Last ${stats.resolvedWindow.slice(1)} games`}
+                                                                <div>
+                                                                    {stats.resolvedWindow === 'multiseason' ? `3-season baseline · ${stats.resolvedGames} team games`
+                                                                        : stats.resolvedWindow === 'season' ? `${stats.seasonYear || ''} season · ${stats.resolvedGames} team game${stats.resolvedGames === 1 ? '' : 's'} so far`
+                                                                        : `Last ${stats.resolvedWindow.slice(1)} team games`}
+                                                                </div>
+                                                                {stats.playerGames != null && stats.playerGames !== stats.resolvedGames && (
+                                                                    <div style={{ opacity: 0.75 }}>{stats.playerGames} {position} player-games</div>
+                                                                )}
+                                                                {stats.resolvedWindow === 'season' && stats.resolvedGames < 4 && (
+                                                                    <div style={{ opacity: 0.75, fontStyle: 'italic' }}>Early-season sample</div>
+                                                                )}
                                                             </div>
                                                         )}
                                                     </div>
