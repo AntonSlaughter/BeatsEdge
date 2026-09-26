@@ -14,6 +14,51 @@ const fs = require('fs');
 const path = require('path');
 const store = require('../lib/snapshotStore');
 const { resolveEvent, resolvePlayer, derivePeriodFromMarketKey, actualResult } = require('../lib/realLineMatcher');
+// Market Archive Hardening (Gap 12) -- additive only; every field this
+// adds is new, nothing existing above/below is changed or removed.
+const { classifyTiming } = require('../lib/marketArchive/pregameClassifier');
+
+const ARCHIVE_TABLES = { nba: 'nba_provider_line_archive', wnba: 'wnba_provider_line_archive', mlb: 'mlb_provider_line_archive', nfl: 'nfl_provider_line_archive', ncaaf: 'ncaaf_provider_line_archive' };
+
+// Extended, cross-sport health snapshot: latest capture, rows in the last
+// 24h, distinct events/players/markets/sources, a timing classification
+// breakdown (pregame/live/final/unknown -- see item 9's explicit
+// pregame=captured_at<commence_time rule), and a coarse "any row flagged
+// as provider-truncated" signal where that metadata exists on the row
+// (most archived rows don't carry it today -- reported as a coverage
+// percentage, not fabricated). Read-only; never touches archived rows.
+async function extendedHealthFor(sport) {
+  const table = ARCHIVE_TABLES[sport];
+  if (!table) return { sport, error: `no archive table configured for "${sport}"` };
+  const total = (await store.queryOne(`SELECT COUNT(*) c FROM ${table}`)).c;
+  if (!total) return { sport, total: 0, note: 'no archived rows -- nothing further to report' };
+
+  const range = await store.queryOne(`SELECT MIN(captured_at) lo, MAX(captured_at) hi FROM ${table}`);
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  const last24h = (await store.queryOne(`SELECT COUNT(*) c FROM ${table} WHERE captured_at >= ?`, [dayAgo])).c;
+  const events = (await store.queryOne(`SELECT COUNT(DISTINCT event_id) c FROM ${table}`)).c;
+  const players = (await store.queryOne(`SELECT COUNT(DISTINCT player_raw) c FROM ${table}`)).c;
+  const markets = (await store.queryOne(`SELECT COUNT(DISTINCT market_key_raw) c FROM ${table}`)).c;
+  const sources = await store.query(`SELECT source, COUNT(*) n FROM ${table} GROUP BY source ORDER BY n DESC`);
+
+  const rows = await store.query(`SELECT captured_at, commence_time, game_status FROM ${table}`);
+  const timingCounts = { PREGAME: 0, LIVE: 0, FINAL: 0, UNKNOWN: 0 };
+  for (const r of rows) timingCounts[classifyTiming(r).classification]++;
+
+  return {
+    sport, total, last24h,
+    firstCapture: range.lo, lastCapture: range.hi,
+    distinctEvents: events, distinctPlayers: players, distinctMarkets: markets,
+    sourceBreakdown: sources,
+    timingBreakdown: timingCounts,
+    // Provider truncation metadata (x-result-truncated etc.) is carried by
+    // the PASSTHROUGH response headers, not persisted per-row today -- so
+    // this reports "not currently tracked per snapshot" honestly rather
+    // than fabricating a completeness percentage. See the Market Archive
+    // Hardening report's item H for the full explanation.
+    paginationCompletenessTrackedPerRow: false,
+  };
+}
 
 const PERIOD_STATS = { points: true, rebounds: true, oreb: true, dreb: true, assists: true, tpm: true, tpa: true, pra: true };
 // map a provider market_key_raw's stripped base back to a period-stat
@@ -76,7 +121,14 @@ async function healthFor(sport) {
 (async () => {
   const nba = await healthFor('nba');
   const wnba = await healthFor('wnba');
-  const report = { generatedAt: new Date().toISOString(), nba, wnba };
+  // Market Archive Hardening (Gap 12) -- additive extended snapshot for
+  // all five sports, alongside the original period-market health above
+  // (unchanged, still NBA/WNBA only, since that's the only sport pair
+  // with a period-market registry to resolve against).
+  const extended = {};
+  for (const sport of Object.keys(ARCHIVE_TABLES)) extended[sport] = await extendedHealthFor(sport);
+
+  const report = { generatedAt: new Date().toISOString(), nba, wnba, extended };
 
   const outPath = path.join(__dirname, '..', 'tmp', 'archive-health-report.json');
   fs.writeFileSync(outPath, JSON.stringify(report, null, 2));
@@ -89,5 +141,7 @@ async function healthFor(sport) {
     console.log(`By provider:`, h.byProvider);
     console.log(`By market:`, h.byMarket);
   }
+  console.log(`\n=== EXTENDED (all 5 sports) ===`);
+  console.log(JSON.stringify(extended, null, 2));
   console.log(`\nWrote ${outPath}`);
 })().catch(e => { console.error(e); process.exit(1); });

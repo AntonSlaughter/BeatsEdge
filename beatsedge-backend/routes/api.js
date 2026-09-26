@@ -17,6 +17,13 @@ const dataSourceHealth = require('../lib/dataSourceHealth');
 const parlayCache = require('../lib/parlayCache');
 const wnbaProviderLineArchive = require('../lib/wnbaProviderLineArchive');
 const nbaProviderLineArchive = require('../lib/nbaProviderLineArchive');
+// Market Archive Hardening (Gap 2/5) -- same fire-and-forget archiving
+// pattern extended to the three sports that previously had no provider-
+// line archive at all. Each module's own archiveFromRawParlayResponse
+// is a no-op for any path that isn't its own sport's props endpoint.
+const mlbProviderLineArchive = require('../lib/mlbProviderLineArchive');
+const nflProviderLineArchive = require('../lib/nflProviderLineArchive');
+const ncaafProviderLineArchive = require('../lib/ncaafProviderLineArchive');
 const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
@@ -771,6 +778,16 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
             .catch(e => console.warn('[wnba-archive] failed to archive this refresh:', e.message));
           nbaProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
             .catch(e => console.warn('[nba-archive] failed to archive this refresh:', e.message));
+          // Market Archive Hardening (Gap 2/5) -- identical fire-and-forget
+          // archiving, extended to MLB/NFL/NCAAF. No-ops for any path that
+          // doesn't match their own sport, so this costs nothing on the
+          // other two sports' traffic, exactly like the NBA/WNBA calls above.
+          mlbProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[mlb-archive] failed to archive this refresh:', e.message));
+          nflProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[nfl-archive] failed to archive this refresh:', e.message));
+          ncaafProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[ncaaf-archive] failed to archive this refresh:', e.message));
         }
       }
       return result;
