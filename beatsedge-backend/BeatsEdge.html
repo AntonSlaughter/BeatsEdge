@@ -1403,6 +1403,7 @@
             line-height: 1.15;
         }
         .chart-bar-date .cbd-opp { color: var(--text-secondary); font-weight: 700; }
+        .chart-bar-date .cbd-participation { font-size: 0.54rem; opacity: 0.8; }
 
         .chart-foot {
             font-size: 0.72rem;
@@ -9558,6 +9559,18 @@
             // whose real normalized period (see periodForMarketKey) matches.
             const [periodFilter, setPeriodFilter] = useState('all');
 
+            // 2026-09-27 sport-switch fix: selectedGameEventId/periodFilter are
+            // slate-specific UI filters, not global settings — they must never
+            // survive a sport change. Root cause of the "switch sports -> No
+            // players" bug (proven via code trace, not assumed): the props
+            // filter at ~line 21735 requires `pr.eventId === selectedGameEventId`
+            // whenever selectedGameEventId is set; an event id from the
+            // PREVIOUS sport can never match any prop in the NEW sport's real
+            // data, so the filtered list renders empty even though playersData
+            // itself loaded correctly — exactly why a full page reload (which
+            // resets this state to its useState(null)/'all' default) "fixes" it.
+            useEffect(() => { setSelectedGameEventId(null); setPeriodFilter('all'); }, [selectedSport]);
+
             // ⚠️ SECURITY NOTE: this file is static, client-side HTML. Anything
             // stored here (including localStorage) lives in YOUR browser only —
             // it is never sent anywhere except directly to BallDontLie's API from
@@ -12716,7 +12729,18 @@
                         Object.entries(byBook).forEach(([b, arr]) => {
                             const primary = arr.find(e => e.primary) || arr[0];
                             if (!primary) return;
-                            const id = `${pid}:${k}:${b}`;
+                            // 2026-09-27 movement-identity fix: the key MUST include
+                            // projection type (PrizePicks STANDARD vs DEMON/GOBLIN are
+                            // different markets with very different lines) or a ledger
+                            // entry written while one projection type happened to resolve
+                            // as "primary" gets silently compared against a later fetch
+                            // where a DIFFERENT projection type resolved as primary —
+                            // producing a nonsensical "moved" delta between two unrelated
+                            // markets that only share a player/stat/book. Sportsbook rows
+                            // have no ppType at all, so they all share one stable 'std'
+                            // bucket (never mixed with a DFS row, which always has a real
+                            // ppType value).
+                            const id = `${pid}:${k}:${b}:${primary.ppType || 'std'}`;
                             const move = plTrackLine(_mlbLedger, id, primary.line, primary.over, now);
                             if (move) primary.move = move;
                         })));
@@ -12869,7 +12893,17 @@
                         };
                         // full recent series (up to 40) so the chart can widen
                         // to L20 / season when the window selector changes
-                        nextLogByKey[k] = withVal.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.stat) || 0, line, season: g.season }));
+                        // Real per-game participation, straight off the already-
+                        // fetched MLB Stats API gameLog stat blob — batter PA /
+                        // pitcher IP, never fabricated (2026-09-27 playing-time
+                        // context fix). Left null (not displayed) if the field is
+                        // genuinely absent from a given game's stat object.
+                        nextLogByKey[k] = withVal.slice(-40).map(g => ({
+                            date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
+                            points: getV(g.stat) || 0, line, season: g.season,
+                            pa: !isPitcher && g.stat.plateAppearances != null ? g.stat.plateAppearances : null,
+                            ip: isPitcher && g.stat.inningsPitched != null ? g.stat.inningsPitched : null
+                        }));
                     });
 
                     return {
@@ -13576,7 +13610,12 @@
                         const arr = (linesByName[nm][k][wantBook]) || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
-                        const id = `${slot.id}:${k}:${wantBook}`;
+                        // 2026-09-27 movement-identity fix: see the matching MLB
+                        // comment above — projection type must be part of the
+                        // identity key or STANDARD can get diffed against a
+                        // DEMON/GOBLIN (or a sportsbook alt line) that happened to
+                        // resolve as "primary" in a different fetch.
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
                         const move = plTrackLine(_nflLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -13919,7 +13958,12 @@
                         const arr = (lines[k][wantBook]) || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
-                        const id = `${slot.id}:${k}:${wantBook}`;
+                        // 2026-09-27 movement-identity fix: see the matching MLB
+                        // comment above — projection type must be part of the
+                        // identity key or STANDARD can get diffed against a
+                        // DEMON/GOBLIN (or a sportsbook alt line) that happened to
+                        // resolve as "primary" in a different fetch.
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
                         const move = plTrackLine(_cfbLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -14881,7 +14925,12 @@
                         const arr = (linesByName[nm][k][wantBook]) || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
-                        const id = `${slot.id}:${k}:${wantBook}`;
+                        // 2026-09-27 movement-identity fix: see the matching MLB
+                        // comment above — projection type must be part of the
+                        // identity key or STANDARD can get diffed against a
+                        // DEMON/GOBLIN (or a sportsbook alt line) that happened to
+                        // resolve as "primary" in a different fetch.
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
                         const move = plTrackLine(_nbaLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -15259,7 +15308,12 @@
                         const arr = (linesByName[nm][k][wantBook]) || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
-                        const id = `${slot.id}:${k}:${wantBook}`;
+                        // 2026-09-27 movement-identity fix: see the matching MLB
+                        // comment above — projection type must be part of the
+                        // identity key or STANDARD can get diffed against a
+                        // DEMON/GOBLIN (or a sportsbook alt line) that happened to
+                        // resolve as "primary" in a different fetch.
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
                         const move = plTrackLine(_wnbaLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -19480,7 +19534,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     )}
                                                     {prop.move && prop.move.delta !== 0 && (
                                                         <span className={`prop-move ${prop.move.delta > 0 ? 'up' : 'down'}`}
-                                                            title={`Opened at ${prop.move.open} today${prop.move.moveCount > 1 ? ` · ${prop.move.moveCount} moves` : ''} · now ${prop.move.to} (${prop.move.openDelta > 0 ? '+' : ''}${prop.move.openDelta} from open)`}>
+                                                            title={`First seen at ${prop.move.open} today${prop.move.moveCount > 1 ? ` · ${prop.move.moveCount} moves` : ''} · now ${prop.move.to} (${prop.move.openDelta > 0 ? '+' : ''}${prop.move.openDelta} since first seen)`}>
                                                             {prop.move.delta > 0 ? '▲' : '▼'}{Math.abs(prop.move.delta)}
                                                         </span>
                                                     )}
@@ -19834,9 +19888,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         )}
                                                         {activeProp.move && activeProp.move.open != null && activeProp.move.open !== activeProp.move.to && (
                                                             <div className="edge-prop-line" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                                                📈 Opened today at <strong style={{ color: 'var(--text-secondary)' }}>{activeProp.move.open}</strong>
+                                                                📈 First seen today at <strong style={{ color: 'var(--text-secondary)' }}>{activeProp.move.open}</strong>
                                                                 {activeProp.move.moveCount > 1 ? ` · ${activeProp.move.moveCount} moves so far` : ''}
-                                                                {' · '}{activeProp.move.openDelta > 0 ? '+' : ''}{activeProp.move.openDelta} from open to now
+                                                                {' · '}{activeProp.move.openDelta > 0 ? '+' : ''}{activeProp.move.openDelta} since first seen
                                                             </div>
                                                         )}
                                                         {!activeProp.move && activeProp.setAt && (Date.now() - Date.parse(activeProp.setAt) < 5400000) && (
@@ -20823,7 +20877,25 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     const chartWindowLabel = selectedPropTab === 'trueSeason' ? 'Season'
                                         : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}`
                                         : `Last ${shownGames.length}`;
-                                    const plotH = 190, dateH = 32, barAreaH = plotH - dateH;
+                                    // dateH bumped 32->44 (2026-09-27 playing-time context fix)
+                                    // to fit a third, small participation line (MIN/PA/IP) under
+                                    // the existing opponent/date lines without clipping.
+                                    const plotH = 190, dateH = 44, barAreaH = plotH - dateH;
+                                    // Sport/role-aware, real-value-only participation label for one
+                                    // game-log row `g` — architected so a future sport (e.g. Soccer,
+                                    // MIN) only needs one more branch here, never a chart rewrite.
+                                    // Returns null (renders nothing) rather than ever fabricating a
+                                    // value a sport's pipeline doesn't actually provide (NFL/CFB have
+                                    // no real snap data anywhere in this app today — see the existing
+                                    // "snap share ... todo" notes elsewhere in this file).
+                                    const participationLabel = (g) => {
+                                        if ((player.sport === 'nba' || player.sport === 'wnba') && g.min != null) return `${g.min} MIN`;
+                                        if (player.sport === 'mlb') {
+                                            if (g.pa != null) return `${g.pa} PA`;
+                                            if (g.ip != null) return `${g.ip} IP`;
+                                        }
+                                        return null;
+                                    };
                                     const maxV = Math.max(...shownGames.map(g => g.points), windowLine * 1.3, 1) * 1.14;
                                     const px = (v) => (v / maxV) * barAreaH;
 
@@ -20880,6 +20952,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     <div className="chart-bar-date" style={{ height: dateH + 'px' }}>
                                                                         <span className="cbd-opp">{g.vsLabel || (g.opponent ? 'vs ' + g.opponent : '')}</span>
                                                                         <span className="cbd-date">{g.dateShort || g.date}</span>
+                                                                        {participationLabel(g) && <span className="cbd-participation">{participationLabel(g)}</span>}
                                                                     </div>
                                                                 </div>
                                                             );
