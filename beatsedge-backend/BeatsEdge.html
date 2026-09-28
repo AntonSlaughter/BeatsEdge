@@ -5584,7 +5584,15 @@
         // so "where did it start, where's it been, where is it now" survives
         // across visits and reloads, not just the last hop. Read once per
         // fetch, mutated in memory while props are built, saved once.
-        const LINE_HIST_PREFIX = 'beatsedge_line_hist_v1:';
+        // v1 -> v2 (2026-09-28 movement-identity hardening): v1 keys were
+        // `${player}:${stat}:${book}` (then briefly `...:${ppType}` under
+        // commit 33aacc4) -- neither included event id, so a doubleheader
+        // (same player/stat/book, two different real events, same calendar
+        // date) could still share one ledger entry. Bumping the prefix
+        // abandons every old-format key outright rather than trying to
+        // reinterpret it -- honest missing movement beats a guess at
+        // migrating an ambiguous old key.
+        const LINE_HIST_PREFIX = 'beatsedge_line_hist_v2:';
         const plLedgerKey = (sport, date) => LINE_HIST_PREFIX + sport + '|' + date;
         const plLoadLedger = (sport, date) => {
             try { return JSON.parse(localStorage.getItem(plLedgerKey(sport, date)) || '{}'); } catch (e) { return {}; }
@@ -12740,7 +12748,10 @@
                             // have no ppType at all, so they all share one stable 'std'
                             // bucket (never mixed with a DFS row, which always has a real
                             // ppType value).
-                            const id = `${pid}:${k}:${b}:${primary.ppType || 'std'}`;
+                            // 2026-09-28: + event id -- a doubleheader (same
+                            // player/stat/book, two real games same calendar
+                            // date) must never share movement history.
+                            const id = `${pid}:${k}:${b}:${primary.ppType || 'std'}:${primary.eventId || ''}`;
                             const move = plTrackLine(_mlbLedger, id, primary.line, primary.over, now);
                             if (move) primary.move = move;
                         })));
@@ -13615,7 +13626,11 @@
                         // identity key or STANDARD can get diffed against a
                         // DEMON/GOBLIN (or a sportsbook alt line) that happened to
                         // resolve as "primary" in a different fetch.
-                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
+                        // 2026-09-28: + event id -- see the matching MLB comment
+                        // above (doubleheader-class collisions, generalized to
+                        // any sport where the same player could have two
+                        // distinct real events on one calendar date).
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}:${pr.eventId || ''}`;
                         const move = plTrackLine(_nflLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -13963,7 +13978,11 @@
                         // identity key or STANDARD can get diffed against a
                         // DEMON/GOBLIN (or a sportsbook alt line) that happened to
                         // resolve as "primary" in a different fetch.
-                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
+                        // 2026-09-28: + event id -- see the matching MLB comment
+                        // above (doubleheader-class collisions, generalized to
+                        // any sport where the same player could have two
+                        // distinct real events on one calendar date).
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}:${pr.eventId || ''}`;
                         const move = plTrackLine(_cfbLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -14930,7 +14949,11 @@
                         // identity key or STANDARD can get diffed against a
                         // DEMON/GOBLIN (or a sportsbook alt line) that happened to
                         // resolve as "primary" in a different fetch.
-                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
+                        // 2026-09-28: + event id -- see the matching MLB comment
+                        // above (doubleheader-class collisions, generalized to
+                        // any sport where the same player could have two
+                        // distinct real events on one calendar date).
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}:${pr.eventId || ''}`;
                         const move = plTrackLine(_nbaLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
@@ -15313,7 +15336,11 @@
                         // identity key or STANDARD can get diffed against a
                         // DEMON/GOBLIN (or a sportsbook alt line) that happened to
                         // resolve as "primary" in a different fetch.
-                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}`;
+                        // 2026-09-28: + event id -- see the matching MLB comment
+                        // above (doubleheader-class collisions, generalized to
+                        // any sport where the same player could have two
+                        // distinct real events on one calendar date).
+                        const id = `${slot.id}:${k}:${wantBook}:${pr.ppType || 'std'}:${pr.eventId || ''}`;
                         const move = plTrackLine(_wnbaLedger, id, pr.line, pr.over, now);
                         if (move) pr.move = move;
                     });
