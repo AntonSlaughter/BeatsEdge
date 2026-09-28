@@ -3071,6 +3071,68 @@
             return sd;
         }
 
+        // ── Validated quantile-distribution models (SHIPPED, 2026-09-28) ────
+        // NBA Points and 4 MLB families (Total Bases, Pitcher Outs, RBIs,
+        // Batter Walks) replace the raw Normal-CDF distribution layer with a
+        // non-parametric quantile model: 2D conditional empirical quantiles
+        // (projected-mean decile x own-volatility tercile), fit on real
+        // historical outcomes. Chronologically walk-forward validated against
+        // THIS SAME production projection formula (not a research-only
+        // approximation) — see scripts/finalAudit/run-production-realistic-
+        // validation.js (NBA, ~3.8% pinball-loss improvement, both splits) and
+        // scripts/finalAudit/run-mlb-distribution-audit.js (MLB, 5.6-16.3%
+        // improvement, all four families). Every other stat family (REB, AST,
+        // 3PM, PRA, PR, PA, Fantasy, and every non-listed MLB market) is
+        // UNCHANGED — still the Normal-CDF path below. Frozen parameters
+        // trained via scripts/finalAudit/freeze-quantile-models.js; do not
+        // hand-edit these numbers or retrain without a fresh validation pass.
+        const QUANTILE_MODEL_ENABLED = { nba: { points: true }, mlb: { totalBases: true, pitcherOuts: true, rbis: true, batterWalks: true } };
+        const QUANTILE_MODELS = {"nba":{"points":{"meanDecileCuts":[3.4,4.9,6.2,7.6,9.2,11,13.3,16.5,21.5],"volTercileCuts":[4.5492,6.261],"q2D":{"4|1":[2,4,8,12,16],"9|1":[14,19,24,31,37],"7|1":[7,10,15,19,24],"2|1":[0,2,5,9,13],"3|1":[1,3,7,11,14],"6|1":[4,8,12,16,21],"5|1":[3,6,10,14,18],"8|1":[10,14,19,24,29],"1|1":[0,1,4,8,12],"0|1":[0,0,2,5,9],"6|0":[6,8,11,16,19],"7|2":[6,10,15,20,24],"4|0":[2,4,8,12,15],"9|2":[14,19,25,31,37],"5|0":[3,6,9,13,17],"2|0":[0,2,5,8,12],"1|0":[0,1,4,7,11],"8|2":[9,14,19,24,29],"9|0":[12,19,25,32,36],"2|2":[0,2,5,10,14],"3|2":[0,3,7,12,16],"3|0":[2,3,6,10,14],"7|0":[7,10,14,18,22],"6|2":[4,8,12,17,21],"4|2":[2,5,9,13,17],"8|0":[9,13,19,24,28],"5|2":[3,6,10,15,20],"0|0":[0,0,2,5,8],"0|2":[0,0,3,6,11],"1|2":[0,0,4,8,11]},"q1D":{"0":[0,0,2,5,8],"1":[0,1,4,7,11],"2":[0,2,5,9,13],"3":[1,3,6,10,14],"4":[2,4,8,12,16],"5":[3,6,10,14,18],"6":[4,8,12,16,21],"7":[6,10,15,19,24],"8":[9,14,19,24,29],"9":[14,19,25,31,37]},"popQ":[0,4,9,16,24]}},"mlb":{"totalBases":{"meanDecileCuts":[0.9,1,1.2,1.3,1.4,1.5,1.6,1.8,2],"volTercileCuts":[1.3848,1.8205],"q2D":{"2|0":[0,0,1,2,4],"5|2":[0,0,1,2,4],"8|0":[0,0,1,2,5],"9|2":[0,0,1,3,5],"3|0":[0,0,1,2,4],"2|1":[0,0,1,2,4],"8|2":[0,0,1,2,4],"1|0":[0,0,1,2,3],"6|2":[0,0,1,2,4],"9|1":[0,0,1,3,4],"4|2":[0,0,1,2,4],"0|0":[0,0,0,1,3],"0|1":[0,0,0,1,3],"7|2":[0,0,1,2,4],"6|0":[0,0,1,3,4],"5|1":[0,0,1,2,4],"6|1":[0,0,1,2,4],"3|2":[0,0,1,2,4],"7|0":[0,0,1,2,4],"3|1":[0,0,1,2,4],"5|0":[0,0,1,2,4],"9|0":[0,0,1,2,4],"7|1":[0,0,1,2,4],"0|2":[0,0,0,2,4],"4|0":[0,0,1,2,4],"8|1":[0,0,1,3,4],"2|2":[0,0,1,2,4],"1|1":[0,0,1,2,4],"4|1":[0,0,1,2,4],"1|2":[0,0,0,2,4]},"q1D":{"0":[0,0,0,1,3],"1":[0,0,1,2,4],"2":[0,0,1,2,4],"3":[0,0,1,2,4],"4":[0,0,1,2,4],"5":[0,0,1,2,4],"6":[0,0,1,2,4],"7":[0,0,1,2,4],"8":[0,0,1,3,4],"9":[0,0,1,3,5]},"popQ":[0,0,1,2,4]},"pitcherOuts":{"meanDecileCuts":[2.6,2.8,2.9,3,3.1,3.4,3.9,8.6,16.1],"volTercileCuts":[1,1.7182],"q2D":{"2|0":[2,3,3,3,3],"1|0":[1,3,3,3,3],"0|1":[1,2,3,3,4],"0|0":[1,2,3,3,4],"1|1":[1,2,3,3,4],"4|1":[2,3,3,3,5],"2|1":[1,2,3,3,4],"3|0":[2,3,3,3,4],"5|1":[1,3,3,3,5],"5|0":[2,3,3,3,4],"4|0":[2,3,3,3,4],"5|2":[1,3,3,4,6],"3|1":[1,2,3,3,5],"6|1":[2,3,3,4,6],"6|2":[2,3,3,5,6],"3|2":[2,2,3,4,5],"4|2":[1,2,3,3,5],"7|1":[2,3,3,5,6],"7|2":[2,3,4,6,10],"6|0":[2,3,3,3,5],"1|2":[1,2,3,4,6],"2|2":[1,2,3,3,5],"8|2":[6,11,15,18,19],"9|2":[12,15,18,20,21]},"q1D":{"0":[1,2,3,3,4],"1":[1,3,3,3,4],"2":[2,3,3,3,4],"3":[2,3,3,3,4],"4":[2,3,3,3,4],"5":[2,3,3,3,5],"6":[2,3,3,4,6],"7":[2,3,3,6,9],"8":[6,11,15,18,19],"9":[12,15,18,20,21]},"popQ":[2,3,3,6,16]},"rbis":{"meanDecileCuts":[0.2,0.3,0.3,0.4,0.4,0.5,0.5,0.6,0.7],"volTercileCuts":[0.6172,0.8619],"q2D":{"0|0":[0,0,0,0,1],"9|2":[0,0,0,1,2],"1|0":[0,0,0,1,1],"8|1":[0,0,0,1,2],"7|1":[0,0,0,1,2],"0|1":[0,0,0,0,1],"3|0":[0,0,0,1,1],"5|1":[0,0,0,1,2],"5|2":[0,0,0,1,2],"1|1":[0,0,0,1,1],"3|2":[0,0,0,1,1],"5|0":[0,0,0,1,2],"1|2":[0,0,0,1,1],"8|2":[0,0,0,1,2],"3|1":[0,0,0,1,1],"7|2":[0,0,0,1,2],"9|1":[0,0,0,1,2],"8|0":[0,0,0,1,2],"0|2":[0,0,0,0,1],"7|0":[0,0,0,1,2]},"q1D":{"0":[0,0,0,0,1],"1":[0,0,0,1,1],"3":[0,0,0,1,1],"5":[0,0,0,1,2],"7":[0,0,0,1,2],"8":[0,0,0,1,2],"9":[0,0,0,1,2]},"popQ":[0,0,0,1,2]},"batterWalks":{"meanDecileCuts":[0.1,0.2,0.2,0.3,0.3,0.3,0.4,0.4,0.5],"volTercileCuts":[0.4385,0.6172],"q2D":{"1|0":[0,0,0,0,1],"0|0":[0,0,0,0,1],"9|2":[0,0,0,1,1],"6|1":[0,0,0,1,1],"6|2":[0,0,0,1,1],"8|2":[0,0,0,1,1],"8|1":[0,0,0,1,1],"3|1":[0,0,0,1,1],"3|2":[0,0,0,1,1],"1|2":[0,0,0,0,1],"9|1":[0,0,0,1,1],"1|1":[0,0,0,0,1],"3|0":[0,0,0,1,1],"0|1":[0,0,0,0,1],"6|0":[0,0,0,1,1],"8|0":[0,0,0,1,1]},"q1D":{"0":[0,0,0,0,1],"1":[0,0,0,0,1],"3":[0,0,0,1,1],"6":[0,0,0,1,1],"8":[0,0,0,1,1],"9":[0,0,0,1,1]},"popQ":[0,0,0,1,1]}}};
+        const NBA_VOLATILITY_BAND_CUTS = {"rebounds":[2.04925113137219,2.72045566389155],"assists":[1.222601834104319,1.8150201777429458]};
+        // Real per-game history for THIS stat, oldest→newest, from the same
+        // gameLogByKey array the UI's chart/history already reads (never a
+        // new data source). Trailing <=15 games, same window the frozen
+        // models were trained with.
+        function _recentStatSeries(player, statKey, n) {
+            const rows = (player && player.gameLogByKey && player.gameLogByKey[statKey]) || [];
+            return rows.slice(-n).map(g => g.points).filter(v => v != null && isFinite(v));
+        }
+        function _stddevSample(arr) {
+            if (!arr || arr.length < 2) return null;
+            const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+            return Math.sqrt(arr.reduce((a, b) => a + (b - m) * (b - m), 0) / (arr.length - 1));
+        }
+        // Looks up the frozen 2D bin (mean-decile x volatility-tercile),
+        // falling back to the 1D (mean-decile-only) bin, then the unconditional
+        // population quantiles — identical fallback order to the validated
+        // research implementation. Returns null (never fabricates) if this
+        // sport/statKey isn't one of the 5 approved families.
+        function quantileModelPredict(sport, statKey, projection, volSD) {
+            const model = QUANTILE_MODEL_ENABLED[sport] && QUANTILE_MODEL_ENABLED[sport][statKey] && QUANTILE_MODELS[sport] && QUANTILE_MODELS[sport][statKey];
+            if (!model || projection == null || !isFinite(projection)) return null;
+            const cuts = model.meanDecileCuts;
+            let md = 0; while (md < cuts.length && projection > cuts[md]) md++;
+            const vt = volSD == null ? 1 : (volSD <= model.volTercileCuts[0] ? 0 : volSD <= model.volTercileCuts[1] ? 1 : 2);
+            return model.q2D[`${md}|${vt}`] || model.q1D[`${md}`] || model.popQ || null;
+        }
+        // P(actual > line) via linear interpolation between the 5 known
+        // (quantile-level, value) points — same interpolation the validated
+        // research scored pinball loss/calibration with.
+        const _Q_LEVELS = [0.10, 0.25, 0.50, 0.75, 0.90];
+        function quantileProbOver(preds, line) {
+            const pts = _Q_LEVELS.map((tau, i) => [preds[i], tau]);
+            let predP;
+            if (line <= pts[0][0]) predP = pts[0][1] * (line / Math.max(pts[0][0], 1e-6));
+            else if (line >= pts[pts.length - 1][0]) predP = 1;
+            else {
+                let lo = pts[0], hi = pts[pts.length - 1];
+                for (let i = 0; i < pts.length - 1; i++) if (line >= pts[i][0] && line <= pts[i + 1][0]) { lo = pts[i]; hi = pts[i + 1]; break; }
+                const frac = hi[0] === lo[0] ? 0 : (line - lo[0]) / (hi[0] - lo[0]);
+                predP = lo[1] + frac * (hi[1] - lo[1]);
+            }
+            return Math.max(0.02, Math.min(0.98, 1 - predP));
+        }
+
         // ── MLB split helpers ──────────────────────────────────────────────
         // A rate (per-AB / per-PA / OPS) for one prop stat out of any MLB
         // hitting stat object (season, a situational split, or batter-vs-
@@ -3804,6 +3866,17 @@
                 }
                 pOver = Math.max(0.005, Math.min(0.995, pOver));
                 pDistRaw = direction === 'over' ? pOver : 1 - pOver;
+            } else if (QUANTILE_MODEL_ENABLED[sport] && QUANTILE_MODEL_ENABLED[sport][prop.statKey] &&
+                       quantileModelPredict(sport, prop.statKey, projection, _stddevSample(_recentStatSeries(player, prop.statKey, 15)))) {
+                // SHIPPED quantile-distribution path (NBA points; MLB
+                // totalBases/pitcherOuts/rbis/batterWalks). Replaces ONLY the
+                // raw base-rate estimate — projection, regression-to-mean,
+                // history blend, factor nudges, clamp, and the sport
+                // calibration curve below are all untouched, identical to the
+                // Normal-CDF path for every other stat.
+                const _qPreds = quantileModelPredict(sport, prop.statKey, projection, _stddevSample(_recentStatSeries(player, prop.statKey, 15)));
+                const pOver = quantileProbOver(_qPreds, line);
+                pDistRaw = direction === 'over' ? pOver : 1 - pOver;
             } else {
                 pDistRaw = Math.max(0.02, Math.min(0.98, normalCdf(zPick)));
             }
@@ -4064,7 +4137,24 @@
                 vigPct: Math.round(vig * 1000) / 10,
                 edgePct,
                 hitRates,
-                probSteps
+                probSteps,
+                // ── Projection Stability (context only, SHIPPED 2026-09-28) ──
+                // NBA Rebounds/Assists only. Real stddev of this player's own
+                // prior-game history for THIS stat (same gameLogByKey series
+                // the chart already reads, capped at the app's existing
+                // 40-game window — the best available proxy for "season to
+                // date"), banded against frozen TRAIN-tertile cuts from
+                // scripts/finalAudit/freeze-volatility-bands.js. Diagnostic/
+                // display only — never read by the probability/Edge/grade/
+                // Prime/confluence computation above; this field is appended
+                // AFTER every one of those values is already finalized.
+                volatilityContext: (sport === 'nba' && NBA_VOLATILITY_BAND_CUTS[prop.statKey]) ? (() => {
+                    const sd = _stddevSample(_recentStatSeries(player, prop.statKey, 9999));
+                    if (sd == null) return null;
+                    const cuts = NBA_VOLATILITY_BAND_CUTS[prop.statKey];
+                    const band = sd <= cuts[0] ? 'LOW' : sd <= cuts[1] ? 'NORMAL' : 'HIGH';
+                    return { band, sd: Math.round(sd * 100) / 100 };
+                })() : null
             };
         }
 
@@ -20455,6 +20545,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                             <div className="prob-step"><span className="prob-step-label">Hit rate on this side (reference)<span className="prob-step-detail">{parts.join(' · ')}</span></span><span className="prob-step-value"></span></div>
                                                                         ) : null;
                                                                     })()}
+                                                                    {edge.volatilityContext && (
+                                                                        <div className="prob-step">
+                                                                            <span className="prob-step-label">Projection Stability (context only)
+                                                                                <span className="prob-step-detail">
+                                                                                    {edge.volatilityContext.band === 'HIGH'
+                                                                                        ? `This player's game-to-game ${prop.type || 'result'} has historically varied more (σ≈${edge.volatilityContext.sd}) — not a signal to avoid, just wider swings than usual.`
+                                                                                        : edge.volatilityContext.band === 'LOW'
+                                                                                            ? `This player's game-to-game ${prop.type || 'result'} has historically varied less (σ≈${edge.volatilityContext.sd}) — not a guarantee, just tighter swings than usual.`
+                                                                                            : `Typical game-to-game variance for this player's ${prop.type || 'result'} (σ≈${edge.volatilityContext.sd}).`}
+                                                                                </span>
+                                                                            </span>
+                                                                            <span className="prob-step-value">{edge.volatilityContext.band}</span>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </details>
 
