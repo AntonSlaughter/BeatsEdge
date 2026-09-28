@@ -13512,17 +13512,31 @@
                 const nflNameToAbbr = nameToAbbrFromDisplayName(nflCache.current.teamMeta || {});
                 const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary}]
                 const bySlot = {};
+                // 2026-09-28 coverage-diagnostic fix: resolvePlayerIdentity
+                // already computes WHY a name didn't resolve (noCandidates /
+                // nameOnlyNoTeamData / teamCorroborated / teamMismatch /
+                // collision) but that reason was discarded — every silent
+                // drop looked identical from the outside, with nothing to
+                // diagnose the next "missing player" report against. Tallied
+                // here and logged to console.debug only (dev tools, never a
+                // user-facing UI element) — never changes which players match.
+                const _cov = { rawNames: 0, noRosterCandidate: 0, nameOnlyNoTeamData: 0, teamCorroborated: 0, teamMismatch: 0, collision: 0, matched: 0 };
                 Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    _cov.rawNames++;
                     const candidates = rosterCandidates[nn];
-                    if (!candidates || !candidates.length) return;
+                    if (!candidates || !candidates.length) { _cov.noRosterCandidate++; return; }
                     const gameTeamAbbrs = extractGameTeamAbbrs(byStat, nflNameToAbbr);
-                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
-                    if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
+                    const { chosen, reason } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (reason && _cov[reason] != null) _cov[reason]++;
+                    if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; _cov.matched++; }
                 });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
+                if (typeof console !== 'undefined' && console.debug) {
+                    console.debug('[NFL coverage]', { rawProviderPlayers: _cov.rawNames, matchedToRoster: _cov.matched, ..._cov, finalApiPlayers: matchedNames.length });
+                }
                 if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no NFL lines matched this slate\'s roster scan (name join).'); return []; }
 
                 // Real Defense-vs-Position — batch-fetched once per unique
@@ -13928,17 +13942,26 @@
                 const cfbNameToAbbr = nameToAbbrFromDisplayName(cfbCache.current.teamMeta || {});
                 const linesByName = {}; // normName -> statKey -> book -> [{line,over,under,juice,setAt,primary,ppType}]
                 const resolvedByNorm = {};
+                // 2026-09-28 coverage-diagnostic fix: see the identical NFL
+                // comment above resolvePlayerIdentity's call site — same
+                // discarded-reason gap, same fix, dev console only.
+                const _cov = { rawNames: 0, noRosterCandidate: 0, nameOnlyNoTeamData: 0, teamCorroborated: 0, teamMismatch: 0, collision: 0, matched: 0 };
                 Object.entries(pa.byNorm).forEach(([nn, byStat]) => {
+                    _cov.rawNames++;
                     const candidates = rosterCandidates[nn];
-                    if (!candidates || !candidates.length) return;
+                    if (!candidates || !candidates.length) { _cov.noRosterCandidate++; return; }
                     const gameTeamAbbrs = extractGameTeamAbbrs(byStat, cfbNameToAbbr);
-                    const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
-                    if (chosen) { linesByName[nn] = byStat; resolvedByNorm[nn] = chosen; }
+                    const { chosen, reason } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
+                    if (reason && _cov[reason] != null) _cov[reason]++;
+                    if (chosen) { linesByName[nn] = byStat; resolvedByNorm[nn] = chosen; _cov.matched++; }
                 });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
                 const matched = Object.keys(linesByName).map(nn => ({ nn, slot: resolvedByNorm[nn] })).filter(x => x.slot);
+                if (typeof console !== 'undefined' && console.debug) {
+                    console.debug('[CFB coverage]', { rawProviderPlayers: _cov.rawNames, matchedToRoster: _cov.matched, ..._cov, finalApiPlayers: matched.length });
+                }
                 if (!matched.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no CFB lines matched this slate\'s roster scan (name join).'); return []; }
 
                 const glMap = await cfbGamelogs(matched.map(x => x.slot.id));
