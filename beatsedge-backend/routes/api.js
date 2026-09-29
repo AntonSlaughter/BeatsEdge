@@ -23,6 +23,9 @@ const nbaProviderLineArchive = require('../lib/nbaProviderLineArchive');
 const mlbProviderLineArchive = require('../lib/mlbProviderLineArchive');
 const nflProviderLineArchive = require('../lib/nflProviderLineArchive');
 const ncaafProviderLineArchive = require('../lib/ncaafProviderLineArchive');
+// NHL unlock project -- dormant capture only (see lib/nhlProviderLineArchive.js).
+// NHL stays locked; this just lets real lines start accumulating.
+const nhlProviderLineArchive = require('../lib/nhlProviderLineArchive');
 const { buildNextManUpSignalsBulk } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { buildNflGameEnvironmentSignalAsync } = require('../lib/nflGameEnvironment');
@@ -648,6 +651,44 @@ router.get('/nhl/team-shooting/:team', async (req, res) => {
   res.json({ source: 'BeatsEdge computed (real api-web.nhle.com box scores)', ...row });
 });
 
+// NHL unlock, research-only discovery sink REMOVED 2026-09-29: served
+// its purpose (real market classification is now built into
+// PARLAY_NHL_MKT/lib/nhlMarketMapping.js from what it found) and has no
+// ongoing product purpose now that NHL's real pipeline is wired in.
+
+// GET /api/nhl/player-projections?date=YYYY-MM-DD
+// NHL unlock project -- bulk real projections for ONLY the validated
+// stat families (Shots on Goal, Goalie Saves, Goals/Assists/Points
+// P(>=1)), computed from lib/nhlProjectionEngine.js's exact validated
+// formulas against the real historicalStore-backed nhl_player_box table.
+// Both point-projection families use the same real, validated
+// shrinkage-5 (k=8) formula -- a rest/back-to-back adjustment for Saves
+// was tested (research-nhl-features.js) but, once a real data bug
+// (goalies dressed but never entering the game) was found and fixed
+// during this integration, showed no real improvement over the plain
+// shrinkage baseline, so it was correctly dropped rather than shipped on
+// a false premise. `date` is accepted for cache-keying only; this route
+// does not read/require a ParlayAPI key and never sees one -- only real
+// historical box-score data. NHL stays locked regardless of this
+// route's existence -- nothing in the live UI calls it yet.
+let _nhlProjectionsCache = { at: 0, date: null, data: null };
+const NHL_PROJECTIONS_TTL_MS = 60 * 60 * 1000;
+router.get('/nhl/player-projections', async (req, res) => {
+  try {
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    if (_nhlProjectionsCache.data && _nhlProjectionsCache.date === date && (Date.now() - _nhlProjectionsCache.at) < NHL_PROJECTIONS_TTL_MS) {
+      return res.json(_nhlProjectionsCache.data);
+    }
+    const { computeAllProjections } = require('../lib/nhlProjectionEngine');
+    const projections = await computeAllProjections();
+    const payload = { date, source: 'BeatsEdge computed (real fastRhockey-nhl-data)', projections };
+    _nhlProjectionsCache = { at: Date.now(), date, data: payload };
+    res.json(payload);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/mlb/probable-pitcher/:team?date=YYYY-MM-DD
 // Real "who's actually pitching against this team tonight" — closes the
 // gap that previously left batter matchups on sample data by default.
@@ -874,6 +915,11 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
             .catch(e => console.warn('[nfl-archive] failed to archive this refresh:', e.message));
           ncaafProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
             .catch(e => console.warn('[ncaaf-archive] failed to archive this refresh:', e.message));
+          // NHL unlock project -- dormant capture only, no-op for any path
+          // that isn't icehockey_nhl/props. NHL is still locked; this just
+          // accumulates real lines toward the real-line validation gap.
+          nhlProviderLineArchive.archiveFromRawParlayResponse(upstreamPath, body)
+            .catch(e => console.warn('[nhl-archive] failed to archive this refresh:', e.message));
         }
       }
       return result;

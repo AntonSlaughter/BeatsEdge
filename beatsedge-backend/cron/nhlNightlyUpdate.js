@@ -4,6 +4,13 @@
 
 const { fetchSchedule, fetchBoxscore } = require('../lib/nhlProxy');
 const { insertBoxscoreAsync, recomputeDefenseByPositionBulk, recomputeTeamShootingRollupBulk } = require('../lib/nhlEngine');
+// NHL unlock project -- keeps lib/nhlProjectionEngine.js's validated
+// model history (nhl_player_box) current automatically. Purely additive:
+// reuses this same already-fetched real boxscore, writes to a DIFFERENT
+// table (nhl_player_box, not nhl_skater_game_stats/nhl_goalie_game_stats
+// above), wrapped in its own try/catch below so a failure here can never
+// affect the existing DvP/shooting-rollup update this file already does.
+const { syncBoxscoreToPlayerBox } = require('../lib/nhlPlayerBoxSync');
 const store = require('../lib/historicalStore');
 
 async function runNhlNightlyUpdate() {
@@ -13,6 +20,7 @@ async function runNhlNightlyUpdate() {
 
   console.log(`[nhl-nightly] Starting update for ${dateStr}...`);
   let totalSkaterRows = 0, totalGoalieRows = 0, gamesProcessed = 0;
+  let modelSkaterRows = 0, modelGoalieRows = 0, modelSyncFailures = 0;
 
   try {
     const schedule = await fetchSchedule(dateStr);
@@ -27,6 +35,17 @@ async function runNhlNightlyUpdate() {
         totalSkaterRows += skaterRows;
         totalGoalieRows += goalieRows;
         gamesProcessed++;
+        // Own try/catch: a failure syncing the model's history table must
+        // never affect the DvP/shooting-rollup update above, which is
+        // already real and live.
+        try {
+          const modelSync = await syncBoxscoreToPlayerBox(boxscore, dateStr, game.id);
+          modelSkaterRows += modelSync.skaterRows;
+          modelGoalieRows += modelSync.goalieRows;
+        } catch (syncErr) {
+          modelSyncFailures++;
+          console.warn(`[nhl-nightly] Model-history sync failed for game ${game.id} (existing history untouched):`, syncErr.message);
+        }
       } catch (err) {
         console.warn(`[nhl-nightly] Failed game ${game.id}:`, err.message);
       }
@@ -34,6 +53,8 @@ async function runNhlNightlyUpdate() {
   } catch (err) {
     console.error('[nhl-nightly] Schedule fetch failed (will retry next run):', err.message);
   }
+
+  console.log(`[nhl-nightly] Model history (nhl_player_box) sync: ${modelSkaterRows} skater rows, ${modelGoalieRows} goalie rows, ${modelSyncFailures} game(s) failed to sync.`);
 
   console.log(`[nhl-nightly] Processed ${gamesProcessed} games: ${totalSkaterRows} skater rows, ${totalGoalieRows} goalie rows`);
 

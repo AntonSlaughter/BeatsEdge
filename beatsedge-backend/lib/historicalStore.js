@@ -228,6 +228,53 @@ const SCHEMA_STATEMENTS = [
     PRIMARY KEY (team, window_type)
   )`,
 
+  // NHL unlock, Phase 5: a SEPARATE, richer historical research dataset --
+  // deliberately NOT the same table as nhl_skater_game_stats/
+  // nhl_goalie_game_stats above (those are the LIVE, api-web.nhle.com-
+  // sourced tables the already-converted nightly cron/DvP rollups read and
+  // write; frozen, untouched by this addition). Source: sportsdataverse/
+  // fastRhockey-nhl-data (MIT license), the same organization/release
+  // pattern already trusted for NBA/WNBA's hoopR data -- see
+  // scripts/fetch-hoopr-nhl.js's header for the exact URLs/attribution.
+  // One row per player per game, skaters and goalies together (matching
+  // the source CSV's own shape -- goalie-only columns are NULL for skater
+  // rows and vice versa), richer than the live table (real TOI, power-play
+  // goals, faceoff%, shifts, giveaways/takeaways, and the goalie shot-
+  // against breakdown by strength + decision/starter flags) because this
+  // is for RESEARCH (Phases 6-9), not live serving.
+  `CREATE TABLE IF NOT EXISTS nhl_player_box (
+    game_id TEXT NOT NULL, player_id TEXT NOT NULL, player_name TEXT, season INTEGER NOT NULL,
+    game_date TEXT NOT NULL, team TEXT NOT NULL, opponent TEXT, home_away TEXT,
+    position TEXT, sweater_number INTEGER,
+    goals REAL, assists REAL, points REAL, plus_minus REAL, pim REAL, hits REAL,
+    power_play_goals REAL, shots_on_goal REAL, faceoff_winning_pctg REAL,
+    toi TEXT, toi_seconds REAL, blocked_shots REAL, shifts REAL, giveaways REAL, takeaways REAL,
+    even_strength_shots_against REAL, power_play_shots_against REAL, shorthanded_shots_against REAL,
+    save_shots_against REAL, save_pctg REAL,
+    even_strength_goals_against REAL, power_play_goals_against REAL, shorthanded_goals_against REAL,
+    goals_against REAL, starter INTEGER, decision TEXT, shots_against REAL, saves REAL,
+    source TEXT DEFAULT 'fastrhockey-nhl-data',
+    PRIMARY KEY (game_id, player_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_pbox_player ON nhl_player_box(player_id, game_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_pbox_opponent ON nhl_player_box(opponent, position, game_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_pbox_season ON nhl_player_box(season)`,
+
+  // Team-level box scores (one row per team per game) -- real shot/goal
+  // environment for opponent-context feature research (Phase 6). Same
+  // source/license as nhl_player_box above.
+  `CREATE TABLE IF NOT EXISTS nhl_team_box (
+    game_id TEXT NOT NULL, team TEXT NOT NULL, season INTEGER NOT NULL, game_date TEXT NOT NULL,
+    opponent TEXT, home_away TEXT,
+    goals REAL, shots_on_goal REAL, power_play_goals REAL,
+    faceoff_win_pctg REAL, hits REAL, blocked_shots REAL, giveaways REAL, takeaways REAL,
+    pim REAL, saves REAL, save_pctg REAL, goals_against REAL,
+    source TEXT DEFAULT 'fastrhockey-nhl-data',
+    PRIMARY KEY (game_id, team)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_tbox_team ON nhl_team_box(team, game_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_tbox_opponent ON nhl_team_box(opponent, game_date)`,
+
   `CREATE TABLE IF NOT EXISTS defense_by_position (
     sport TEXT NOT NULL, team TEXT NOT NULL, position TEXT NOT NULL, window_type TEXT NOT NULL,
     points_allowed REAL, rebounds_allowed REAL, assists_allowed REAL,

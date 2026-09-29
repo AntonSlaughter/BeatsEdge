@@ -268,7 +268,41 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_cpla_captured ON ncaaf_provider_line_archive(captured_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cpla_source ON ncaaf_provider_line_archive(source)`,
   `CREATE INDEX IF NOT EXISTS idx_cpla_market ON ncaaf_provider_line_archive(market_key_raw)`,
-  `CREATE INDEX IF NOT EXISTS idx_cpla_player ON ncaaf_provider_line_archive(player_raw, market_key_raw)`
+  `CREATE INDEX IF NOT EXISTS idx_cpla_player ON ncaaf_provider_line_archive(player_raw, market_key_raw)`,
+  // NHL unlock project -- dormant capture only (NHL stays locked; this
+  // just lets real lines start accumulating for the eventual real-line
+  // validation phase, mirroring the MLB/NFL/NCAAF factory pattern exactly).
+  `CREATE TABLE IF NOT EXISTS nhl_provider_line_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at INTEGER NOT NULL,
+    provider_last_update TEXT,
+    age_seconds REAL,
+    sport TEXT NOT NULL DEFAULT 'nhl',
+    event_id TEXT NOT NULL,
+    home_team TEXT, away_team TEXT, commence_time TEXT, game_status TEXT,
+    player_raw TEXT NOT NULL,
+    player_id TEXT,
+    market_key_raw TEXT NOT NULL,
+    market_label TEXT,
+    period TEXT,
+    source TEXT NOT NULL,
+    source_type TEXT,
+    projection_type TEXT,
+    odds_type TEXT,
+    side TEXT,
+    line REAL,
+    over_price REAL,
+    under_price REAL,
+    projection_metadata TEXT,
+    raw_json TEXT,
+    semantics_status TEXT DEFAULT 'CONFIRMED'
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_identity ON nhl_provider_line_archive(sport, event_id, player_raw, market_key_raw, source, projection_type, period)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_event ON nhl_provider_line_archive(event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_captured ON nhl_provider_line_archive(captured_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_source ON nhl_provider_line_archive(source)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_market ON nhl_provider_line_archive(market_key_raw)`,
+  `CREATE INDEX IF NOT EXISTS idx_npla_player ON nhl_provider_line_archive(player_raw, market_key_raw)`
 ];
 
 // ── SQLite implementation (local dev / default) ─────────────────────────

@@ -5781,6 +5781,75 @@
             player_kicking_points: 'kickingPts',
             player_field_goal_made: 'fgMade', player_field_goals_made: 'fgMade', player_fg_made: 'fgMade', player_field_goals: 'fgMade'
         };
+        // NHL unlock project -- mirrors lib/nhlMarketMapping.js's
+        // classifyNhlMarket exactly (see that file for the full real-
+        // discovery-derived rationale; scripts/test-nhl-market-archive.js
+        // tests the canonical Node version, this is its browser-side twin
+        // since BeatsEdge.html cannot require() a Node lib/ module).
+        // Function-valued (not string) because classification depends on
+        // the row's own line/period, unlike every other sport's flat map.
+        // A market_key with no entry here (first/last goal scorer, 2+/3+
+        // goal milestones, assists_alt/points_alt, hits/blocks/plus-minus/
+        // faceoffs/power-play-points, any team/game/combo market) falls
+        // through to fetchParlayProps' existing "preserved but unmapped"
+        // behavior -- Model not supported yet, never fabricated.
+        const NHL_FULL_GAME = (row) => (!row.period || row.period === 'FULL');
+        const nhlModelCandidate = (statKey) => (row) => NHL_FULL_GAME(row) ? statKey : null;
+        const nhlBinaryThreshold = (statKey) => (row) => (NHL_FULL_GAME(row) && row.line === 0.5) ? statKey : null;
+        // Real discovery data (2026-09-29) showed anytime_goal_scorer-style
+        // Yes/No markets encode their real boundary as line=0, NOT 0.5 (every
+        // real sample row confirmed line:0) -- a different real convention
+        // from the base player_goals/player_assists/player_points O/U
+        // markets, which do use a real 0.5 line. Same validated P(goals>=1)
+        // math either way, just gated on each market's own real line.
+        const nhlBinaryThresholdLineZero = (statKey) => (row) => (NHL_FULL_GAME(row) && row.line === 0) ? statKey : null;
+        const PARLAY_NHL_MKT = {
+            player_shots_on_goal: nhlModelCandidate('shots_on_goal'),
+            player_shots: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_target: nhlModelCandidate('shots_on_goal'),
+            prophetx_player_total_shots_on_goal: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_1_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_2_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_3_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_4_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_5_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_6_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_7_or_more: nhlModelCandidate('shots_on_goal'),
+            player_shots_on_goal_milestones_8_or_more: nhlModelCandidate('shots_on_goal'),
+            player_saves: nhlModelCandidate('goalie_saves'),
+            player_goalie_saves: nhlModelCandidate('goalie_saves'),
+            prophetx_player_total_saves: nhlModelCandidate('goalie_saves'),
+            player_saves_milestones_20_or_more: nhlModelCandidate('goalie_saves'),
+            player_saves_milestones_25_or_more: nhlModelCandidate('goalie_saves'),
+            player_saves_milestones_30_or_more: nhlModelCandidate('goalie_saves'),
+            player_saves_milestones_40_or_more: nhlModelCandidate('goalie_saves'),
+            player_anytime_goal_scorer: nhlBinaryThresholdLineZero('goals_at_least_1'),
+            anytime_goalscorer: nhlBinaryThresholdLineZero('goals_at_least_1'),
+            player_anytime_goal: nhlBinaryThresholdLineZero('goals_at_least_1'),
+            player_anytime_goalscorer: nhlBinaryThresholdLineZero('goals_at_least_1'),
+            player_goals: nhlBinaryThreshold('goals_at_least_1'),
+            player_assists: nhlBinaryThreshold('assists_at_least_1'),
+            player_points: nhlBinaryThreshold('points_at_least_1'),
+        };
+        // NHL box-score names arrive abbreviated ("B. Marchand" — the real
+        // fastRhockey-nhl-data source's own convention), while ParlayAPI
+        // gives full names ("Brad Marchand") — confirmed live, real
+        // mismatch, not a hypothetical. Matched on last-name + first-
+        // initial rather than exact string equality; a same-initial/
+        // same-lastname collision (rare, e.g. two players surnamed
+        // "Weber") is resolved the same team-corroboration way every
+        // other sport's roster join already handles name collisions
+        // (resolvePlayerIdentity/extractGameTeamAbbrs, sport-agnostic).
+        const nhlMatchKey = (name) => {
+            if (!name) return null;
+            const parts = String(name).trim().split(/\s+/);
+            if (parts.length < 2) return null;
+            const last = parts[parts.length - 1].toLowerCase().replace(/[^a-z'-]/g, '');
+            const initial = parts[0].replace(/[^A-Za-z]/g, '').charAt(0).toLowerCase();
+            if (!last || !initial) return null;
+            return `${initial}.${last}`;
+        };
+
         // DISPLAY-ONLY formatter for a provider line value. Real captured
         // provider data (2026-09-24, tmp/check-float-noise.js against the
         // live archive) confirmed float32-precision noise is baked into the
@@ -6264,7 +6333,7 @@
         // locked (no real pipeline yet), so we never serve sample picks that
         // look analyzed. NHL: no free source publishes NHL props and there's
         // no real NHL slate builder — locked until that exists.
-        const SPORT_STATUS = { nba: 'ready', wnba: 'ready', nfl: 'ready', nhl: 'soon', mlb: 'ready', ncaaf: 'ready' };
+        const SPORT_STATUS = { nba: 'ready', wnba: 'ready', nfl: 'ready', nhl: 'ready', mlb: 'ready', ncaaf: 'ready' };
 
         // The backtest result for one sport (state holds { mlb: {...}, nfl: {...} }).
         function backtestForSport(backtest, sport) {
@@ -9596,6 +9665,7 @@
             const [cfbSlateSource, setCfbSlateSource] = useState('checking'); // same, for CFB
             const [nbaSlateSource, setNbaSlateSource] = useState('checking'); // same, for NBA
             const [wnbaSlateSource, setWnbaSlateSource] = useState('checking'); // same, for WNBA
+            const [nhlSlateSource, setNhlSlateSource] = useState('checking'); // real ParlayAPI lines + real backend-computed projections, no live roster/schedule fetch needed (see fetchNhlPropLines)
             const [backtest, setBacktest] = useState(() => {
                 try { return JSON.parse(localStorage.getItem('beatsedge_backtest_v1') || 'null'); } catch (e) { return null; }
             });
@@ -9716,6 +9786,16 @@
                 setParlayApiKey(cleaned);
                 try { localStorage.setItem('beatsedge_parlayapi_key', cleaned); } catch (e) { }
             };
+
+            // NHL unlock, research-only discovery button REMOVED 2026-09-29:
+            // it served its purpose (real market classification is now
+            // built into PARLAY_NHL_MKT/lib/nhlMarketMapping.js from what
+            // it found) and has no ongoing product purpose now that NHL's
+            // real pipeline (fetchNhlPropLines) is wired in. The real
+            // production ParlayAPI Data Sources functionality (the key
+            // field, saveParlayApiKey, the /api/parlayapi/* passthrough
+            // itself) is untouched -- only this one-time diagnostic tool
+            // and its localhost:3001 sink are gone.
 
             const saveBackendUrl = (url) => {
                 const cleaned = url.trim().replace(/\/$/, ''); // strip trailing slash
@@ -10190,6 +10270,27 @@
                             console.warn('WNBA slate failed, falling back to sample:', err.message);
                             if (!stale()) setWnbaSlateSource('sample');
                             players = generateMockPlayerData('wnba');
+                        }
+                    } else if (selectedSport === 'nhl') {
+                        // No live roster/schedule fetch — see fetchNhlPropLines'
+                        // header comment for why NHL's validated scope doesn't
+                        // need one. No mock/sample fallback either: NHL shows
+                        // only real data or an honest empty state, never
+                        // placeholder props (explicit rule for this sport).
+                        try {
+                            if (!getEligibleLineProvider()) {
+                                setNhlSlateSource('sample');
+                                setProplineError(!parlayApiKey ? 'Add a ParlayAPI key in Data Sources for real NHL lines.' : 'ParlayAPI needs "Your Backend" URL set too.');
+                                players = [];
+                            } else {
+                                players = await fetchNhlPropLines(stale);
+                                if (stale()) return;
+                                setNhlSlateSource(players.length ? 'live' : 'sample');
+                            }
+                        } catch (err) {
+                            console.warn('NHL slate failed:', err.message);
+                            if (!stale()) setNhlSlateSource('sample');
+                            players = [];
                         }
                     } else {
                         players = await fetchPlayerProps();
@@ -12445,7 +12546,14 @@
                         // provider markets with no real-stat windowing source
                         // is a separate follow-up UI feature, not a data-loss
                         // bug fix.
-                        const known = mktMap[row.market_key];
+                        // NHL's map has function-valued entries (classification
+                        // depends on the row's own line/period, not just its
+                        // market_key -- see PARLAY_NHL_MKT below). Every other
+                        // sport's map is string-valued only, so `typeof
+                        // mktEntry === 'function'` is always false for them and
+                        // `known` resolves exactly as it always has.
+                        const mktEntry = mktMap[row.market_key];
+                        const known = typeof mktEntry === 'function' ? mktEntry(row) : mktEntry;
                         const sk = known || row.market_key;
                         if (!known) {
                             rejected.unmappedMarket++;
@@ -12484,7 +12592,14 @@
                             homeTeam: row.home_team || null, awayTeam: row.away_team || null,
                             eventId: row.event_id || null,
                             rawMarket: known ? null : row.market_key,
-                            commenceTimeMs: Number.isFinite(commenceMs) ? commenceMs : null
+                            commenceTimeMs: Number.isFinite(commenceMs) ? commenceMs : null,
+                            // Additive only, unused by NBA/WNBA/NFL/CFB/MLB (their
+                            // roster join keys off `nn`, which already collapses
+                            // spaces/case). NHL needs the raw display string
+                            // because its own real historical names arrive
+                            // abbreviated ("B. Marchand") -- see nhlMatchKey.
+                            playerRaw: row.player || null,
+                            period: row.period || null, projectionType: row.projection_type || null
                         });
                         n++;
                     });
@@ -15490,6 +15605,153 @@
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
                 setProplineError(built.length ? null : 'ParlayAPI reached but produced no WNBA props for this slate.');
+                return built;
+            };
+
+            // ══════════════════════════════════════════════════════════════
+            // NHL — validated-scope integration only. Unlike NBA/MLB/NFL/
+            // CFB/WNBA, NHL has NO opponent-adjusted factor (tested and
+            // rejected — see scripts/research-nhl-features.js: TOI-rate,
+            // home/away, and opponent shot environment all failed to beat
+            // the plain trailing baseline), so this deliberately does NOT
+            // fetch a live ESPN-style roster/schedule — real ParlayAPI
+            // lines + this app's own backend-computed real projections
+            // (lib/nhlProjectionEngine.js, from real fastRhockey-nhl-data
+            // box scores) is the whole pipeline. Only two point-projection
+            // families (Shots on Goal, Goalie Saves) and three binary-
+            // threshold families (Goals/Assists/Points P(>=1) at line=0.5
+            // only) ever get a model output — everything else (first/last
+            // goal scorer, goal milestones, hits, blocks, faceoffs, P1
+            // props, team/game/combo markets) is real, shown, but
+            // modelSupported:false ("Model not supported yet"), never
+            // fabricated. No Prime, no confluence, no A/B/C/D grade
+            // thresholds copied from another sport (none exist for NHL
+            // yet — see lib/nhlMarketMapping.js's header for why).
+            // ══════════════════════════════════════════════════════════════
+            const fetchNhlPropLines = async (isStale) => {
+                const gone = () => typeof isStale === 'function' && isStale();
+                if (gone()) return [];
+                if (!parlayApiKey || !backendUrl) { setPropLineSource('sample'); setParlaySource('off'); setProplineError('No ParlayAPI key set in Data Sources — NHL lines come from ParlayAPI only.'); return []; }
+
+                // CRITICAL PAGINATION FIX: real discovery (2026-09-29)
+                // returned 10,001 real rows, truncated at page 2 of the
+                // generic default (maxPages=3, i.e. a 3,000-row budget) —
+                // NHL's real slate is far larger than that default assumes.
+                // maxPages=20 mirrors the exact budget the discovery
+                // script itself used successfully (20 * 10,000-row pages,
+                // following x-result-has-more/x-next-offset until
+                // exhausted or this safety cap). This does NOT change the
+                // default for any other sport — every other caller of
+                // fetchParlayPropsBulk still passes its own explicit
+                // maxPages (5 for NBA/WNBA, etc.), or falls back to the
+                // unchanged default of 3 if it passes none at all.
+                const pa = await fetchParlayPropsBulk('icehockey_nhl', PARLAY_NHL_MKT, {
+                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 20
+                }, isStale);
+                if (gone()) return [];
+                if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
+                if (pa.truncated) console.warn('[NHL] board still truncated after paginating to the 20-page safety cap — some rows may be missing this refresh.');
+                setParlayCount(pa.n);
+
+                // Real backend-computed projections (lib/nhlProjectionEngine.js)
+                // — ONLY the validated stat families; a player absent from a
+                // given family simply has no entry (never zero, never guessed).
+                let projRes = null;
+                try {
+                    const r = await fetch(`${backendUrl}/api/nhl/player-projections`);
+                    if (r.ok) projRes = await r.json();
+                } catch (e) { /* handled by the null check below */ }
+                if (!projRes) { setPropLineSource('sample'); setProplineError('NHL projection engine unreachable this refresh.'); return []; }
+
+                // matchKey (initial.lastname) -> candidate real projections,
+                // grouped by team for the same team-corroboration collision
+                // guard every other sport's roster join already uses.
+                const projByMatchKey = {};
+                Object.entries(projRes.projections || {}).forEach(([statKey, rows]) => {
+                    (rows || []).forEach(r => {
+                        const mk = nhlMatchKey(r.playerName);
+                        if (!mk) return;
+                        (projByMatchKey[mk] = projByMatchKey[mk] || []).push({ playerId: r.playerId, team: r.team, statKey, projection: r.projection, probability: r.probability, gamesSampled: r.gamesSampled, restAdjusted: r.restAdjusted });
+                    });
+                });
+
+                const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
+                const built = [];
+                let modelSupportedCount = 0, unsupportedCount = 0;
+
+                Object.values(pa.byNorm).forEach((byStat) => {
+                    let playerRaw = null, homeTeam = null, awayTeam = null;
+                    Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => {
+                        if (e.playerRaw) { playerRaw = e.playerRaw; homeTeam = e.homeTeam; awayTeam = e.awayTeam; return true; }
+                        return false;
+                    })));
+                    if (!playerRaw) return;
+                    const mk = nhlMatchKey(playerRaw);
+                    // Player resolver -- FAILS CLOSED. Real audit of the
+                    // full 1,362-player historical dataset (see
+                    // scripts/test-nhl-player-resolver.js) found 16 real
+                    // initial+lastname collisions (distinct real
+                    // player_ids sharing one nhlMatchKey), 2 of which
+                    // share the SAME team too (e.g. two real "E.
+                    // Pettersson"s on VAN) -- team context alone cannot
+                    // disambiguate those. Resolution is therefore keyed
+                    // on distinct real player_id, not team-bucket count:
+                    // grouping by team first (the earlier approach) would
+                    // have silently merged two different real players'
+                    // stats into one bucket whenever they share a team.
+                    const candidates = (mk && projByMatchKey[mk]) || [];
+                    const distinctPlayerIds = [...new Set(candidates.map(c => c.playerId))];
+                    const gameTeamAbbrs = [homeTeam, awayTeam].filter(Boolean);
+                    let resolvedPlayerId = null;
+                    if (distinctPlayerIds.length === 1) {
+                        resolvedPlayerId = distinctPlayerIds[0]; // unique real player_id -- trivially safe regardless of team data
+                    } else if (distinctPlayerIds.length > 1 && gameTeamAbbrs.length) {
+                        const matchingIds = [...new Set(candidates.filter(c => gameTeamAbbrs.includes(c.team)).map(c => c.playerId))];
+                        if (matchingIds.length === 1) resolvedPlayerId = matchingIds[0]; // real game context narrowed it to exactly one
+                        // matchingIds.length === 0 (no team match) or > 1 (same-team collision, e.g. Pettersson/VAN) -> stays null, FAIL CLOSED
+                    }
+                    const resolvedStats = resolvedPlayerId ? candidates.filter(c => c.playerId === resolvedPlayerId) : null;
+                    const statsByStatKey = {};
+                    (resolvedStats || []).forEach(c => { statsByStatKey[c.statKey] = c; });
+                    const SUPPORTED_KEYS = new Set(['shots_on_goal', 'goalie_saves', 'goals_at_least_1', 'assists_at_least_1', 'points_at_least_1']);
+
+                    const props = [];
+                    Object.entries(byStat).forEach(([statKey, byBook]) => {
+                        const arr = byBook[wantBook] || Object.values(byBook)[0] || [];
+                        const pr = arr.find(e => e.primary) || arr[0];
+                        if (!pr) return;
+                        const model = statsByStatKey[statKey];
+                        const isSupported = SUPPORTED_KEYS.has(statKey) && !!model;
+                        if (isSupported) modelSupportedCount++; else unsupportedCount++;
+                        props.push({
+                            statKey, line: pr.line, over: pr.over, under: pr.under, book: wantBook,
+                            period: pr.period || 'FULL', projectionType: pr.projectionType || null,
+                            eventId: pr.eventId || null, rawMarket: pr.rawMarket || (SUPPORTED_KEYS.has(statKey) ? null : statKey),
+                            modelSupported: isSupported,
+                            note: isSupported ? null : 'Model not supported yet',
+                            // Projection-based Edge ONLY for the two point-
+                            // projection families — never fabricated for a
+                            // binary scorer probability, which has no
+                            // comparable point projection (explicit rule).
+                            projection: isSupported && model.projection != null ? model.projection : null,
+                            probability: isSupported && model.probability != null ? model.probability : null,
+                            edge: isSupported && model.projection != null ? Math.round((model.projection - pr.line) * 100) / 100 : null,
+                            restAdjusted: model ? !!model.restAdjusted : false,
+                            gamesSampled: model ? model.gamesSampled : null,
+                        });
+                    });
+                    if (!props.length) return;
+                    built.push({
+                        id: `nhl:${mk || playerRaw}`, name: playerRaw, sport: 'nhl', role: 'skill',
+                        team: (resolvedStats && resolvedStats[0] && resolvedStats[0].team) || null,
+                        props, _isNhl: true,
+                    });
+                });
+
+                markFresh();
+                setPropLineSource(built.length ? 'live' : 'sample');
+                setProplineError(built.length ? null : 'ParlayAPI reached but produced no NHL props for this slate.');
+                console.log(`[NHL] built ${built.length} players — ${modelSupportedCount} model-supported prop rows, ${unsupportedCount} provider-only ("Model not supported yet") rows.`);
                 return built;
             };
 
@@ -19327,6 +19589,53 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 return americanOdds;
             };
 
+            // NHL unlock project -- deliberately its own, much simpler card
+            // than PlayerCard. PlayerCard assumes a player shape (statsByKey,
+            // gameLogByKey, oppDef, minutesTrend, DvP grid, hit-rate history)
+            // that NHL's validated scope never produces (no opponent-adjusted
+            // factor survived research -- see fetchNhlPropLines' header), so
+            // routing NHL through PlayerCard would either crash on missing
+            // fields or render misleading empty sections. This shows exactly
+            // what's real: player name/team, the real provider line/book/
+            // period/projection type, and — ONLY for the validated
+            // combinations — the real model projection or probability and a
+            // real Edge (point-projection families only, never fabricated
+            // for a binary scorer probability). Everything else renders as
+            // real data with an honest "Model not supported yet" badge.
+            const NHL_STAT_LABELS = {
+                shots_on_goal: 'Shots on Goal', goalie_saves: 'Goalie Saves',
+                goals_at_least_1: 'Anytime Goal Scorer', assists_at_least_1: 'Assist (1+)', points_at_least_1: 'Point (1+)',
+            };
+            const NhlPlayerCard = ({ player }) => (
+                <div className="player-card" style={{ padding: '0.9rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
+                        <strong>{player.name}</strong>
+                        <span style={{ opacity: 0.7, fontSize: '0.8rem' }}>{player.team || ''}</span>
+                    </div>
+                    {player.props.map((pr, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0', borderTop: i ? '1px solid var(--border-color, #333)' : 'none', gap: '0.5rem' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div>{NHL_STAT_LABELS[pr.statKey] || pr.rawMarket || pr.statKey}
+                                    {pr.period && pr.period !== 'FULL' && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}> · {pr.period}</span>}
+                                    {pr.projectionType && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}> · {pr.projectionType}</span>}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', opacity: 0.65 }}>Line {formatProviderLine(pr.line)} · {pr.book}</div>
+                            </div>
+                            {pr.modelSupported ? (
+                                <div style={{ textAlign: 'right' }}>
+                                    {pr.projection != null && <div>Proj {Math.round(pr.projection * 100) / 100}{pr.restAdjusted ? ' *' : ''}</div>}
+                                    {pr.probability != null && <div>P {(pr.probability * 100).toFixed(1)}%</div>}
+                                    {pr.edge != null && <div style={{ color: pr.edge > 0 ? 'var(--accent-green, #4ade80)' : 'var(--accent-red, #f87171)' }}>Edge {pr.edge > 0 ? '+' : ''}{pr.edge}</div>}
+                                    <div style={{ fontSize: '0.65rem', opacity: 0.5 }}>{pr.gamesSampled} games</div>
+                                </div>
+                            ) : (
+                                <div style={{ fontSize: '0.75rem', opacity: 0.6, fontStyle: 'italic' }}>{pr.note}</div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            );
+
             const PlayerCard = ({ player }) => {
                 const [pillDir, setPillDir] = useState('all'); // 'all' | 'over' | 'under'
                 const [pillAlts, setPillAlts] = useState(false); // goblins/demons (DFS) or alt lines (books) — off by default so the board stays the standard lines
@@ -22229,7 +22538,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 ) : (
                                     <div className="players-grid">
                                         {browsePlayers.map(player => (
-                                            <PlayerCard key={player.id} player={player} />
+                                            player.sport === 'nhl'
+                                                ? <NhlPlayerCard key={player.id} player={player} />
+                                                : <PlayerCard key={player.id} player={player} />
                                         ))}
                                     </div>
                                 )}
