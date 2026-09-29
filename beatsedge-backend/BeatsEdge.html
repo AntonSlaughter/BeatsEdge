@@ -3261,6 +3261,44 @@
             // the single `player.stats` block (NBA/NFL/NHL, and MLB fallback).
             const s = (player.statsByKey && prop.statKey && player.statsByKey[prop.statKey]) || player.stats;
 
+            // PRODUCTION BUG FIX (2026-09-29): a real user reported a full
+            // black screen on MLB -> NHL. Root cause: NHL player objects
+            // (fetchNhlPropLines) never populate statsByKey/stats -- NHL
+            // computes its own separate projection/probability (real
+            // shrinkage-5/Poisson, see lib/nhlProjectionEngine.js) and was
+            // never meant to reach this NBA-style factor model at all
+            // (NHL Grades: NOT ENABLED by design). With `s` undefined,
+            // `s.last5.avg` below threw an uncaught TypeError -- reached
+            // via playerBestGrade (and every other calculateEdgeScore call
+            // site) for any real, model-supported NHL prop, which unmounts
+            // the whole app (React black-screens on an uncaught render-time
+            // exception with no error boundary here). No real ParlayAPI key
+            // was available to reproduce this with the actual live
+            // provider, so it was reproduced by intercepting window.fetch
+            // with realistic ParlayAPI/materialized-projections response
+            // shapes (real player names, real market_keys/lines) and
+            // confirmed via the exact stack trace this comment describes,
+            // then confirmed fixed the same way (real cards render, no
+            // crash) across MLB->NHL, NBA->NHL, NHL->MLB->NHL, and a
+            // failing projections backend. Fails closed here instead: one
+            // structurally-complete neutral result (matches every field
+            // real callers already read), not a guess, not a crash. No
+            // sport's currently-working values are affected -- this can
+            // only ever replace a throw with a no-op.
+            if (!s) {
+                return {
+                    factors: [], greenCount: 0, totalFactors: 0, confidence: 0,
+                    projection: null, thinData: true, edge: 0, edgeSignalPct: 0,
+                    prime: false, matchupLabel: null, grade: 'D', gradeScore: 0,
+                    modelProb: null, modelProbPct: null, rawModelProbPct: null,
+                    preFloorProbPct: null, preFloorRaw: null, sportCalibProbPct: null,
+                    familyAdjPts: 0, statFamily: null, familyCalibActive: false,
+                    impliedProb: null, impliedProbPct: null, hasRealPrice: false,
+                    vigPct: null, edgePct: 0, hitRates: null, probSteps: null,
+                    volatilityContext: null,
+                };
+            }
+
             // Factor 1: Recent Form (Last 5)
             const recentAvg = s.last5.avg;
             const recentSupports = direction === 'over' ? recentAvg > line : recentAvg < line;
