@@ -138,7 +138,7 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'BeatsEdge.html'), 'utf8
 
   // ---------- real end-to-end projection engine sanity (real Turso data) ----------
   {
-    const out = await computeAllProjections(null);
+    const out = await computeAllProjections();
     check('computeAllProjections returns real, non-trivial player counts for all 5 validated families',
       out.shots_on_goal.length > 500 && out.goalie_saves.length > 50
       && out.goals_at_least_1.length > 500 && out.assists_at_least_1.length > 500 && out.points_at_least_1.length > 500,

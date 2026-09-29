@@ -656,34 +656,35 @@ router.get('/nhl/team-shooting/:team', async (req, res) => {
 // PARLAY_NHL_MKT/lib/nhlMarketMapping.js from what it found) and has no
 // ongoing product purpose now that NHL's real pipeline is wired in.
 
-// GET /api/nhl/player-projections?date=YYYY-MM-DD
-// NHL unlock project -- bulk real projections for ONLY the validated
-// stat families (Shots on Goal, Goalie Saves, Goals/Assists/Points
-// P(>=1)), computed from lib/nhlProjectionEngine.js's exact validated
-// formulas against the real historicalStore-backed nhl_player_box table.
-// Both point-projection families use the same real, validated
-// shrinkage-5 (k=8) formula -- a rest/back-to-back adjustment for Saves
-// was tested (research-nhl-features.js) but, once a real data bug
-// (goalies dressed but never entering the game) was found and fixed
-// during this integration, showed no real improvement over the plain
-// shrinkage baseline, so it was correctly dropped rather than shipped on
-// a false premise. `date` is accepted for cache-keying only; this route
-// does not read/require a ParlayAPI key and never sees one -- only real
-// historical box-score data. NHL stays locked regardless of this
-// route's existence -- nothing in the live UI calls it yet.
-let _nhlProjectionsCache = { at: 0, date: null, data: null };
-const NHL_PROJECTIONS_TTL_MS = 60 * 60 * 1000;
+// GET /api/nhl/player-projections
+// NHL unlock project -- reads the MATERIALIZED projection table
+// (nhl_player_projections, lib/nhlProjectionMaterializer.js) rather than
+// computing all 5 stat families from the full nhl_player_box history on
+// every request. That direct-computation approach measured ~69s in
+// production (Render free tier) and was killed by the platform's request
+// timeout -- a real, confirmed production incident, not a hypothetical.
+// This route now NEVER calls computeAllProjections() itself; if the
+// materialized table is empty (never backfilled, or a refresh hasn't run
+// yet), it fails fast and clearly (503) rather than silently falling
+// back to the expensive path. `date` is accepted for response-shape
+// compatibility with existing callers; it does not gate a computation
+// anymore. This route does not read/require a ParlayAPI key and never
+// sees one -- only real historical box-score data. NHL stays locked
+// regardless of this route's existence -- nothing in the live UI calls
+// it yet.
 router.get('/nhl/player-projections', async (req, res) => {
   try {
     const date = req.query.date || new Date().toISOString().slice(0, 10);
-    if (_nhlProjectionsCache.data && _nhlProjectionsCache.date === date && (Date.now() - _nhlProjectionsCache.at) < NHL_PROJECTIONS_TTL_MS) {
-      return res.json(_nhlProjectionsCache.data);
+    const { getMaterializedProjections } = require('../lib/nhlProjectionMaterializer');
+    const projections = await getMaterializedProjections();
+    const totalRows = Object.values(projections).reduce((s, arr) => s + arr.length, 0);
+    if (totalRows === 0) {
+      return res.status(503).json({
+        error: 'NHL projections have not been materialized yet -- run scripts/materialize-nhl-projections.js.',
+        projections: {},
+      });
     }
-    const { computeAllProjections } = require('../lib/nhlProjectionEngine');
-    const projections = await computeAllProjections();
-    const payload = { date, source: 'BeatsEdge computed (real fastRhockey-nhl-data)', projections };
-    _nhlProjectionsCache = { at: Date.now(), date, data: payload };
-    res.json(payload);
+    res.json({ date, source: 'BeatsEdge computed (materialized from real fastRhockey-nhl-data)', projections });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

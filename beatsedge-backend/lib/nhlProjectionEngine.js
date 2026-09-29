@@ -73,13 +73,24 @@ function savesProjection(games) {
 }
 
 async function computeShotsOnGoalProjections(minPriorGames = 10) {
-  const rows = await getPlayerGames('shots_on_goal', "AND season IN (2024,2025,2026)");
+  // No season whitelist here (unlike the research scripts' fixed 2024/
+  //2025/2026 TRAIN/VALIDATION/HOLDOUT split, which must stay fixed for
+  // reproducible backtesting): this is LIVE production, meant to use a
+  // player's most recent real games regardless of season, including the
+  // current in-progress season. A hardcoded season list would silently
+  // exclude every future season's real games the moment it began (caught
+  // live via scripts/test-nhl-projection-materializer.js: a real synced
+  // 2026-27-season game, season=2027 per api-web.nhle.com's own real
+  // ending-year field, was invisible to a `season IN (2024,2025,2026)`
+  // filter). Shrinkage-5's own L5-vs-season-mean weighting already does
+  // the real recency-handling; no season filter is needed for that.
+  const rows = await getPlayerGames('shots_on_goal', '');
   const byPlayer = groupByPlayer(rows);
   const out = [];
   for (const [, rec] of byPlayer) {
     if (rec.games.length < minPriorGames) continue;
     const projection = shrinkageFive(rec.games.map(g => g.val));
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'shots_on_goal', projection, gamesSampled: rec.games.length });
+    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'shots_on_goal', projection, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
   }
   return out;
 }
@@ -95,26 +106,28 @@ async function computeGoalieSavesProjections(minPriorGames = 8) {
   // entering the game (real data: saves=0/shots_against=0/goals_against=0
   // rows for backups who sat the whole game) -- same real convention
   // lib/nhlEngine.js already established for the OTHER NHL data source.
-  const rows = await getPlayerGames('saves', "AND season IN (2024,2025,2026) AND shots_against > 0");
+  // No season whitelist -- see computeShotsOnGoalProjections' comment above.
+  const rows = await getPlayerGames('saves', 'AND shots_against > 0');
   const byPlayer = groupByPlayer(rows);
   const out = [];
   for (const [, rec] of byPlayer) {
     if (rec.games.length < minPriorGames) continue;
     const { projection, restAdjusted } = savesProjection(rec.games);
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'goalie_saves', projection, restAdjusted, gamesSampled: rec.games.length });
+    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'goalie_saves', projection, restAdjusted, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
   }
   return out;
 }
 
 async function computeBinaryThresholdProjections(statColumn, statKeyOut, minPriorGames = 15) {
-  const rows = await getPlayerGames(statColumn, "AND season IN (2024,2025,2026)");
+  // No season whitelist -- see computeShotsOnGoalProjections' comment above.
+  const rows = await getPlayerGames(statColumn, '');
   const byPlayer = groupByPlayer(rows);
   const out = [];
   for (const [, rec] of byPlayer) {
     if (rec.games.length < minPriorGames) continue;
     const lambda = shrinkageFive(rec.games.map(g => g.val));
     const pOver1 = poissonPOver1(lambda);
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: statKeyOut, probability: pOver1, gamesSampled: rec.games.length });
+    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: statKeyOut, probability: pOver1, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
   }
   return out;
 }

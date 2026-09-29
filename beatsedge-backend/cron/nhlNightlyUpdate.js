@@ -11,6 +11,14 @@ const { insertBoxscoreAsync, recomputeDefenseByPositionBulk, recomputeTeamShooti
 // above), wrapped in its own try/catch below so a failure here can never
 // affect the existing DvP/shooting-rollup update this file already does.
 const { syncBoxscoreToPlayerBox } = require('../lib/nhlPlayerBoxSync');
+// NHL unlock project -- refreshes the materialized projection table
+// (fixes /api/nhl/player-projections' real production timeout, see
+// lib/nhlProjectionMaterializer.js's header) after historical sync. Its
+// own try/catch below: a refresh failure must never corrupt the
+// previously materialized snapshot (UPSERT has no DELETE step, so a
+// thrown error simply leaves whatever rows it already reached updated
+// and the rest untouched) and must never affect the ingestion above.
+const { materializeNhlProjections } = require('../lib/nhlProjectionMaterializer');
 const store = require('../lib/historicalStore');
 
 async function runNhlNightlyUpdate() {
@@ -55,6 +63,13 @@ async function runNhlNightlyUpdate() {
   }
 
   console.log(`[nhl-nightly] Model history (nhl_player_box) sync: ${modelSkaterRows} skater rows, ${modelGoalieRows} goalie rows, ${modelSyncFailures} game(s) failed to sync.`);
+
+  try {
+    const materialized = await materializeNhlProjections();
+    console.log(`[nhl-nightly] Projection materialization: ${materialized.rowsWritten} rows across families: ${materialized.families.join(', ')}.`);
+  } catch (matErr) {
+    console.error('[nhl-nightly] Projection materialization FAILED (previous materialized snapshot left untouched):', matErr.message);
+  }
 
   console.log(`[nhl-nightly] Processed ${gamesProcessed} games: ${totalSkaterRows} skater rows, ${totalGoalieRows} goalie rows`);
 

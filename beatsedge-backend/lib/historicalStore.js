@@ -275,6 +275,28 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_nhl_tbox_team ON nhl_team_box(team, game_date)`,
   `CREATE INDEX IF NOT EXISTS idx_nhl_tbox_opponent ON nhl_team_box(opponent, game_date)`,
 
+  // NHL unlock project -- materialized model outputs (lib/nhlProjectionMaterializer.js),
+  // refreshed nightly from lib/nhlProjectionEngine.js's exact validated
+  // formulas (never reimplemented here). Fixes the live /api/nhl/player-
+  // projections route needing to recompute all 5 stat families from the
+  // full nhl_player_box history on every request (~69s on Render's free
+  // tier, real production timeout). Identity is the real, stable
+  // player_id (never display name alone). Deliberately does NOT store
+  // provider lines -- that stays a live ParlayAPI join at request time --
+  // and is NOT the Market Archive (nhl_provider_line_archive), a
+  // completely separate concept (real observed provider lines over time
+  // vs. this table's current model output snapshot).
+  `CREATE TABLE IF NOT EXISTS nhl_player_projections (
+    player_id TEXT NOT NULL, stat_family TEXT NOT NULL,
+    player_name TEXT, team TEXT,
+    projection REAL, probability REAL,
+    games_sampled INTEGER, rest_adjusted INTEGER DEFAULT 0,
+    model_version TEXT, latest_game_date TEXT,
+    calculated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (player_id, stat_family)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_nhl_proj_family ON nhl_player_projections(stat_family)`,
+
   `CREATE TABLE IF NOT EXISTS defense_by_position (
     sport TEXT NOT NULL, team TEXT NOT NULL, position TEXT NOT NULL, window_type TEXT NOT NULL,
     points_allowed REAL, rebounds_allowed REAL, assists_allowed REAL,
