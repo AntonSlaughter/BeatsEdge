@@ -75,9 +75,19 @@ for (const field of REQUIRED_FIELDS) {
 
 // playerBestGrade's own real usage of the return value must be satisfied
 // by the fallback shape (e.grade / e.gradeScore / e.edge / e.prime).
-check('fallback grade is a real, valid GRADE_RANK key ("D")', /grade:\s*'D'/.test(guardBlock));
-check('fallback edge is falsy (0) -- render code treats a falsy edge as "no badge", matching NHL Grades: NOT ENABLED',
-  /edge:\s*0\b/.test(guardBlock));
+// `grade` stays a fixed, always-'D' neutral value (never a fabricated
+// A/B/C distinction) -- but `edge`/`gradeScore` are deliberately REAL,
+// derived from the prop's own already-validated projection/probability
+// (never fabricated), so the EXISTING generic sort-by-edge mechanism
+// orders NHL players meaningfully. This is sort-ordering-only --
+// NhlPlayerCard renders its own real projection/probability/edge
+// straight from the prop object, never from this return value.
+check('fallback grade is a fixed, always-neutral GRADE_RANK key ("D") -- never a fabricated A/B/C distinction',
+  /grade:\s*'D'/.test(guardBlock));
+check('fallback edge is a REAL signal derived from the prop\'s own validated projection/probability, not fabricated',
+  /const realSignal = prop\.edge != null \? prop\.edge/.test(guardBlock) && /edge:\s*realSignal/.test(guardBlock));
+check('fallback gradeScore is derived from the same real signal (so the best-prop comparison isn\'t a no-op tie)',
+  /gradeScore:\s*Math\.abs\(realSignal\)/.test(guardBlock));
 check('fallback prime is false -- never fabricates a Prime signal for NHL', /prime:\s*false/.test(guardBlock));
 
 console.log(`\n${failures === 0 ? 'ALL NHL RENDER-SAFETY TESTS PASSED' : `${failures} TEST(S) FAILED`}`);

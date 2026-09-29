@@ -3286,10 +3286,26 @@
             // sport's currently-working values are affected -- this can
             // only ever replace a throw with a no-op.
             if (!s) {
+                // The numeric `edge`/`gradeScore` below are the ONLY fields
+                // this fallback populates with something real (from the
+                // prop's own already-validated projection/probability,
+                // never fabricated) -- purely so the EXISTING generic
+                // "Sort: Model edge" / grade-tiebreak-by-edge mechanism
+                // orders NHL players meaningfully, exactly as the user
+                // asked ("sort by model probability/edge where meaningful
+                // using existing UI conventions"). `grade` stays the fixed
+                // neutral 'D' for every NHL player, always -- no letter
+                // ever varies, so this can never read as a fabricated
+                // grade distinction (NHL Grades: NOT ENABLED). NhlPlayerCard
+                // renders the real projection/probability/edge straight
+                // from the prop object itself, never from this return
+                // value -- this signal is sort-ordering-only, never shown.
+                const realSignal = prop.edge != null ? prop.edge
+                    : (prop.probability != null ? (prop.probability - 0.5) * 10 : 0);
                 return {
                     factors: [], greenCount: 0, totalFactors: 0, confidence: 0,
-                    projection: null, thinData: true, edge: 0, edgeSignalPct: 0,
-                    prime: false, matchupLabel: null, grade: 'D', gradeScore: 0,
+                    projection: null, thinData: true, edge: realSignal, edgeSignalPct: 0,
+                    prime: false, matchupLabel: null, grade: 'D', gradeScore: Math.abs(realSignal),
                     modelProb: null, modelProbPct: null, rawModelProbPct: null,
                     preFloorProbPct: null, preFloorRaw: null, sportCalibProbPct: null,
                     familyAdjPts: 0, statFamily: null, familyCalibActive: false,
@@ -6647,7 +6663,7 @@
                         <LiveTimestamp ts={dataUpdatedAt} className="research-freshness" />
                         <p className="top-picks-subhead">
                             The 2 best <strong>overs</strong> and 2 best <strong>unders</strong> for {SPORT_LABELS[selectedSport]},
-                            ranked by the same grade + probability engine as full Browse. A signal to
+                            ranked by the same {selectedSport === 'nhl' ? 'model probability/edge' : 'grade + probability'} engine as full Browse. A signal to
                             evaluate, not a guarantee. Tap any card for the full factor-by-factor
                             research breakdown.
                         </p>
@@ -6669,7 +6685,9 @@
                                         ? (bt.oosFrom
                                             ? `Out-of-sample: cutoffs + calibration derived from games through ${new Date(bt.oosFrom).toLocaleDateString()}, then frozen and tested on the ${bt.total.n.toLocaleString()} graded prop-sides after it · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`
                                             : `Walk-forward over ${bt.total.n.toLocaleString()} graded prop-sides from real game logs · ${new Date(bt.ranAt).toLocaleDateString()} · baseline any-side ${bt.total.rate}%`)
-                                        : 'Never run. This checks the grade engine against what actually happened, game by game, so the letters mean something.'}
+                                        : (selectedSport === 'nhl'
+                                            ? 'Backtesting isn’t available for NHL yet — Shots on Goal, Goalie Saves, and Goals/Assists/Points P(≥1) are validated separately (see the model research notes).'
+                                            : 'Never run. This checks the grade engine against what actually happened, game by game, so the letters mean something.')}
                                 </div>
                                 {bt && bt.oosFrom && bt.inSample && (
                                     <div className="backtest-panel-sub" style={{ marginTop: '0.3rem', color: 'var(--text-muted)' }}>
@@ -15718,12 +15736,22 @@
                 let modelSupportedCount = 0, unsupportedCount = 0;
 
                 Object.values(pa.byNorm).forEach((byStat) => {
-                    let playerRaw = null, homeTeam = null, awayTeam = null;
+                    let playerRaw = null, homeTeam = null, awayTeam = null, commenceMs = null;
                     Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => {
-                        if (e.playerRaw) { playerRaw = e.playerRaw; homeTeam = e.homeTeam; awayTeam = e.awayTeam; return true; }
+                        if (e.playerRaw) { playerRaw = e.playerRaw; homeTeam = e.homeTeam; awayTeam = e.awayTeam; commenceMs = e.commenceTimeMs; return true; }
                         return false;
                     })));
                     if (!playerRaw) return;
+                    // Non-player market safety: real discovery confirmed some
+                    // provider rows use a "player" field that's actually a
+                    // team matchup ("MTL Canadiens vs TOR Maple Leafs") or a
+                    // score string ("0 - 2") for team/game-level markets
+                    // (correct score, totals, etc.) that PARLAY_NHL_MKT
+                    // never classifies as a supported stat. Those already
+                    // can't get a model output, but without this they'd
+                    // still render as a fake "player" card. Skip them here
+                    // too -- default-deny, not a player-field-presence check.
+                    if (/^\d+\s*-\s*\d+/.test(playerRaw) || / vs /i.test(playerRaw)) return;
                     const mk = nhlMatchKey(playerRaw);
                     // Player resolver -- FAILS CLOSED. Real audit of the
                     // full 1,362-player historical dataset (see
@@ -15761,10 +15789,22 @@
                         const model = statsByStatKey[statKey];
                         const isSupported = SUPPORTED_KEYS.has(statKey) && !!model;
                         if (isSupported) modelSupportedCount++; else unsupportedCount++;
+                        const rawMarket = pr.rawMarket || (SUPPORTED_KEYS.has(statKey) ? null : statKey);
                         props.push({
                             statKey, line: pr.line, over: pr.over, under: pr.under, book: wantBook,
                             period: pr.period || 'FULL', projectionType: pr.projectionType || null,
-                            eventId: pr.eventId || null, rawMarket: pr.rawMarket || (SUPPORTED_KEYS.has(statKey) ? null : statKey),
+                            eventId: pr.eventId || null, rawMarket,
+                            // Real, human-readable label -- raw market_key is
+                            // preserved above (rawMarket/statKey) for internal
+                            // use, this is DISPLAY ONLY. `type` mirrors
+                            // `label` deliberately: every other sport's
+                            // props already use `.type` to feed the shared
+                            // stat-category filter chip row (see `statCats`)
+                            // -- reusing the same field name lets NHL join
+                            // that existing, working mechanism for free
+                            // instead of building a second one.
+                            label: nhlMarketLabel(statKey, rawMarket),
+                            type: nhlMarketLabel(statKey, rawMarket),
                             modelSupported: isSupported,
                             note: isSupported ? null : 'Model not supported yet',
                             // Projection-based Edge ONLY for the two point-
@@ -15779,9 +15819,28 @@
                         });
                     });
                     if (!props.length) return;
+                    const team = (resolvedStats && resolvedStats[0] && resolvedStats[0].team) || null;
+                    // Real opponent, from the real provider row's own
+                    // home/away teams (already captured above) -- whichever
+                    // side isn't this player's own team. Left null (never
+                    // guessed) if the team can't be resolved.
+                    const opponent = team && homeTeam && awayTeam
+                        ? (team === homeTeam ? awayTeam : team === awayTeam ? homeTeam : null)
+                        : null;
                     built.push({
                         id: `nhl:${mk || playerRaw}`, name: playerRaw, sport: 'nhl', role: 'skill',
-                        team: (resolvedStats && resolvedStats[0] && resolvedStats[0].team) || null,
+                        team, opponent,
+                        gameTime: Number.isFinite(commenceMs) ? new Date(commenceMs).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null,
+                        // Real NHL.com headshot CDN, keyed by the real
+                        // resolved player_id (confirmed live, 2026-09-29:
+                        // https://assets.nhle.com/mugs/nhl/latest/{id}.png)
+                        // -- never constructed from a name (that's exactly
+                        // the abbreviated-name collision risk the resolver
+                        // above exists to avoid). Only set when a real
+                        // player_id was actually resolved; unresolved/
+                        // ambiguous players get no headshot attempt at all,
+                        // same as a player with no candidates.
+                        headshot: resolvedPlayerId ? `https://assets.nhle.com/mugs/nhl/latest/${resolvedPlayerId}.png` : null,
                         props, _isNhl: true,
                     });
                 });
@@ -19644,33 +19703,110 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 shots_on_goal: 'Shots on Goal', goalie_saves: 'Goalie Saves',
                 goals_at_least_1: 'Anytime Goal Scorer', assists_at_least_1: 'Assist (1+)', points_at_least_1: 'Point (1+)',
             };
+            // Real display-only overrides for the raw market_keys real
+            // discovery actually showed (2026-09-29 live pull) where the
+            // generic humanizeMarketKey would read awkwardly -- everything
+            // else (dozens of real provider-only markets) falls through to
+            // humanizeMarketKey, which already does a real, sport-agnostic
+            // snake_case -> Title Case job. The raw market_key/statKey is
+            // never discarded (see rawMarket/statKey on the prop object) --
+            // this only changes what's SHOWN.
+            const NHL_LABEL_OVERRIDES = {
+                player_faceoffs_won: 'Faceoffs Won',
+                player_first_goal_scorer: 'First Goal Scorer',
+                player_last_goal_scorer: 'Last Goal Scorer',
+                player_player_to_score_1st_goal: 'First Goal Scorer',
+                player_assists_alt: 'Assists — Alternate',
+                player_points_alt: 'Points — Alternate',
+                player_powerplay_points: 'Power Play Points',
+                player_power_play_points: 'Power Play Points',
+                player_to_score_2_or_more_goals: '2+ Goals',
+                player_to_score_3_or_more_goals: '3+ Goals',
+                who_will_score_2_or_more_goals: '2+ Goals',
+                who_will_score_3_or_more_goals: '3+ Goals',
+                player_who_will_score_2_or_more_goals: '2+ Goals',
+                player_who_will_score_3_or_more_goals: '3+ Goals',
+                player_blocked_shots: 'Blocked Shots', player_blocks: 'Blocked Shots',
+                player_plus_minus: 'Plus/Minus',
+                player_anytime_goalscorer: 'Anytime Goal Scorer', anytime_goalscorer: 'Anytime Goal Scorer',
+                player_anytime_goal: 'Anytime Goal Scorer', player_anytime_goal_scorer: 'Anytime Goal Scorer',
+            };
+            // Validated families first (real model output), then the most
+            // common real provider-only categories seen in the actual
+            // 2026-09-29 discovery pull -- everything else (there are
+            // dozens more real raw markets) is appended alphabetically by
+            // the same generic fallback every other sport already uses.
+            const NHL_STAT_CAT_ORDER = [
+                'Shots on Goal', 'Goalie Saves', 'Anytime Goal Scorer', 'Assist (1+)', 'Point (1+)',
+                'First Goal Scorer', 'Last Goal Scorer', '2+ Goals', '3+ Goals',
+                'Faceoffs Won', 'Power Play Points', 'Hits', 'Blocked Shots', 'Plus/Minus',
+                'Assists — Alternate', 'Points — Alternate',
+            ];
+            const nhlMarketLabel = (statKey, rawMarket) => {
+                if (NHL_STAT_LABELS[statKey]) return NHL_STAT_LABELS[statKey];
+                if (rawMarket && NHL_LABEL_OVERRIDES[rawMarket]) return NHL_LABEL_OVERRIDES[rawMarket];
+                return humanizeMarketKey(rawMarket || statKey);
+            };
+            // Same visual family as PlayerCard (player-card/player-header/
+            // player-avatar/player-info/player-team-info/props-pills/
+            // prop-pill -- all existing, shared CSS, zero new rules needed)
+            // deliberately without any of PlayerCard's NBA-shaped fields
+            // (statsByKey, gameLog, DvP, projected minutes/position) --
+            // NHL never had that data to begin with, so it's never faked.
+            // No Details button / modal: PlayerCard's modal body assumes
+            // exactly the NBA-shaped fields NHL doesn't have (see the
+            // comment on the original NhlPlayerCard decision above this).
             const NhlPlayerCard = ({ player }) => (
-                <div className="player-card" style={{ padding: '0.9rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
-                        <strong>{player.name}</strong>
-                        <span style={{ opacity: 0.7, fontSize: '0.8rem' }}>{player.team || ''}</span>
-                    </div>
-                    {player.props.map((pr, i) => (
-                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0', borderTop: i ? '1px solid var(--border-color, #333)' : 'none', gap: '0.5rem' }}>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                                <div>{NHL_STAT_LABELS[pr.statKey] || pr.rawMarket || pr.statKey}
-                                    {pr.period && pr.period !== 'FULL' && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}> · {pr.period}</span>}
-                                    {pr.projectionType && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}> · {pr.projectionType}</span>}
-                                </div>
-                                <div style={{ fontSize: '0.75rem', opacity: 0.65 }}>Line {formatProviderLine(pr.line)} · {pr.book}</div>
-                            </div>
-                            {pr.modelSupported ? (
-                                <div style={{ textAlign: 'right' }}>
-                                    {pr.projection != null && <div>Proj {Math.round(pr.projection * 100) / 100}{pr.restAdjusted ? ' *' : ''}</div>}
-                                    {pr.probability != null && <div>P {(pr.probability * 100).toFixed(1)}%</div>}
-                                    {pr.edge != null && <div style={{ color: pr.edge > 0 ? 'var(--accent-green, #4ade80)' : 'var(--accent-red, #f87171)' }}>Edge {pr.edge > 0 ? '+' : ''}{pr.edge}</div>}
-                                    <div style={{ fontSize: '0.65rem', opacity: 0.5 }}>{pr.gamesSampled} games</div>
-                                </div>
-                            ) : (
-                                <div style={{ fontSize: '0.75rem', opacity: 0.6, fontStyle: 'italic' }}>{pr.note}</div>
+                <div className="player-card">
+                    <div className="player-header">
+                        <div className="player-avatar">
+                            <span className="player-avatar-initials">{player.name.split(' ').map(n => n[0]).join('').slice(0, 2)}</span>
+                            {player.headshot && (
+                                <img src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
                             )}
                         </div>
-                    ))}
+                        <div className="player-info">
+                            <div className="player-name-row">
+                                <div className="player-name">{player.name}</div>
+                            </div>
+                            <div className="player-team-info">
+                                <span className="team">{player.team || ''}</span>
+                                {player.opponent && <span className="opponent"> vs {player.opponent}</span>}
+                            </div>
+                        </div>
+                        {player.gameTime && <div className="player-time">{player.gameTime}</div>}
+                    </div>
+                    <div className="props-pills">
+                        {player.props
+                            .filter(pr => statFilter === 'all' || pr.type === statFilter)
+                            .map((pr, i) => (
+                            <div key={i} className="prop-pill" style={!pr.modelSupported ? { opacity: 0.72 } : undefined} title={pr.modelSupported ? 'Validated NHL model output' : 'Real provider line — no validated NHL model for this market yet'}>
+                                <div className="prop-pill-label">
+                                    {pr.label}
+                                    {pr.period && pr.period !== 'FULL' && <span className="prop-pill-alt" title="Period-scoped market — outside the validated FULL-game model">{pr.period}</span>}
+                                    {pr.projectionType && pr.projectionType !== 'STANDARD' && <span className="pp-kind" title="DFS projection type">{pr.projectionType}</span>}
+                                </div>
+                                <div className="prop-pill-value">
+                                    {formatProviderLine(pr.line)}
+                                    <span style={{ fontSize: '0.68rem', opacity: 0.6, marginLeft: '0.35rem' }}>{pr.book}</span>
+                                </div>
+                                {pr.modelSupported ? (
+                                    <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', color: 'var(--text-muted, #9ca3af)' }}>
+                                        {pr.projection != null && <span>Model Proj {Math.round(pr.projection * 100) / 100}</span>}
+                                        {pr.probability != null && <span>Model P(≥1) {(pr.probability * 100).toFixed(1)}%</span>}
+                                        {pr.edge != null && (
+                                            <span style={{ marginLeft: '0.4rem', color: pr.edge > 0 ? 'var(--success-green, #4ade80)' : 'var(--danger-red, #f87171)' }}>
+                                                Edge {pr.edge > 0 ? '+' : ''}{pr.edge}
+                                            </span>
+                                        )}
+                                        <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>({pr.gamesSampled} real games)</span>
+                                    </div>
+                                ) : (
+                                    <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', fontStyle: 'italic', color: 'var(--text-muted, #9ca3af)' }}>{pr.note}</div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
                 </div>
             );
 
@@ -22226,7 +22362,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     // own headline category full of Grade-D longshots.
                     (Array.isArray(p.props) ? p.props : []).forEach(pr => { if (pr.type && !pr.altLine) seen.add(pr.type); });
                 });
-                const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : ((selectedSport === 'nba' || selectedSport === 'wnba') ? NBA_STAT_CAT_ORDER : STAT_CAT_ORDER);
+                const order = (selectedSport === 'nfl' || selectedSport === 'ncaaf') ? NFL_STAT_CAT_ORDER : ((selectedSport === 'nba' || selectedSport === 'wnba') ? NBA_STAT_CAT_ORDER : (selectedSport === 'nhl' ? NHL_STAT_CAT_ORDER : STAT_CAT_ORDER));
                 const ordered = order.filter(t => seen.has(t));
                 const extra = [...seen].filter(t => !order.includes(t)).sort();
                 return [...ordered, ...extra];
@@ -22382,11 +22518,17 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             <span className={`source-pill ${scoreboardSource}`}>
                                 {scoreboardSource === 'live' ? '🟢 LIVE' : (scoreboardSource === 'sample' ? '🟡 SAMPLE' : '⏳ CHECKING')} — ESPN Scoreboard
                             </span>
-                            {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba' || selectedSport === 'wnba') ? (
-                                // Every one of these five now sources its lines from
+                            {(selectedSport === 'mlb' || selectedSport === 'nfl' || selectedSport === 'ncaaf' || selectedSport === 'nba' || selectedSport === 'wnba' || selectedSport === 'nhl') ? (
+                                // Every one of these six now sources its lines from
                                 // ParlayAPI exclusively (PropLine is fully retired from
                                 // this app — its shared daily quota kept taking every
                                 // sport down together whenever any one of them spent it).
+                                // NHL added 2026-09-29 -- this condition previously
+                                // excluded it, so NHL always fell to the hardcoded
+                                // "no free source publishes these" fallback below
+                                // regardless of propLineSource's real value (a real
+                                // production bug: NHL always showed SAMPLE even with
+                                // real PrizePicks/ParlayAPI props loaded).
                                 <span className={`source-pill ${propLineSource === 'live' ? 'live' : (propLineSource === 'sample' ? 'sample' : 'checking')}`}>
                                     {propLineSource === 'live'
                                         ? `🟢 LIVE — Prop Lines (ParlayAPI, ${parlayCount} lines)`
@@ -22506,10 +22648,27 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         onChange={(e) => setSortBy(e.target.value)}
                                         title="Sort players"
                                     >
-                                        <option value="grade">Sort: Grade (A→D)</option>
-                                        <option value="edge">Sort: Model edge</option>
-                                        <option value="time">Sort: Game time</option>
-                                        <option value="name">Sort: Name (A→Z)</option>
+                                        {selectedSport === 'nhl' ? (
+                                            // NHL Grades: NOT ENABLED -- no letter-grade option
+                                            // shown. "edge" still works correctly (the shared
+                                            // sort comparator's grade-tiebreak now reads NHL's
+                                            // own real projection/probability signal — see
+                                            // _calculateEdgeScoreImpl's fallback), it's just
+                                            // relabeled here so it never implies a validated
+                                            // grade/threshold system that doesn't exist for NHL.
+                                            <React.Fragment>
+                                                <option value="edge">Sort: Model Probability/Edge</option>
+                                                <option value="time">Sort: Game time</option>
+                                                <option value="name">Sort: Name (A→Z)</option>
+                                            </React.Fragment>
+                                        ) : (
+                                            <React.Fragment>
+                                                <option value="grade">Sort: Grade (A→D)</option>
+                                                <option value="edge">Sort: Model edge</option>
+                                                <option value="time">Sort: Game time</option>
+                                                <option value="name">Sort: Name (A→Z)</option>
+                                            </React.Fragment>
+                                        )}
                                     </select>
                                 ) : (
                                     <button className="filter-select filter-select-locked" onClick={onUnlock} title="Search + sort are Pro">🔒 Search &amp; sort</button>
