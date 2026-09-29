@@ -4,22 +4,22 @@
 //   node scripts/recompute-nfl-dvp.js
 //
 // Run this after scripts/ingest-nflverse-stats.js (nightly cron runs both,
-// in this order). Uses node:sqlite's DatabaseSync, NOT better-sqlite3 —
-// this recompute does hundreds of sequential writes across 4 positions x
-// 5 windows x ~32 teams, and doing that same work through better-sqlite3
-// reproducibly crashes this process (native "Assertion failed: (env) !=
-// nullptr" / Statement cleanup abort) on this Node/Windows build. See the
-// header comment in ingest-nflverse-stats.js for the original discovery of
-// this issue — confirmed again here, so this script stays node:sqlite-only.
-const { DatabaseSync } = require('node:sqlite');
-const { runNflMigrations } = require('../lib/nflSchema');
-const { recomputeNflDefenseByPosition } = require('../lib/nflDvpEngine');
-const { BEATSEDGE_DB_PATH } = require('../lib/dataPaths');
+// in this order).
+//
+// 2026-09-28 historical-persistence cutover: repointed from the old sync
+// recomputeNflDefenseByPosition (lib/nflDvpEngine.js, ~640 individual
+// queries per run against a raw db handle) to the proven bulk replacement
+// (lib/historicalQueries.js's computeNflDefenseByPositionBulk, 3 reads + 1
+// write transaction via lib/historicalStore.js -- Turso-capable). Verified
+// byte-identical output against the old implementation on real data
+// (scripts/test-bulk-nfl-dvp-parity.js, 640/640 rows match exactly) before
+// this cutover. historicalStore's own SQLite backend already uses
+// node:sqlite internally for exactly the write-crash reason this script's
+// old header explained, so that safety property is preserved.
+const { computeNflDefenseByPositionBulk } = require('../lib/historicalQueries');
 
-const DB_PATH = BEATSEDGE_DB_PATH;
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL');
-runNflMigrations(db);
-
-const summary = recomputeNflDefenseByPosition(db);
-console.log('NFL DvP recompute:', JSON.stringify(summary));
+(async () => {
+  const summary = await computeNflDefenseByPositionBulk();
+  console.log('NFL DvP recompute:', JSON.stringify(summary));
+  process.exit(0);
+})().catch(e => { console.error('NFL DvP recompute FAILED:', e); process.exit(1); });

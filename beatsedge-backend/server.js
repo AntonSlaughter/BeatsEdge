@@ -174,8 +174,8 @@ async function runNflPipeline(label) {
 // start with an empty disk). Cheap no-op once it's populated and current.
 async function refreshNbaHistoryIfStale(label) {
   try {
-    const db = require('./lib/db');
-    const row = db.prepare(`SELECT COUNT(*) c, MAX(game_date) d FROM nba_player_box`).get();
+    const historicalStore = require('./lib/historicalStore');
+    const row = await historicalStore.queryOne(`SELECT COUNT(*) c, MAX(game_date) d FROM nba_player_box`);
     const stale = !row || !row.c || !row.d || (Date.now() - Date.parse(row.d) > 3 * 864e5);
     if (stale) {
       console.log(`[${label}] NBA history missing/stale — refreshing...`);
@@ -199,6 +199,24 @@ async function refreshNbaHistoryIfStale(label) {
 // once didn't. Awaiting them one at a time keeps peak memory to roughly one
 // job's footprint without changing what any job does or how much data it
 // touches.
+// Phase 4, Section 10: real, if minimal, startup health verification --
+// initializes historicalStore's backend, verifies it can actually respond
+// (never assumes an empty/missing beatsedge.db is authoritative), and logs
+// an explicit healthy/degraded status BEFORE the heavier ingestion jobs
+// below run. Does not gate request serving (a fuller "degrade specific
+// endpoints on unhealthy backend" behavior remains future work -- see the
+// Phase 4 report) -- this is the real, scoped verification step this pass
+// adds, not a claim of the full redesign.
+(async () => {
+  try {
+    const historicalStore = require('./lib/historicalStore');
+    const health = await historicalStore.healthStatus();
+    console.log(`[startup] historicalStore backend=${health.backend} connected=${health.ok}${health.ephemeralWarning ? ' EPHEMERAL WARNING: ' + health.ephemeralWarning : ''}${health.error ? ' error=' + health.error : ''}`);
+  } catch (e) {
+    console.error('[startup] historicalStore health check failed:', e.message);
+  }
+})();
+
 if (!process.env.SKIP_STARTUP_JOBS) {
   setTimeout(async () => {
     console.log('[startup] Running initial NBA update pass...');

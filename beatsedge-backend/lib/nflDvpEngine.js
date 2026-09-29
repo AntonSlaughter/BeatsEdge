@@ -336,6 +336,7 @@ function getNflDefenseByPosition(db, team) {
 module.exports = {
   recomputeNflDefenseByPosition,
   getNflDefenseByPosition,
+  resolveWindow,
   POSITIONS,
   MIN_GAMES_FOR_CURRENT_SEASON
 };

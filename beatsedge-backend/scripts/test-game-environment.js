@@ -1,13 +1,26 @@
-// Real test of lib/gameEnvironment.js and lib/nflGameEnvironment.js against
-// throwaway, hand-built SQLite fixture DBs -- never touches the real
-// data/beatsedge.db. Mirrors the fixture-build/assert/cleanup style already
-// used by scripts/test-next-man-up.js.
+// Real test of lib/nflGameEnvironment.js's LEGACY sync path (still
+// fixture-injectable via a `db` param -- kept for local-development/
+// offline-script/test-fixture use per Phase 4, no longer on the live
+// production route) against a throwaway, hand-built SQLite fixture DB --
+// never touches the real data/beatsedge.db.
+//
+// The NBA half of this file (lib/gameEnvironment.js) was REMOVED here --
+// Phase 3 converted computeTeamEnvironmentAsOf/buildGameEnvironmentSignal/
+// bulkTeamHistory to async AND to always read via historicalStore
+// (ignoring any `db` argument), so fixture injection like this file did is
+// no longer possible for that module; the fixture-style assertions below
+// silently produced `undefined`/`Promise` comparisons after that
+// conversion landed, which is a real, PRE-EXISTING regression from Phase 3
+// this Phase 4 pass discovered and is fixing by removing the now-impossible
+// fixture section rather than leaving a permanently-broken test in the
+// suite. lib/gameEnvironment.js's real, historicalStore-backed behavior is
+// already covered by scripts/test-game-environment-conversion.js (Phase 3),
+// which tests it the correct way (async, against real local data).
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
-const { computeTeamEnvironmentAsOf, buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
 const { computeTeamPlayVolumeAsOf, buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
 
 let pass = 0, fail = 0;
@@ -16,70 +29,7 @@ function ok(cond, label, detail) {
   if (cond) pass++; else fail++;
 }
 
-console.log('=== game-environment signal test ===\n');
-
-// ---------------- NBA (lib/gameEnvironment.js) ----------------
-const nbaPath = path.join(os.tmpdir(), `gameenv-nba-${Date.now()}.db`);
-const nbaDb = new Database(nbaPath);
-nbaDb.exec(`
-  CREATE TABLE team_game_advanced (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, sport TEXT, game_date TEXT, game_id TEXT,
-    team TEXT, opponent TEXT, defensive_rating REAL, offensive_rating REAL, pace REAL, source TEXT
-  )
-`);
-const insNba = nbaDb.prepare(`INSERT INTO team_game_advanced (sport, game_date, game_id, team, opponent, defensive_rating, offensive_rating, pace) VALUES (?,?,?,?,?,?,?,?)`);
-
-// BOS: 10 real games at pace ~100, off 115, def 108
-for (let i = 0; i < 10; i++) {
-  insNba.run('nba', `2025-01-${String(i + 1).padStart(2, '0')}`, `g${i}`, 'BOS', 'OPP', 108, 115, 100);
-}
-// LAL: 5 real games at pace ~103, off 112, def 111
-for (let i = 0; i < 5; i++) {
-  insNba.run('nba', `2025-01-0${i + 1}`, `l${i}`, 'LAL', 'OPP2', 111, 112, 103);
-}
-// A future row that must NEVER leak into an earlier asOfDate
-insNba.run('nba', '2025-06-01', 'future1', 'BOS', 'OPP', 999, 999, 999);
-// A thin team with only 1 real game -- insufficient
-insNba.run('nba', '2025-01-01', 'thin0', 'THN', 'OPP', 100, 100, 95);
-
-(function nbaTests() {
-  const win = computeTeamEnvironmentAsOf(nbaDb, 'BOS', '2025-01-11', { games: 10 });
-  ok(win.sufficient && win.pace === 100 && win.offensiveRating === 115 && win.defensiveRating === 108,
-    'BOS trailing window picks up the real 10-game averages', win);
-  ok(win.mostRecentGameDate < '2025-01-11', 'no row on/after asOfDate leaked into the window', win.mostRecentGameDate);
-
-  const futureCheck = computeTeamEnvironmentAsOf(nbaDb, 'BOS', '2025-01-11', { games: 100 });
-  ok(!JSON.stringify(futureCheck).includes('999'), 'the 2025-06-01 future row (pace 999) never appears for an earlier asOfDate', futureCheck);
-
-  const thin = computeTeamEnvironmentAsOf(nbaDb, 'THN', '2025-01-15', { games: 10, minGames: 3 });
-  ok(thin.sufficient === false && thin.pace === null, 'a team with only 1 real game is insufficient, not padded/guessed', thin);
-
-  const unknown = computeTeamEnvironmentAsOf(nbaDb, 'ZZZ', '2025-01-15', {});
-  ok(unknown.sufficient === false && unknown.pace === null, 'an unknown team returns insufficient, never a fabricated number', unknown);
-
-  const signal = buildGameEnvironmentSignal({ db: nbaDb, team: 'BOS', opponent: 'LAL', asOfDate: '2025-01-11', games: 10 });
-  ok(signal.teamPace === 100 && signal.opponentPace === 103, 'signal carries both real team paces', signal);
-  ok(signal.expectedPace === 101.5, 'expectedPace is the real average of both teams own pace', signal.expectedPace);
-  const expectedGap = Math.abs((115 - 108) - (112 - 111));
-  ok(signal.netRatingGap === Math.round(expectedGap * 10) / 10, 'netRatingGap is a real, non-fabricated function of both teams own net ratings', signal.netRatingGap);
-  ok(signal.dataSource && signal.dataSource.includes('team_game_advanced'), 'signal names its real data source');
-
-  const noOpp = buildGameEnvironmentSignal({ db: nbaDb, team: 'BOS', opponent: 'THN', asOfDate: '2025-01-15', games: 10 });
-  ok(noOpp.teamPace === 100 && noOpp.expectedPace === null && noOpp.netRatingGap === null,
-    'insufficient opponent data -> composite fields null, but the real team side is still reported (never fabricated to fill the gap)', noOpp);
-
-  const missing = buildGameEnvironmentSignal({ db: nbaDb, team: null, opponent: 'LAL', asOfDate: '2025-01-15' });
-  ok(missing.teamPace === null && missing.expectedPace === null, 'missing team -> everything null, never guessed', missing);
-
-  const bulk = bulkTeamHistory(nbaDb, ['BOS', 'LAL', 'ZZZ']);
-  ok(bulk.BOS && bulk.BOS.length === 11 && bulk.LAL && bulk.LAL.length === 5 && !bulk.ZZZ,
-    'bulkTeamHistory returns real per-game rows grouped by team, nothing for an unknown team', { bosLen: bulk.BOS && bulk.BOS.length, lalLen: bulk.LAL && bulk.LAL.length });
-  const bosSorted = bulk.BOS.every((r, i) => i === 0 || r.game_date >= bulk.BOS[i - 1].game_date);
-  ok(bosSorted, 'bulkTeamHistory rows are chronologically ordered oldest-first');
-})();
-
-nbaDb.close();
-fs.unlinkSync(nbaPath);
+console.log('=== game-environment signal test (NFL legacy sync path) ===\n');
 
 // ---------------- NFL (lib/nflGameEnvironment.js) ----------------
 const nflPath = path.join(os.tmpdir(), `gameenv-nfl-${Date.now()}.db`);

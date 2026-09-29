@@ -53,10 +53,16 @@
 // buildNextManUpSignal/findAbsentRotationPlayers logic for that purpose.
 
 const {
-  SEASON_TYPE_REGULAR, EXHIBITION_OPP, computeRoleWindow,
+  SEASON_TYPE_REGULAR, EXHIBITION_OPP, computeRoleWindow, computeRoleWindowFromRows,
   ROLE_CHANGE_MIN_ABS_MINUTES, ROLE_CHANGE_MIN_REL_PCT,
   ROLE_CHANGE_MIN_BASELINE_GAMES, ROLE_CHANGE_MIN_RECENT_GAMES,
 } = require('./nextManUpSignal');
+// NOTE: lib/historicalQueries.js (and getPlayerGameHistories specifically)
+// is required LAZILY inside buildAvailabilityRoleSignalsBulk/
+// getTeamSchedulesBulk below, not here at module load time -- see
+// lib/nextManUpSignal.js's matching comment for why (loading node:sqlite
+// in the same process as better-sqlite3 crashes the native addon on this
+// machine).
 
 const NOT_EXHIB_CLAUSE = `opponent NOT IN (${EXHIBITION_OPP.map(() => '?').join(',')})`;
 
@@ -74,18 +80,19 @@ function computeTeamScheduleAsOf(db, team, asOfDate, { lookbackGames = 12 } = {}
   `).all(team, asOfDate, ...EXHIBITION_OPP, lookbackGames);
 }
 
-// Real "returning after an absence" status for THIS player, reconstructed
-// from their own played/not-played record against their team's actual
-// real schedule (strictly before asOfDate -- the leakage defense). Never
-// guesses a reason (injury vs rest vs trade) -- only the fact of absence.
-function computeReturnStatus(db, athleteId, team, asOfDate, { lookbackGames = 12, minEstablishedGames = 5 } = {}) {
-  const teamGames = computeTeamScheduleAsOf(db, team, asOfDate, { lookbackGames });
+// Core, DB-agnostic version: given the team's real schedule (an array of
+// {game_id, game_date}, most-recent-first, already limited to lookbackGames
+// -- from EITHER computeTeamScheduleAsOf's single-team query or the bulk
+// getTeamSchedulesBulk fetch below) and this player's OWN full row history
+// (any shape carrying game_id/played -- both the legacy per-player query
+// and historicalQueries.getPlayerGameHistories's bulk rows satisfy this),
+// computes the same real "returning after an absence" status. Used by BOTH
+// the legacy per-player path and the bulk production path so the logic
+// itself can never diverge between them.
+function computeReturnStatusFromRows(teamGames, ownRows, { minEstablishedGames = 5 } = {}) {
   if (teamGames.length < 3) return { status: 'insufficient_history', gamesSinceReturn: null, consecutiveGamesMissed: null, evidenceGames: teamGames.length };
 
-  const gameIds = teamGames.map(g => g.game_id);
-  const placeholders = gameIds.map(() => '?').join(',');
-  const playedRows = db.prepare(`SELECT game_id FROM nba_player_box WHERE athlete_id = ? AND played = 1 AND game_id IN (${placeholders})`).all(athleteId, ...gameIds);
-  const playedSet = new Set(playedRows.map(r => r.game_id));
+  const playedSet = new Set((ownRows || []).filter(r => r.played === 1).map(r => r.game_id));
 
   let idx = 0, consecutivePlayed = 0;
   while (idx < teamGames.length && playedSet.has(teamGames[idx].game_id)) { consecutivePlayed++; idx++; }
@@ -111,6 +118,17 @@ function computeReturnStatus(db, athleteId, team, asOfDate, { lookbackGames = 12
   return { status: 'established', gamesSinceReturn: null, consecutiveGamesMissed: 0, evidenceGames: teamGames.length };
 }
 
+// Legacy single-player, per-call-query path -- kept for local-development/
+// offline-script/test-fixture use (scripts/test-player-availability.js). No
+// longer called by any LIVE production route as of Phase 4. Implemented in
+// terms of computeReturnStatusFromRows so the math can never drift between
+// the two paths.
+function computeReturnStatus(db, athleteId, team, asOfDate, { lookbackGames = 12, minEstablishedGames = 5 } = {}) {
+  const teamGames = computeTeamScheduleAsOf(db, team, asOfDate, { lookbackGames });
+  const ownRows = db.prepare(`SELECT game_id, played FROM nba_player_box WHERE athlete_id = ?`).all(athleteId);
+  return computeReturnStatusFromRows(teamGames, ownRows, { minEstablishedGames });
+}
+
 // Symmetric extension of Next Man Up's own role-change thresholds to also
 // classify DECREASES -- detectRoleChange (lib/nextManUpSignal.js, frozen,
 // NOT modified here) only ever flags increases by design, since its job is
@@ -127,30 +145,38 @@ function classifyRoleChange(baseline, recent) {
   return 'unchanged';
 }
 
+const DATA_SOURCE_LABEL = 'nba_player_box (real box scores); starterStatus reflects the TARGET game when supplied by the caller; availabilityStatus/minutesRestriction have no reconstructable historical source and are always null';
+
 // Combines everything above into the requested output shape. Fields with
 // no real, reconstructable source (minutesRestriction, availabilityStatus)
 // are always null, documented, never guessed.
 //
+// `getWindow(athleteId, opts)` / `getReturnStatus()` abstract away HOW the
+// underlying windows/return-status are fetched -- per-call SQL (legacy) or
+// an in-memory lookup against pre-fetched bulk data (the live production
+// path, see buildAvailabilityRoleSignalsBulk below). The actual signal-
+// building logic lives here ONCE.
+//
 // `targetGameStarter`: 1 (started), 0 (bench), or null/undefined (unknown)
 // -- supplied by the CALLER for the SPECIFIC game being evaluated. See the
 // file header for why this module never looks this up itself.
-function buildAvailabilityRoleSignal({ db, athleteId, team, asOfDate, targetGameStarter = null }) {
+function buildAvailabilityRoleSignalCore(getWindow, getReturnStatus, { athleteId, team, asOfDate, targetGameStarter = null }) {
   const empty = {
     starterStatus: 'unknown', roleChange: 'insufficient_evidence',
     returningFromAbsence: false, returnStatus: 'insufficient_history', gamesSinceReturn: null,
     minutesTrend: { l3: null, l5: null, l10: null },
     minutesRestriction: null, availabilityStatus: null,
     sampleSize: { baselineGames: 0, recentGames: 0, l3Games: 0, l5Games: 0, l10Games: 0 },
-    dataSource: 'nba_player_box (real box scores); starterStatus reflects the TARGET game when supplied by the caller; availabilityStatus/minutesRestriction have no reconstructable historical source and are always null',
+    dataSource: DATA_SOURCE_LABEL,
   };
-  if (!db || !athleteId || !asOfDate) return empty;
+  if (!athleteId || !asOfDate) return empty;
 
-  const baseline = computeRoleWindow(db, athleteId, asOfDate, { games: 15, minGames: ROLE_CHANGE_MIN_BASELINE_GAMES });
-  const recent = computeRoleWindow(db, athleteId, asOfDate, { games: ROLE_CHANGE_MIN_RECENT_GAMES + 2, minGames: ROLE_CHANGE_MIN_RECENT_GAMES });
-  const l3 = computeRoleWindow(db, athleteId, asOfDate, { games: 3, minGames: 1 });
-  const l5 = computeRoleWindow(db, athleteId, asOfDate, { games: 5, minGames: 1 });
-  const l10 = computeRoleWindow(db, athleteId, asOfDate, { games: 10, minGames: 1 });
-  const returnStatus = team ? computeReturnStatus(db, athleteId, team, asOfDate) : { status: 'insufficient_history', gamesSinceReturn: null };
+  const baseline = getWindow(athleteId, { games: 15, minGames: ROLE_CHANGE_MIN_BASELINE_GAMES });
+  const recent = getWindow(athleteId, { games: ROLE_CHANGE_MIN_RECENT_GAMES + 2, minGames: ROLE_CHANGE_MIN_RECENT_GAMES });
+  const l3 = getWindow(athleteId, { games: 3, minGames: 1 });
+  const l5 = getWindow(athleteId, { games: 5, minGames: 1 });
+  const l10 = getWindow(athleteId, { games: 10, minGames: 1 });
+  const returnStatus = team ? getReturnStatus() : { status: 'insufficient_history', gamesSinceReturn: null };
 
   let starterStatus = 'unknown';
   if (targetGameStarter === 1) starterStatus = 'starter';
@@ -170,13 +196,92 @@ function buildAvailabilityRoleSignal({ db, athleteId, team, asOfDate, targetGame
     minutesRestriction: null, // no real source anywhere in this repo -- never inferred from low minutes
     availabilityStatus: null, // live-only (ESPN), never archived -- never reconstructed here
     sampleSize: { baselineGames: baseline.games, recentGames: recent.games, l3Games: l3.games, l5Games: l5.games, l10Games: l10.games },
-    dataSource: empty.dataSource,
+    dataSource: DATA_SOURCE_LABEL,
   };
+}
+
+// Legacy single-player, per-call-query path -- kept for local-development/
+// offline-script/test-fixture use (scripts/test-player-availability.js). No
+// longer called by any LIVE production route as of Phase 4.
+function buildAvailabilityRoleSignal({ db, athleteId, team, asOfDate, targetGameStarter = null }) {
+  if (!db || !athleteId || !asOfDate) {
+    return {
+      starterStatus: 'unknown', roleChange: 'insufficient_evidence',
+      returningFromAbsence: false, returnStatus: 'insufficient_history', gamesSinceReturn: null,
+      minutesTrend: { l3: null, l5: null, l10: null },
+      minutesRestriction: null, availabilityStatus: null,
+      sampleSize: { baselineGames: 0, recentGames: 0, l3Games: 0, l5Games: 0, l10Games: 0 },
+      dataSource: DATA_SOURCE_LABEL,
+    };
+  }
+  const getWindow = (id, opts) => computeRoleWindow(db, id, asOfDate, opts);
+  const getReturnStatus = () => computeReturnStatus(db, athleteId, team, asOfDate);
+  return buildAvailabilityRoleSignalCore(getWindow, getReturnStatus, { athleteId, team, asOfDate, targetGameStarter });
+}
+
+// ---------- LIVE production path (Phase 4): bulk, historicalStore-backed ----------
+//
+// Bulk-fetches, for the WHOLE request: (a) every requested athlete's own
+// full row history (ONE query, reused for baseline/recent/l3/l5/l10 AND for
+// this player's own played-game-id set that computeReturnStatusFromRows
+// needs -- no separate per-player "did they play in these team games?"
+// query required), and (b) every referenced team's real schedule (ONE
+// query, grouped/sorted/sliced to lookbackGames in memory). A 500-player
+// request that used to issue up to 7 queries per player (baseline, recent,
+// l3, l5, l10, team schedule, played-rows) now issues exactly 2, total.
+async function getTeamSchedulesBulk(teams, beforeDate, { lookbackGames = 12 } = {}) {
+  const store = require('./historicalStore');
+  const list = [...new Set((teams || []).filter(Boolean))];
+  if (!list.length || !beforeDate) return new Map();
+  const ph = list.map(() => '?').join(',');
+  const rows = await store.query(`
+    SELECT team, game_id, game_date FROM nba_player_box
+    WHERE team IN (${ph}) AND game_date < ? AND season_type = ${SEASON_TYPE_REGULAR} AND ${NOT_EXHIB_CLAUSE}
+  `, [...list, beforeDate, ...EXHIBITION_OPP]);
+  const byTeam = new Map();
+  const seen = new Set();
+  for (const r of rows) {
+    const key = r.team + '|' + r.game_id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!byTeam.has(r.team)) byTeam.set(r.team, []);
+    byTeam.get(r.team).push(r);
+  }
+  for (const [team, games] of byTeam) {
+    games.sort((a, b) => (a.game_date < b.game_date ? 1 : a.game_date > b.game_date ? -1 : 0));
+    byTeam.set(team, games.slice(0, lookbackGames));
+  }
+  return byTeam;
+}
+
+async function buildAvailabilityRoleSignalsBulk(requests, asOfDate) {
+  const { getPlayerGameHistories } = require('./historicalQueries'); // lazy -- see the NOTE near the top of this file
+  const ids = [...new Set((requests || []).map(r => r && r.athleteId).filter(Boolean).map(String))];
+  const teams = [...new Set((requests || []).map(r => r && r.team).filter(Boolean))];
+  const [rawHistoriesMap, teamSchedules] = await Promise.all([
+    ids.length ? getPlayerGameHistories('nba', ids) : Promise.resolve(new Map()),
+    asOfDate ? getTeamSchedulesBulk(teams, asOfDate) : Promise.resolve(new Map()),
+  ]); // 2 bulk queries total, regardless of players.length
+  const historiesMap = new Map();
+  for (const [k, v] of rawHistoriesMap) historiesMap.set(String(k), v);
+
+  const signals = {};
+  for (const r of (requests || [])) {
+    if (!r || !r.athleteId) continue;
+    const ownRows = historiesMap.get(String(r.athleteId)) || [];
+    const getWindow = (id, opts) => computeRoleWindowFromRows(historiesMap.get(String(id)) || [], asOfDate, opts);
+    const getReturnStatus = () => computeReturnStatusFromRows(teamSchedules.get(r.team) || [], ownRows);
+    signals[r.athleteId] = buildAvailabilityRoleSignalCore(getWindow, getReturnStatus, { athleteId: r.athleteId, team: r.team, asOfDate, targetGameStarter: r.targetGameStarter });
+  }
+  return signals;
 }
 
 module.exports = {
   computeTeamScheduleAsOf,
   computeReturnStatus,
+  computeReturnStatusFromRows,
+  getTeamSchedulesBulk,
   classifyRoleChange,
   buildAvailabilityRoleSignal,
+  buildAvailabilityRoleSignalsBulk,
 };

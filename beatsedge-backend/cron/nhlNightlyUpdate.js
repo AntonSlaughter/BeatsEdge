@@ -3,8 +3,8 @@
 // api-web.nhle.com's real, free, keyless schedule + boxscore endpoints.
 
 const { fetchSchedule, fetchBoxscore } = require('../lib/nhlProxy');
-const { insertBoxscore, recomputeDefenseByPosition, recomputeTeamShootingRollup } = require('../lib/nhlEngine');
-const db = require('../lib/nhlDb');
+const { insertBoxscoreAsync, recomputeDefenseByPositionBulk, recomputeTeamShootingRollupBulk } = require('../lib/nhlEngine');
+const store = require('../lib/historicalStore');
 
 async function runNhlNightlyUpdate() {
   const yesterday = new Date();
@@ -23,7 +23,7 @@ async function runNhlNightlyUpdate() {
       if (game.gameState && game.gameState !== 'OFF' && game.gameState !== 'FINAL') continue; // skip not-yet-final
       try {
         const boxscore = await fetchBoxscore(game.id);
-        const { skaterRows, goalieRows } = insertBoxscore(boxscore, dateStr, game.id);
+        const { skaterRows, goalieRows } = await insertBoxscoreAsync(boxscore, dateStr, game.id);
         totalSkaterRows += skaterRows;
         totalGoalieRows += goalieRows;
         gamesProcessed++;
@@ -37,13 +37,12 @@ async function runNhlNightlyUpdate() {
 
   console.log(`[nhl-nightly] Processed ${gamesProcessed} games: ${totalSkaterRows} skater rows, ${totalGoalieRows} goalie rows`);
 
-  console.log('[nhl-nightly] Recomputing defense-by-position and team shooting rollups...');
-  const posSummary = recomputeDefenseByPosition();
-  const teamsUpdated = recomputeTeamShootingRollup();
+  console.log('[nhl-nightly] Recomputing defense-by-position and team shooting rollups (bulk, historicalStore-backed)...');
+  const posSummary = await recomputeDefenseByPositionBulk();
+  const teamsUpdated = await recomputeTeamShootingRollupBulk();
   console.log('[nhl-nightly] Position rollup summary:', posSummary, '| Teams updated:', teamsUpdated);
 
-  db.prepare(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`)
-    .run(totalSkaterRows + totalGoalieRows, `NHL: ${gamesProcessed} games, date=${dateStr}`);
+  await store.run(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`, [totalSkaterRows + totalGoalieRows, `NHL: ${gamesProcessed} games, date=${dateStr}`]);
 
   console.log('[nhl-nightly] Done.');
 }

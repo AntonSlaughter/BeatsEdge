@@ -45,36 +45,53 @@ const NOT_EXHIB_CLAUSE = `opponent NOT IN (${EXHIBITION_OPP.map(() => '?').join(
 // possible by a caller passing today's own game_date as asOfDate and
 // expecting today's row to be excluded, which it is by construction here.
 
-// A player's own trailing role, from games strictly before asOfDate. Real,
-// backward-looking, safe for both historical backtesting and live use.
-function computeRoleWindow(db, athleteId, asOfDate, { games, minGames = 1, seasonOnly = null } = {}) {
-  const seasonClause = seasonOnly != null ? 'AND season = ?' : '';
-  const params = [athleteId, asOfDate, ...EXHIBITION_OPP];
-  if (seasonOnly != null) params.push(seasonOnly);
-  params.push(games);
-  const rows = db.prepare(`
-    SELECT game_date, minutes, starter, points, rebounds, assists, team, pos_group
-    FROM nba_player_box
-    WHERE athlete_id = ? AND game_date < ? AND season_type = ${SEASON_TYPE_REGULAR}
-      AND played = 1 AND ${NOT_EXHIB_CLAUSE} ${seasonClause}
-    ORDER BY game_date DESC
-    LIMIT ?
-  `).all(...params);
+// Core, DB-agnostic windowing over a pre-fetched array of ONE athlete's real
+// nba_player_box rows (any shape carrying game_date/season_type/played/
+// opponent/season/minutes/starter/team/pos_group -- both the legacy
+// better-sqlite3 row shape and historicalQueries.getPlayerGameHistories's
+// bulk row shape satisfy this). This is the ONE place the actual windowing
+// math lives -- computeRoleWindow (single-query, per-player) and the bulk
+// production path (buildNextManUpSignalsBulk, below) both call this same
+// function, so there is no risk of the two paths silently diverging.
+function computeRoleWindowFromRows(rows, asOfDate, { games, minGames = 1, seasonOnly = null } = {}) {
+  const filtered = (rows || [])
+    .filter(r => r.game_date < asOfDate && r.season_type === SEASON_TYPE_REGULAR && r.played === 1
+      && !EXHIBITION_OPP.includes(r.opponent) && (seasonOnly == null || r.season === seasonOnly))
+    .sort((a, b) => (a.game_date < b.game_date ? 1 : a.game_date > b.game_date ? -1 : 0)) // DESC, most recent first -- matches the original SQL's ORDER BY game_date DESC
+    .slice(0, games);
 
-  if (rows.length < minGames) {
-    return { games: rows.length, sufficient: false, avgMinutes: null, starterRate: null, team: null, posGroup: null };
+  if (filtered.length < minGames) {
+    return { games: filtered.length, sufficient: false, avgMinutes: null, starterRate: null, team: null, posGroup: null };
   }
-  const avgMinutes = rows.reduce((s, r) => s + (r.minutes || 0), 0) / rows.length;
-  const starterRate = rows.reduce((s, r) => s + (r.starter ? 1 : 0), 0) / rows.length;
+  const avgMinutes = filtered.reduce((s, r) => s + (r.minutes || 0), 0) / filtered.length;
+  const starterRate = filtered.reduce((s, r) => s + (r.starter ? 1 : 0), 0) / filtered.length;
   return {
-    games: rows.length,
+    games: filtered.length,
     sufficient: true,
     avgMinutes,
     starterRate,
-    team: rows[0].team, // most recent known team, for identity/team-continuity checks
-    posGroup: rows[0].pos_group,
-    mostRecentGameDate: rows[0].game_date,
+    team: filtered[0].team, // most recent known team, for identity/team-continuity checks
+    posGroup: filtered[0].pos_group,
+    mostRecentGameDate: filtered[0].game_date,
   };
+}
+
+// A player's own trailing role, from games strictly before asOfDate. Real,
+// backward-looking, safe for both historical backtesting and live use.
+// Legacy single-player, single-query path -- kept for local-development/
+// offline-script/test-fixture use (see scripts/test-next-man-up.js). No
+// longer called by any LIVE production route as of Phase 4 -- the live
+// POST /nba/next-man-up route now calls buildNextManUpSignalsBulk (below),
+// which fetches ALL requested players' histories in ONE historicalStore
+// query per request instead of one query per player. Implemented in terms
+// of computeRoleWindowFromRows so the underlying math can never drift
+// between the two paths.
+function computeRoleWindow(db, athleteId, asOfDate, opts = {}) {
+  const rows = db.prepare(`
+    SELECT game_date, minutes, starter, points, rebounds, assists, team, pos_group, season, season_type, played, opponent
+    FROM nba_player_box WHERE athlete_id = ?
+  `).all(athleteId);
+  return computeRoleWindowFromRows(rows, asOfDate, opts);
 }
 
 // Pure function, no DB -- compares a "recent" window against a "baseline"
@@ -154,25 +171,31 @@ function findAbsentRotationPlayers(db, team, gameId, gameDate, { trailingGames =
 // fabricates -- returns active:false with null fields whenever the
 // underlying data is insufficient, rather than guessing.
 //
+// `getWindow(athleteId, opts)` abstracts away HOW a player's role window is
+// fetched -- computeRoleWindow (one query per call, legacy/offline) or an
+// in-memory lookup against a pre-fetched bulk-history Map (the live
+// production path, see buildNextManUpSignalsBulk below). The actual
+// signal-building math lives here ONCE so the two paths cannot diverge.
+//
 // `unavailableTeammates`: array of {athleteId, athleteName, posGroup,
 // reason} -- supplied by the CALLER. In production this comes from
 // BeatsEdge.html's existing live ESPN injury fetch (a real, pregame-known
 // input -- see fetchLiveInjuries / sidelinedByTeam in BeatsEdge.html). In
 // the historical backtest it comes from findAbsentRotationPlayers above
 // (a box-score-absence proxy, explicitly NOT an injury attribution).
-function buildNextManUpSignal({ db, athleteId, athleteName, team, posGroup, asOfDate, unavailableTeammates, dataFreshness = null }) {
+function buildNextManUpSignalCore(getWindow, { athleteId, athleteName, team, posGroup, asOfDate, unavailableTeammates, dataFreshness = null }) {
   const empty = {
     active: false, confidence: null, reason: null, unavailableTeammate: null,
     roleChange: null, minutesImpact: null, usageImpact: null, opportunityImpact: null,
     evidenceGames: 0, dataFreshness: dataFreshness || null,
   };
-  if (!db || !athleteId || !asOfDate) return empty;
+  if (!athleteId || !asOfDate) return empty;
 
   const relevantAbsences = (unavailableTeammates || []).filter(t => t && t.posGroup === posGroup && t.athleteId !== athleteId);
   if (!relevantAbsences.length) return empty; // component 1 (injury/unavailability-driven) has no basis -- inactive, not fabricated
 
-  const baseline = computeRoleWindow(db, athleteId, asOfDate, { games: 15, minGames: ROLE_CHANGE_MIN_BASELINE_GAMES });
-  const recent = computeRoleWindow(db, athleteId, asOfDate, { games: ROLE_CHANGE_MIN_RECENT_GAMES + 2, minGames: ROLE_CHANGE_MIN_RECENT_GAMES });
+  const baseline = getWindow(athleteId, { games: 15, minGames: ROLE_CHANGE_MIN_BASELINE_GAMES });
+  const recent = getWindow(athleteId, { games: ROLE_CHANGE_MIN_RECENT_GAMES + 2, minGames: ROLE_CHANGE_MIN_RECENT_GAMES });
   const change = detectRoleChange(baseline, recent);
 
   // Component 2: starting-lineup change (own starter-rate shift, from real history only)
@@ -181,7 +204,7 @@ function buildNextManUpSignal({ db, athleteId, athleteName, team, posGroup, asOf
   // Vacated opportunity: the absent teammate's own real trailing minutes --
   // this is the "how much is up for grabs" estimate, not a guess.
   const primaryAbsence = relevantAbsences[0];
-  const vacated = computeRoleWindow(db, primaryAbsence.athleteId, asOfDate, { games: 5, minGames: 2 });
+  const vacated = getWindow(primaryAbsence.athleteId, { games: 5, minGames: 2 });
 
   const active = !!(change.roleChangeDetected || startingLineupChange) && vacated.sufficient;
   if (!active) {
@@ -216,13 +239,68 @@ function buildNextManUpSignal({ db, athleteId, athleteName, team, posGroup, asOf
   };
 }
 
+// Legacy single-player, per-call-query path -- kept for local-development/
+// offline-script/test-fixture use (scripts/test-next-man-up.js). No longer
+// called by any LIVE production route as of Phase 4.
+function buildNextManUpSignal({ db, athleteId, athleteName, team, posGroup, asOfDate, unavailableTeammates, dataFreshness = null }) {
+  if (!db || !athleteId || !asOfDate) {
+    return {
+      active: false, confidence: null, reason: null, unavailableTeammate: null,
+      roleChange: null, minutesImpact: null, usageImpact: null, opportunityImpact: null,
+      evidenceGames: 0, dataFreshness: dataFreshness || null,
+    };
+  }
+  const getWindow = (id, opts) => computeRoleWindow(db, id, asOfDate, opts);
+  return buildNextManUpSignalCore(getWindow, { athleteId, athleteName, team, posGroup, asOfDate, unavailableTeammates, dataFreshness });
+}
+
+// ---------- LIVE production path (Phase 4): bulk, historicalStore-backed ----------
+//
+// Replaces the N-queries-per-player pattern above with ONE bulk
+// historicalStore fetch for every athleteId referenced anywhere in the
+// request (both the candidates themselves AND every athleteId named in
+// any candidate's unavailableTeammates list), then computes every
+// candidate's signal from that one in-memory Map. A 500-player request
+// that used to issue up to 1500 queries (3 per player: baseline, recent,
+// vacated) now issues exactly 1.
+async function buildNextManUpSignalsBulk(requests, asOfDate) {
+  // Lazy require -- lib/historicalQueries.js pulls in lib/historicalStore.js,
+  // which pulls in node:sqlite. Loading node:sqlite's DatabaseSync in the
+  // SAME process as better-sqlite3 (lib/db.js, used by the legacy sync path
+  // below) reproducibly crashes the native addon on this machine, even for
+  // trivial operations -- confirmed while building
+  // scripts/test-nba-signal-bulk-conversion.js. A top-level require would
+  // force that side effect on every caller of this module, including
+  // offline scripts that only want the legacy sync functions. Requiring it
+  // here means only actual callers of the bulk path pay for it.
+  const { getPlayerGameHistories } = require('./historicalQueries');
+  const allIds = new Set();
+  for (const r of (requests || [])) {
+    if (r && r.athleteId) allIds.add(String(r.athleteId));
+    for (const t of (r && r.unavailableTeammates) || []) { if (t && t.athleteId) allIds.add(String(t.athleteId)); }
+  }
+  const rawMap = allIds.size ? await getPlayerGameHistories('nba', [...allIds]) : new Map(); // ONE bulk query total
+  const historiesMap = new Map();
+  for (const [k, v] of rawMap) historiesMap.set(String(k), v); // normalize key type -- bulkSelectIn's key type mirrors the column's stored affinity, not necessarily the caller's string ids
+
+  const signals = {};
+  for (const r of (requests || [])) {
+    if (!r || !r.athleteId) continue;
+    const getWindow = (id, opts) => computeRoleWindowFromRows(historiesMap.get(String(id)) || [], asOfDate, opts);
+    signals[r.athleteId] = buildNextManUpSignalCore(getWindow, { ...r, asOfDate });
+  }
+  return signals;
+}
+
 module.exports = {
   SEASON_TYPE_REGULAR,
   EXHIBITION_OPP,
   computeRoleWindow,
+  computeRoleWindowFromRows,
   detectRoleChange,
   findAbsentRotationPlayers,
   buildNextManUpSignal,
+  buildNextManUpSignalsBulk,
   ROLE_CHANGE_MIN_ABS_MINUTES,
   ROLE_CHANGE_MIN_REL_PCT,
   ROLE_CHANGE_MIN_BASELINE_GAMES,

@@ -44,14 +44,20 @@ const SEASON_TYPE_REGULAR = 2; // unused here (team_game_advanced has no season_
 // strictly before asOfDate. Backward-looking, leak-safe, honest about
 // sample size -- never pads or fabricates when fewer than `games` real
 // rows exist.
-function computeTeamEnvironmentAsOf(db, team, asOfDate, { games = 10, minGames = 3 } = {}) {
-  const rows = db.prepare(`
+// 2026-09-28 historical-persistence cutover: converted to
+// lib/historicalStore.js (Turso-capable). The `db` parameter is kept
+// (ignored) purely so existing callers passing it don't need an immediate
+// edit; historicalStore is a singleton and doesn't need a handle threaded
+// through.
+const store = require('./historicalStore');
+async function computeTeamEnvironmentAsOf(db, team, asOfDate, { games = 10, minGames = 3 } = {}) {
+  const rows = await store.query(`
     SELECT game_date, pace, offensive_rating, defensive_rating
     FROM team_game_advanced
     WHERE sport = 'nba' AND team = ? AND game_date < ?
     ORDER BY game_date DESC
     LIMIT ?
-  `).all(team, asOfDate, games);
+  `, [team, asOfDate, games]);
 
   if (rows.length < minGames) {
     return { games: rows.length, sufficient: false, pace: null, offensiveRating: null, defensiveRating: null, mostRecentGameDate: null };
@@ -75,7 +81,7 @@ function computeTeamEnvironmentAsOf(db, team, asOfDate, { games = 10, minGames =
 // would itself be the kind of unvalidated estimate this task explicitly
 // prohibits. Whether netRatingGap actually predicts anything is exactly
 // what scripts/backtest-game-environment.js checks.
-function buildGameEnvironmentSignal({ db, team, opponent, asOfDate, games = 10 }) {
+async function buildGameEnvironmentSignal({ db, team, opponent, asOfDate, games = 10 }) {
   const empty = {
     teamPace: null, opponentPace: null, expectedPace: null,
     teamOffensiveRating: null, teamDefensiveRating: null,
@@ -84,10 +90,12 @@ function buildGameEnvironmentSignal({ db, team, opponent, asOfDate, games = 10 }
     sampleSize: { team: 0, opponent: 0 },
     dataSource: 'team_game_advanced (real, per-game NBA pace/offensive_rating/defensive_rating; Kaggle TeamStatisticsExtended.csv, 2023-10-24 through 2026-06-13, not nightly-refreshed)'
   };
-  if (!db || !team || !opponent || !asOfDate) return empty;
+  if (!team || !opponent || !asOfDate) return empty;
 
-  const teamEnv = computeTeamEnvironmentAsOf(db, team, asOfDate, { games });
-  const oppEnv = computeTeamEnvironmentAsOf(db, opponent, asOfDate, { games });
+  const [teamEnv, oppEnv] = await Promise.all([
+    computeTeamEnvironmentAsOf(db, team, asOfDate, { games }),
+    computeTeamEnvironmentAsOf(db, opponent, asOfDate, { games }),
+  ]);
 
   const out = {
     ...empty,
@@ -116,16 +124,16 @@ function buildGameEnvironmentSignal({ db, team, opponent, asOfDate, games = 10 }
 // by a caller that needs to build many as-of trailing windows itself
 // (e.g. the backtest script) without one HTTP round trip per prediction
 // point. Returns rows grouped by team, each list sorted oldest-first.
-function bulkTeamHistory(db, teams) {
+async function bulkTeamHistory(db, teams) {
   const list = [...new Set((teams || []).map(String))].filter(Boolean);
   if (!list.length) return {};
   const ph = list.map(() => '?').join(',');
-  const rows = db.prepare(`
+  const rows = await store.query(`
     SELECT team, game_date, opponent, pace, offensive_rating, defensive_rating
     FROM team_game_advanced
     WHERE sport = 'nba' AND team IN (${ph})
     ORDER BY team, game_date ASC
-  `).all(...list);
+  `, list);
   const out = {};
   rows.forEach(r => { (out[r.team] = out[r.team] || []).push(r); });
   return out;

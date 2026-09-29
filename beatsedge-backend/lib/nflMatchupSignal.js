@@ -119,7 +119,16 @@ function bulkPlayerHistory(db, playerIds) {
 }
 
 // A real pool of NFL skill-position players with enough historical games to
-// walk forward -- mirrors nbaHistDb.js's backtestPool for NFL.
+// walk forward -- mirrors nbaHistDb.js's backtestPool for NFL. Legacy
+// sync path -- kept for local-development/offline-script/test-fixture use.
+// No longer called by any LIVE production route as of Phase 4.
+//
+// NOTE: this ORIGINAL implementation issued one extra query PER RETURNED
+// PLAYER for `lastTeam` (a real N+1, the same pattern already fixed for
+// lib/nbaHistDb.js's backtestPool in Phase 3) -- fixed here to one bulk
+// query, since this function is exercised by scripts/test-matchup-signal.js
+// and offline backtest tooling and should not silently regress even though
+// it is no longer on the live path.
 function backtestPool(db, { minGames = 15, limit = 300 } = {}) {
   const rows = db.prepare(`
     SELECT player_id, player_name, position, COUNT(*) g
@@ -130,8 +139,94 @@ function backtestPool(db, { minGames = 15, limit = 300 } = {}) {
     ORDER BY g DESC
     LIMIT ?
   `).all(minGames, limit);
-  const lastTeam = db.prepare(`SELECT team FROM nfl_player_game_stats WHERE player_id = ? ORDER BY season DESC, week DESC LIMIT 1`);
-  return rows.map(r => ({ id: r.player_id, name: r.player_name, position: r.position, games: r.g, team: (lastTeam.get(r.player_id) || {}).team || null }));
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.player_id);
+  const ph = ids.map(() => '?').join(',');
+  const allTeamRows = db.prepare(`SELECT player_id, team, season, week FROM nfl_player_game_stats WHERE player_id IN (${ph}) ORDER BY player_id, season DESC, week DESC`).all(...ids);
+  const lastTeamByPlayer = new Map();
+  for (const r of allTeamRows) { if (!lastTeamByPlayer.has(r.player_id)) lastTeamByPlayer.set(r.player_id, r.team); }
+  return rows.map(r => ({ id: r.player_id, name: r.player_name, position: r.position, games: r.g, team: lastTeamByPlayer.get(r.player_id) || null }));
 }
 
-module.exports = { STAT_FIELD, computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool };
+// ---------- LIVE production path (Phase 4): historicalStore-backed ----------
+
+async function computeDefenseAllowedAsOfAsync(defenseTeam, position, statKey, season, week, { games = 5, minGames = 2 } = {}) {
+  const field = STAT_FIELD[statKey];
+  if (!field) return { games: 0, sufficient: false, avgAllowed: null };
+  const store = require('./historicalStore');
+  const rows = await store.query(`
+    SELECT season, week, SUM(${field}) total, COUNT(*) players
+    FROM nfl_player_game_stats
+    WHERE opponent = ? AND position = ? AND (season < ? OR (season = ? AND week < ?))
+    GROUP BY season, week
+    ORDER BY season DESC, week DESC
+    LIMIT ?
+  `, [defenseTeam, position, season, season, week, games]);
+  const real = rows.filter(r => r.players > 0);
+  if (real.length < minGames) return { games: real.length, sufficient: false, avgAllowed: null };
+  const avgAllowed = real.reduce((s, r) => s + (r.total || 0), 0) / real.length;
+  return { games: real.length, sufficient: true, avgAllowed: Math.round(avgAllowed * 10) / 10 };
+}
+
+async function bulkDefenseAllowedHistoryAsync(teams, positions) {
+  const teamList = [...new Set((teams || []).map(String))].filter(Boolean);
+  const posList = [...new Set((positions || ['WR', 'RB']).map(String))].filter(Boolean);
+  if (!teamList.length || !posList.length) return {};
+  const store = require('./historicalStore');
+  const tph = teamList.map(() => '?').join(',');
+  const pph = posList.map(() => '?').join(',');
+  const rows = await store.query(`
+    SELECT opponent, position, season, week,
+      SUM(receiving_yards) receivingYards, SUM(targets) targets,
+      SUM(receptions) receptions, SUM(rushing_yards) rushingYards,
+      COUNT(*) players
+    FROM nfl_player_game_stats
+    WHERE opponent IN (${tph}) AND position IN (${pph})
+    GROUP BY opponent, position, season, week
+    ORDER BY opponent, position, season, week
+  `, [...teamList, ...posList]);
+  const out = {};
+  rows.forEach(r => {
+    if (!r.players) return;
+    const key = r.opponent + '|' + r.position;
+    (out[key] = out[key] || []).push(r);
+  });
+  return out;
+}
+
+async function bulkPlayerHistoryAsync(playerIds) {
+  const list = [...new Set((playerIds || []).map(String))].filter(Boolean);
+  if (!list.length) return {};
+  const { bulkSelectIn } = require('./historicalQueries');
+  const rows = await bulkSelectIn('nfl_player_game_stats', 'player_id', list,
+    'player_id, season, week, position, team, opponent, receiving_yards, targets, receptions, rushing_yards, passing_yards, passing_tds, rushing_tds, receiving_tds, interceptions, fantasy_points_ppr');
+  const out = {};
+  rows.forEach(r => { (out[r.player_id] = out[r.player_id] || []).push(r); });
+  for (const pid of Object.keys(out)) out[pid].sort((a, b) => a.season - b.season || a.week - b.week);
+  return out;
+}
+
+async function backtestPoolAsync({ minGames = 15, limit = 300 } = {}) {
+  const store = require('./historicalStore');
+  const rows = await store.query(`
+    SELECT player_id, player_name, position, COUNT(*) g
+    FROM nfl_player_game_stats
+    WHERE player_id IS NOT NULL AND player_id != ''
+    GROUP BY player_id
+    HAVING g >= ?
+    ORDER BY g DESC
+    LIMIT ?
+  `, [minGames, limit]);
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.player_id);
+  const ph = ids.map(() => '?').join(',');
+  const allTeamRows = await store.query(`SELECT player_id, team, season, week FROM nfl_player_game_stats WHERE player_id IN (${ph}) ORDER BY player_id, season DESC, week DESC`, ids);
+  const lastTeamByPlayer = new Map();
+  for (const r of allTeamRows) { if (!lastTeamByPlayer.has(r.player_id)) lastTeamByPlayer.set(r.player_id, r.team); }
+  return rows.map(r => ({ id: r.player_id, name: r.player_name, position: r.position, games: r.g, team: lastTeamByPlayer.get(r.player_id) || null }));
+}
+
+module.exports = {
+  STAT_FIELD, computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool,
+  computeDefenseAllowedAsOfAsync, bulkDefenseAllowedHistoryAsync, bulkPlayerHistoryAsync, backtestPoolAsync,
+};

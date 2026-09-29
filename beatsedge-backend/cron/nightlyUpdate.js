@@ -7,9 +7,9 @@
 // this server is running (Render free tier sleeps when idle but a cron
 // tick will wake it; see README for the free "keep it ticking" note).
 
-const db = require('../lib/db');
 const { fetchScoreboardForDate, fetchBoxScoreTraditional } = require('../lib/statsProxy');
-const { recomputeDefenseByPosition } = require('../lib/dvpEngine');
+const { computeDefenseByPositionBulk } = require('../lib/historicalQueries');
+const store = require('../lib/historicalStore');
 
 // Position lookup: stats.nba.com's boxscoretraditionalv2 does NOT include
 // position in its player rows, so we maintain a small local override map
@@ -34,13 +34,7 @@ async function pullBoxScoresForDate(sport, dateStr) {
   const gameIdIdx = gameHeader.headers.indexOf('GAME_ID');
   const gameIds = gameHeader.rowSet.map(r => r[gameIdIdx]);
 
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO box_scores
-      (sport, game_date, game_id, player_name, position, team, opponent, points, rebounds, assists, minutes, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'nba-stats-nightly')
-  `);
-
-  let rowsInserted = 0;
+  const rowsToInsert = []; // batched into ONE transaction below -- not one write per row
 
   for (const gameId of gameIds) {
     try {
@@ -81,18 +75,24 @@ async function pullBoxScoresForDate(sport, dateStr) {
 
         if (!position) return;
 
-        insert.run(
-          sport, dateStr, gameId, row[idx.player], position, team, opponent,
-          row[idx.pts] || 0, row[idx.reb] || 0, row[idx.ast] || 0, 0
-        );
-        rowsInserted++;
+        rowsToInsert.push([sport, dateStr, gameId, row[idx.player], position, team, opponent, row[idx.pts] || 0, row[idx.reb] || 0, row[idx.ast] || 0, 0]);
       });
     } catch (err) {
       console.warn(`[nightly] Failed box score for game ${gameId}:`, err.message);
     }
   }
 
-  return { gamesFound: gameIds.length, rowsInserted };
+  if (rowsToInsert.length) {
+    await store.transaction(async (exec) => {
+      for (const params of rowsToInsert) {
+        await exec(`INSERT OR IGNORE INTO box_scores
+          (sport, game_date, game_id, player_name, position, team, opponent, points, rebounds, assists, minutes, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'nba-stats-nightly')`, params);
+      }
+    });
+  }
+
+  return { gamesFound: gameIds.length, rowsInserted: rowsToInsert.length };
 }
 
 async function runNightlyUpdate() {
@@ -113,12 +113,11 @@ async function runNightlyUpdate() {
     }
   }
 
-  console.log('[nightly] Recomputing defense-vs-position aggregates...');
-  const summary = recomputeDefenseByPosition('nba');
+  console.log('[nightly] Recomputing defense-vs-position aggregates (bulk, historicalStore-backed)...');
+  const summary = await computeDefenseByPositionBulk('nba');
   console.log('[nightly] Recompute summary:', summary);
 
-  db.prepare(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`)
-    .run(totalRows, `Date: ${dateStr}`);
+  await store.run(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`, [totalRows, `Date: ${dateStr}`]);
 
   console.log('[nightly] Done.');
 }

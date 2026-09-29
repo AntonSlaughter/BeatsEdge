@@ -6,8 +6,8 @@
 // would need (Retrosheet or a similar bulk source, not yet wired up here).
 
 const { fetchSchedule, fetchBoxscore } = require('../lib/mlbProxy');
-const { insertBoxscore, recomputePitcherRollups, recomputeTeamBattingRollups } = require('../lib/mlbEngine');
-const db = require('../lib/mlbDb');
+const { insertBoxscoreAsync, recomputePitcherRollupsBulk, recomputeTeamBattingRollupsBulk } = require('../lib/mlbEngine');
+const store = require('../lib/historicalStore');
 
 async function runMlbNightlyUpdate() {
   const yesterday = new Date();
@@ -27,7 +27,7 @@ async function runMlbNightlyUpdate() {
       if (game.status && game.status.abstractGameState !== 'Final') continue; // skip postponed/in-progress
       try {
         const boxscore = await fetchBoxscore(game.gamePk);
-        const { batterRows, pitcherRows } = insertBoxscore(boxscore, dateStr, game.gamePk);
+        const { batterRows, pitcherRows } = await insertBoxscoreAsync(boxscore, dateStr, game.gamePk);
         totalBatterRows += batterRows;
         totalPitcherRows += pitcherRows;
         gamesProcessed++;
@@ -41,13 +41,12 @@ async function runMlbNightlyUpdate() {
 
   console.log(`[mlb-nightly] Processed ${gamesProcessed} games: ${totalBatterRows} batter rows, ${totalPitcherRows} pitcher rows`);
 
-  console.log('[mlb-nightly] Recomputing pitcher and team batting rollups...');
-  const pitchersUpdated = recomputePitcherRollups();
-  const teamsUpdated = recomputeTeamBattingRollups();
+  console.log('[mlb-nightly] Recomputing pitcher and team batting rollups (bulk, historicalStore-backed)...');
+  const pitchersUpdated = await recomputePitcherRollupsBulk();
+  const teamsUpdated = await recomputeTeamBattingRollupsBulk();
   console.log(`[mlb-nightly] Rollups: ${pitchersUpdated} pitcher entries, ${teamsUpdated} teams`);
 
-  db.prepare(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`)
-    .run(totalBatterRows + totalPitcherRows, `MLB: ${gamesProcessed} games, date=${dateStr}`);
+  await store.run(`INSERT INTO ingest_log (run_type, rows_added, notes) VALUES ('nightly', ?, ?)`, [totalBatterRows + totalPitcherRows, `MLB: ${gamesProcessed} games, date=${dateStr}`]);
 
   console.log('[mlb-nightly] Done.');
 }

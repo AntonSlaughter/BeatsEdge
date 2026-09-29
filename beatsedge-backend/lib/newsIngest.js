@@ -128,7 +128,7 @@ function stripHtml(s) {
 // (no headline, or matches NEWS_PROMO_RE) -- filtered out, never stored as
 // a placeholder. playerId/eventId/importance are never set here (Phase 1
 // scope) -- left for a later phase, never guessed.
-function normalizeEspnArticle(a, sport) {
+function normalizeEspnArticle(a, sport, prebuiltIndex) {
   const title = strOf(a.headline);
   if (!title) return null;
   const summary = strOf(a.description) || null;
@@ -152,7 +152,7 @@ function normalizeEspnArticle(a, sport) {
   // shape never actually carries. Checked in order of decreasing
   // specificity in case a richer shape ever supplies them.
   const espnAthleteName = strOf(athleteCat && athleteCat.athlete && (athleteCat.athlete.description || athleteCat.athlete.displayName || athleteCat.athlete.fullName)) || strOf(athleteCat && athleteCat.description) || null;
-  const identity = newsPlayerIdentity.resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawName: espnAthleteName, team });
+  const identity = newsPlayerIdentity.resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawName: espnAthleteName, team, prebuiltIndex });
   const base = {
     source: 'ESPN', sourceArticleId, title, summary, url, imageUrl: image,
     publishedAt, rawPublishedAt: strOf(a.published) || null, updatedAt,
@@ -198,8 +198,14 @@ async function fetchEspnNews(sport) {
     const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${espnPath}/news?limit=50`);
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}`, articles: [] };
     const data = await res.json();
+    // ONE bulk fetch of this sport's canonical player index (Turso-safe,
+    // via lib/historicalStore.js) BEFORE normalizing any article -- never
+    // one query per article. See lib/newsPlayerIdentity.js's
+    // buildCanonicalIndexBulk header for why this replaced the old
+    // per-article getIndexForSport() cross-table SQL read.
+    const prebuiltIndex = await newsPlayerIdentity.buildCanonicalIndexBulk(sport);
     const articles = (Array.isArray(data.articles) ? data.articles : [])
-      .map(a => normalizeEspnArticle(a, sport))
+      .map(a => normalizeEspnArticle(a, sport, prebuiltIndex))
       .filter(Boolean);
     return { ok: true, articles };
   } catch (e) {

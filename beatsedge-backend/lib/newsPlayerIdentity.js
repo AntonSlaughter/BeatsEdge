@@ -159,6 +159,46 @@ function getIndexForSport(sport) {
   return index;
 }
 
+// ── Turso-safe bulk index builder (2026-09-28 historical-persistence
+// migration) ───────────────────────────────────────────────────────────
+// Replaces getIndexForSport's direct cross-table SQL query (news_articles'
+// OWN connection reading mlb_batter_game_stats/nfl_player_game_stats/
+// nba_player_box -- tables owned by lib/mlbDb.js/lib/nflDb.js/lib/db.js,
+// all currently the SAME physical file, but NOT once those tables move to
+// Turso and news_articles stays local SQLite). Fetches this sport's
+// canonical player rows via lib/historicalStore.js (Turso-capable) in ONE
+// bulk query per sport per ingest run -- never per-article, never a SQL
+// join across two physical databases -- then builds the exact same
+// in-memory index shape getIndexForSport already produced, so
+// resolveNameInIndex/resolvePlayerForArticle need no changes at all. The
+// small "does this news mention match a known player" step is a plain
+// JS Map lookup in application memory, exactly the preferred direction.
+async function buildCanonicalIndexBulk(sport) {
+  const store = require('./historicalStore');
+  let index = null;
+  try {
+    if (sport === 'mlb') {
+      const batters = await store.query(`SELECT DISTINCT player_id, player_name, team FROM mlb_batter_game_stats ORDER BY game_date DESC`);
+      const pitchers = await store.query(`SELECT DISTINCT player_id, player_name, team FROM mlb_pitcher_game_stats ORDER BY game_date DESC`);
+      index = buildIndexFromRows([...batters, ...pitchers], 'player_id', 'player_name', 'team');
+      index.playerIdSource = 'mlb';
+    } else if (sport === 'nfl') {
+      const rows = await store.query(`SELECT DISTINCT player_id, player_name, team FROM nfl_player_game_stats WHERE season >= (SELECT MAX(season) FROM nfl_player_game_stats) - 2 ORDER BY season DESC, week DESC`);
+      index = buildIndexFromRows(rows, 'player_id', 'player_name', 'team');
+      index.playerIdSource = 'nflverse';
+    } else if (sport === 'nba') {
+      const rows = await store.query(`SELECT DISTINCT athlete_id, athlete_name, team FROM nba_player_box WHERE season >= (SELECT MAX(season) FROM nba_player_box) - 2 ORDER BY season DESC, game_date DESC`);
+      index = buildIndexFromRows(rows, 'athlete_id', 'athlete_name', 'team');
+      index.playerIdSource = 'espn';
+    }
+    // ncaaf / wnba: same "no table, no invention" rule as getIndexForSport.
+  } catch (e) {
+    console.warn(`[newsPlayerIdentity] Failed to build bulk canonical index for ${sport}:`, e.message);
+    index = null;
+  }
+  return index; // NOT cached in _indexCache -- caller (ingestSport) builds it once per ingest run and passes it down explicitly, so cache staleness is never a question
+}
+
 // Tiers 3/4 of Step 5: exact normalized-name match, then a team-
 // disambiguated match, within one sport's canonical index. Never guesses --
 // returns a method tag explaining exactly why, even on failure.
@@ -225,7 +265,14 @@ function resolveNameInIndex(index, rawName, team) {
 // UNMATCHED here -- scanning free-text headlines for a candidate name
 // would be exactly the "loose/fuzzy" inference this phase must avoid, and
 // is explicitly out of scope.
-function resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawName, team }) {
+// `prebuiltIndex` (optional): pass the result of buildCanonicalIndexBulk()
+// to avoid this call hitting getIndexForSport's own (older, direct-SQLite,
+// non-Turso-safe) lookup -- callers migrated to the bulk path (see
+// lib/newsIngest.js's fetchEspnNews) build the index ONCE per ingest run
+// and pass it to every per-article call here, so this stays a pure,
+// synchronous, no-I/O function. Callers not yet migrated (existing tests)
+// keep working unchanged via the getIndexForSport fallback.
+function resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawName, team, prebuiltIndex }) {
   // Tier 1 -- explicit provider id. Sport-agnostic: ESPN tags athletes the
   // same way across every sport it covers. Bypasses name-matching entirely,
   // so it is immune to every accent/suffix/collision edge case below.
@@ -246,7 +293,7 @@ function resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawNam
   const nameToMatch = rawName;
   if (!nameToMatch) return { playerId: null, playerIdSource: null, playerName: null, playerMatchMethod: 'UNMATCHED' };
 
-  const index = getIndexForSport(sport);
+  const index = prebuiltIndex !== undefined ? prebuiltIndex : getIndexForSport(sport);
   const result = resolveNameInIndex(index, nameToMatch, team);
   if (result.method === 'EXACT_NAME' || result.method === 'EXACT_NAME_TEAM') {
     return {
@@ -261,4 +308,4 @@ function resolvePlayerForArticle({ sport, espnAthleteId, espnAthleteName, rawNam
   return { playerId: null, playerIdSource: null, playerName: null, playerMatchMethod: result.method };
 }
 
-module.exports = { normalizePlayerName, stripSuffix, buildIndexFromRows, getIndexForSport, resolveNameInIndex, resolvePlayerForArticle };
+module.exports = { normalizePlayerName, stripSuffix, buildIndexFromRows, getIndexForSport, buildCanonicalIndexBulk, resolveNameInIndex, resolvePlayerForArticle };

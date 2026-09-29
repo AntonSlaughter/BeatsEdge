@@ -2,17 +2,16 @@ const express = require('express');
 const router = express.Router();
 const { fetchLeagueDefenseStats } = require('../lib/statsProxy');
 const { fetchProbablePitchers } = require('../lib/mlbProxy');
-const { getDefenseByPosition, getTeamAdvancedStats } = require('../lib/dvpEngine');
+const { getDefenseByPositionAsync, getTeamAdvancedStatsAsync, getNflDefenseByPositionAsync } = require('../lib/historicalQueries');
 const { getPlayerSituationalSplits, getTeamScheduleContext } = require('../lib/situationalEngine');
-const { getNflDefenseByPosition } = require('../lib/nflDvpEngine');
-const nflDb = require('../lib/nflDb');
-const mlbDb = require('../lib/mlbDb');
-const { getDefenseByPosition: getNhlDefenseByPosition } = require('../lib/nhlEngine');
-const nhlDb = require('../lib/nhlDb');
+const { getPitcherRollupAsync, getTeamBattingRollupAsync } = require('../lib/mlbEngine');
+const { getDefenseByPositionAsync: getNhlDefenseByPositionAsync, getTeamShootingRollupAsync } = require('../lib/nhlEngine');
 const db = require('../lib/db');
+const historicalStore = require('../lib/historicalStore');
 const { saveSnapshots, snapshotSummary, getSnapshots } = require('../lib/snapshotDb');
 const { runSettleSnapshots } = require('../cron/settleSnapshots');
 const nbaHist = require('../lib/nbaHistDb');
+const wnbaPeriodGamelogs = require('../lib/wnbaPeriodGamelogs');
 const dataSourceHealth = require('../lib/dataSourceHealth');
 const parlayCache = require('../lib/parlayCache');
 const wnbaProviderLineArchive = require('../lib/wnbaProviderLineArchive');
@@ -24,11 +23,14 @@ const nbaProviderLineArchive = require('../lib/nbaProviderLineArchive');
 const mlbProviderLineArchive = require('../lib/mlbProviderLineArchive');
 const nflProviderLineArchive = require('../lib/nflProviderLineArchive');
 const ncaafProviderLineArchive = require('../lib/ncaafProviderLineArchive');
-const { buildNextManUpSignal } = require('../lib/nextManUpSignal');
+const { buildNextManUpSignalsBulk } = require('../lib/nextManUpSignal');
 const { buildGameEnvironmentSignal, bulkTeamHistory } = require('../lib/gameEnvironment');
-const { buildNflGameEnvironmentSignal } = require('../lib/nflGameEnvironment');
-const { buildAvailabilityRoleSignal } = require('../lib/playerAvailabilitySignal');
-const { computeDefenseAllowedAsOf, bulkDefenseAllowedHistory, bulkPlayerHistory, backtestPool: nflBacktestPool } = require('../lib/nflMatchupSignal');
+const { buildNflGameEnvironmentSignalAsync } = require('../lib/nflGameEnvironment');
+const { buildAvailabilityRoleSignalsBulk } = require('../lib/playerAvailabilitySignal');
+const {
+  computeDefenseAllowedAsOfAsync, bulkDefenseAllowedHistoryAsync, bulkPlayerHistoryAsync,
+  backtestPoolAsync: nflBacktestPoolAsync,
+} = require('../lib/nflMatchupSignal');
 const newsDb = require('../lib/newsDb');
 const newsIngest = require('../lib/newsIngest');
 const newsClassifier = require('../lib/newsClassifier');
@@ -36,8 +38,8 @@ const newsImpact = require('../lib/newsImpact');
 
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
-router.get('/health', (req, res) => {
-  const lastIngest = db.prepare(`SELECT * FROM ingest_log ORDER BY ran_at DESC LIMIT 1`).get();
+router.get('/health', async (req, res) => {
+  const lastIngest = await historicalStore.queryOne(`SELECT * FROM ingest_log ORDER BY ran_at DESC LIMIT 1`);
   res.json({ ok: true, lastIngest: lastIngest || null });
 });
 
@@ -94,6 +96,81 @@ router.get('/data-health', async (req, res) => {
       snapshotStatus = { ...snapshotStatus, ...fileInfo(SNAPSHOTS_DB_PATH) };
     }
 
+    // Historical-data storage (2026-09-28 migration): lib/historicalStore.js
+    // is the new Turso-capable adapter for the tables listed in its own
+    // SCHEMA_STATEMENTS. Reported SEPARATELY from the legacy `beatsedge`
+    // block above (which still reads via the old, always-local-SQLite `db`
+    // handle) so this endpoint can show BOTH during the transition period —
+    // they read the identical physical file today (local dev, or production
+    // before Turso is configured), and are expected to diverge once
+    // production is actually pointed at Turso (at which point `beatsedge`
+    // keeps showing local/ephemeral while `historical` shows persistent).
+    // `persistent: true` here means "connected to Turso, not local SQLite" —
+    // exactly what phase 14 of the migration plan asked this endpoint to
+    // surface plainly, never fabricated from the mere presence of env vars.
+    let historicalStatus;
+    try {
+      const historicalStore = require('../lib/historicalStore');
+      const health = await historicalStore.healthStatus();
+      const rangeFor = async (table, dateCol, seasonCol) => {
+        try {
+          const r = await historicalStore.queryOne(`SELECT MIN(${dateCol}) minDate, MAX(${dateCol}) maxDate, COUNT(DISTINCT ${seasonCol}) seasons FROM "${table}"`);
+          return r;
+        } catch (e) { return null; }
+      };
+      const [nbaRange, wnbaRange, nflRange, mlbRange] = await Promise.all([
+        rangeFor('nba_player_box', 'game_date', 'season'),
+        rangeFor('wnba_player_box', 'game_date', 'season'),
+        rangeFor('nfl_player_game_stats', 'game_date', 'season'),
+        // mlb_batter_game_stats has NO season column (MLB tracks season via
+        // game_date's year only) -- derive it instead of referencing a
+        // nonexistent column (which silently returned null here before this
+        // was caught: Phase 4 found this while building sport-level health).
+        rangeFor('mlb_batter_game_stats', 'game_date', "SUBSTR(game_date, 1, 4)"),
+      ]);
+      const lastIngest = await historicalStore.queryOne(`SELECT run_type, rows_added, ran_at FROM ingest_log ORDER BY ran_at DESC LIMIT 1`).catch(() => null);
+      const historicalTableCounts = {};
+      const HISTORICAL_TABLES = ['nba_player_box', 'wnba_player_box', 'nfl_player_game_stats', 'nfl_defense_by_position', 'mlb_batter_game_stats', 'mlb_pitcher_game_stats'];
+      for (const t of HISTORICAL_TABLES) {
+        try { historicalTableCounts[t] = (await historicalStore.queryOne(`SELECT COUNT(*) c FROM "${t}"`)).c; } catch (e) { /* omit */ }
+      }
+
+      // Sport-level health (Phase 4, Section 16): fresh/stale/insufficient
+      // per sport, using the same real per-sport data-quality reasoning
+      // already established in Phase 2's retention-window design (NBA/WNBA
+      // rolling ~13mo, NFL current+3 complete seasons, MLB current+1 prior
+      // season) -- "fresh" here means "the most recent real row is within a
+      // sane number of days for that sport's cadence," not a guess.
+      const daysSince = (dateStr) => dateStr ? Math.floor((Date.now() - Date.parse(dateStr)) / 864e5) : null;
+      function classify(range, rowCount, freshDays, minRows = 50) {
+        if (!range || !range.maxDate || !rowCount) return 'insufficient';
+        if (rowCount < minRows) return 'insufficient';
+        const age = daysSince(range.maxDate);
+        return age != null && age <= freshDays ? 'fresh' : 'stale';
+      }
+      const sportHealth = {
+        nba: { backend: historicalStore.backend, rowCount: historicalTableCounts.nba_player_box || 0, seasonCoverage: nbaRange, status: classify(nbaRange, historicalTableCounts.nba_player_box, 10) },
+        wnba: { backend: historicalStore.backend, rowCount: historicalTableCounts.wnba_player_box || 0, seasonCoverage: wnbaRange, status: classify(wnbaRange, historicalTableCounts.wnba_player_box, 10) },
+        nfl: { backend: historicalStore.backend, rowCount: historicalTableCounts.nfl_player_game_stats || 0, seasonCoverage: nflRange, status: classify(nflRange, historicalTableCounts.nfl_player_game_stats, 10) },
+        mlb: { backend: historicalStore.backend, rowCount: historicalTableCounts.mlb_batter_game_stats || 0, seasonCoverage: mlbRange, status: classify(mlbRange, historicalTableCounts.mlb_batter_game_stats, 10) },
+        lastSuccessfulIngest: lastIngest || null,
+      };
+
+      historicalStatus = {
+        backend: historicalStore.backend,
+        connected: !!health.ok,
+        persistent: historicalStore.backend === 'turso' && !!health.ok,
+        ephemeralWarning: historicalStore.ephemeralWarning || null,
+        error: health.ok ? null : health.error,
+        tableCounts: historicalTableCounts,
+        seasonCoverage: { nba: nbaRange, wnba: wnbaRange, nfl: nflRange, mlb: mlbRange },
+        sportHealth,
+        lastIngest: lastIngest || null,
+      };
+    } catch (e) {
+      historicalStatus = { backend: 'unknown', connected: false, persistent: false, error: e.message };
+    }
+
     res.json({
       databaseType: 'sqlite',
       dataDir: DATA_DIR,
@@ -101,6 +178,7 @@ router.get('/data-health', async (req, res) => {
         ? 'persistent (BEATSEDGE_DATA_DIR set — expected to be a mounted disk)'
         : 'ephemeral (default repo ./data path — resets on every deploy/restart unless a disk is mounted here)',
       beatsedge: { backend: 'sqlite-local', path: BEATSEDGE_DB_PATH, ...fileInfo(BEATSEDGE_DB_PATH), tableCounts: beatsedgeTableCounts },
+      historical: historicalStatus,
       snapshots: snapshotStatus
     });
   } catch (err) {
@@ -128,7 +206,7 @@ router.get('/defense/overall/:sport/:season/:team', async (req, res) => {
     // Live call failed — fall through to local historical data below.
   }
 
-  const local = getTeamAdvancedStats(sport, team.toUpperCase(), windowType);
+  const local = await getTeamAdvancedStatsAsync(sport, team.toUpperCase(), windowType);
   if (local) {
     return res.json({
       source: 'Your historical data (computed, not live)',
@@ -146,11 +224,11 @@ router.get('/defense/overall/:sport/:season/:team', async (req, res) => {
 
 // GET /api/defense/by-position/:sport/:team?window=season|last10|last20
 // Our own computed defense-vs-position numbers.
-router.get('/defense/by-position/:sport/:team', (req, res) => {
+router.get('/defense/by-position/:sport/:team', async (req, res) => {
   const { sport, team } = req.params;
   const windowType = req.query.window || 'season';
   try {
-    const byPosition = getDefenseByPosition(sport, team.toUpperCase(), windowType);
+    const byPosition = await getDefenseByPositionAsync(sport, team.toUpperCase(), windowType);
     if (Object.keys(byPosition).length === 0) {
       return res.status(404).json({ error: `No computed data yet for ${team}. Has the seed/nightly job run?` });
     }
@@ -180,7 +258,7 @@ router.get('/defense/combined/:sport/:season/:team', async (req, res) => {
   } catch (err) {
     // Real fallback: your own historical defensive rating/pace — not a guess,
     // just not live-updated (only as fresh as your last CSV ingest).
-    const local = getTeamAdvancedStats(sport, team.toUpperCase(), windowType);
+    const local = await getTeamAdvancedStatsAsync(sport, team.toUpperCase(), windowType);
     if (local) {
       result.overall = {
         team: team.toUpperCase(),
@@ -199,7 +277,7 @@ router.get('/defense/combined/:sport/:season/:team', async (req, res) => {
   }
 
   try {
-    result.byPosition = getDefenseByPosition(sport, team.toUpperCase(), windowType);
+    result.byPosition = await getDefenseByPositionAsync(sport, team.toUpperCase(), windowType);
     result.byPositionSource = 'BeatsEdge computed';
   } catch (err) {
     result.byPosition = {};
@@ -212,10 +290,10 @@ router.get('/defense/combined/:sport/:season/:team', async (req, res) => {
 // GET /api/team/advanced/:sport/:team?window=season|last10
 // Real defensive rating, offensive rating, and pace — direct access to the
 // historical rollup, useful for the Edge Score engine's "Pace" factor.
-router.get('/team/advanced/:sport/:team', (req, res) => {
+router.get('/team/advanced/:sport/:team', async (req, res) => {
   const { sport, team } = req.params;
   const windowType = req.query.window || 'season';
-  const data = getTeamAdvancedStats(sport, team.toUpperCase(), windowType);
+  const data = await getTeamAdvancedStatsAsync(sport, team.toUpperCase(), windowType);
   if (!data) return res.status(404).json({ error: `No historical advanced stats for ${team}` });
   res.json({ source: 'Your historical data (computed)', team: team.toUpperCase(), window: windowType, ...data });
 });
@@ -232,9 +310,9 @@ router.get('/player/situational/:playerName', (req, res) => {
 
 // GET /api/team/schedule-context/:sport/:team/:gameId
 // Real rest-days/back-to-back/home-away for one specific game.
-router.get('/team/schedule-context/:sport/:team/:gameId', (req, res) => {
+router.get('/team/schedule-context/:sport/:team/:gameId', async (req, res) => {
   const { sport, team, gameId } = req.params;
-  const context = getTeamScheduleContext(sport, team.toUpperCase(), gameId);
+  const context = await getTeamScheduleContext(sport, team.toUpperCase(), gameId);
   if (!context) return res.status(404).json({ error: 'No schedule data for that game' });
   res.json({ source: 'BeatsEdge computed (real schedule)', ...context });
 });
@@ -249,9 +327,9 @@ router.get('/team/schedule-context/:sport/:team/:gameId', (req, res) => {
 // Always returns all five windows (L3/L5/L10/season/multiseason) per
 // position, each carrying its own games_sampled — never a single bare
 // number. See lib/nflDvpEngine.js for the window/eligibility design.
-router.get('/nfl/defense/by-position/:team', (req, res) => {
+router.get('/nfl/defense/by-position/:team', async (req, res) => {
   const { team } = req.params;
-  const { byPosition, interceptions } = getNflDefenseByPosition(nflDb, team.toUpperCase());
+  const { byPosition, interceptions } = await getNflDefenseByPositionAsync(team.toUpperCase());
   const hasData = Object.values(byPosition).some(p => Object.values(p.windows).some(Boolean));
   if (!hasData) {
     return res.status(404).json({ error: `No computed NFL data for ${team}` });
@@ -272,45 +350,59 @@ router.get('/nfl/defense/by-position/:team', (req, res) => {
 // ============================================================
 
 // GET /api/nba/history-status — is the table populated, and how far back
-router.get('/nba/history-status', (req, res) => {
+router.get('/nba/history-status', async (req, res) => {
   try {
-    if (!nbaHist.hasData()) return res.json({ ready: false });
-    const s = db.prepare(`SELECT COUNT(*) rows, COUNT(DISTINCT athlete_id) players, MIN(game_date) a, MAX(game_date) b, MAX(season) season FROM nba_player_box`).get();
+    if (!(await nbaHist.hasData())) return res.json({ ready: false });
+    const s = await historicalStore.queryOne(`SELECT COUNT(*) rows, COUNT(DISTINCT athlete_id) players, MIN(game_date) a, MAX(game_date) b, MAX(season) season FROM nba_player_box`);
     res.json({ ready: true, rows: s.rows, players: s.players, from: s.a, to: s.b, latestSeason: s.season });
   } catch (e) { res.json({ ready: false, error: e.message }); }
 });
 
 // GET /api/nba/backtest-pool?season=2026&minGames=25&limit=200
 // A roster to walk-forward when there's no live slate.
-router.get('/nba/backtest-pool', (req, res) => {
+router.get('/nba/backtest-pool', async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season, 10) : null;
     const minGames = Math.max(5, Math.min(82, parseInt(req.query.minGames, 10) || 25));
     const limit = Math.max(10, Math.min(500, parseInt(req.query.limit, 10) || 220));
-    res.json({ season, pool: nbaHist.backtestPool({ season, minGames, limit }) });
+    res.json({ season, pool: await nbaHist.backtestPool({ season, minGames, limit }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/nba/gamelogs?athletes=1,2,3&since=2023-10-01
 // Per-game rows (compact keys) for a set of ESPN athlete ids, oldest first.
-router.get('/nba/gamelogs', (req, res) => {
+router.get('/nba/gamelogs', async (req, res) => {
   try {
     const ids = String(req.query.athletes || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 400);
     if (!ids.length) return res.status(400).json({ error: 'pass ?athletes=id,id,...' });
     const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
-    res.json({ since, logs: nbaHist.gamelogs(ids, { since }) });
+    res.json({ since, logs: await nbaHist.gamelogs(ids, { since }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/wnba/period-gamelogs?athletes=1,2,3&since=2023-10-01
+// Phase 2I-L -- compact 1Q/1H per-game history (points/oreb/dreb/rebounds/
+// assists) for a set of ESPN athlete ids, oldest first. Powers the NEW,
+// SEPARATE WNBA period model in BeatsEdge.html (never the frozen full-game
+// model). See lib/wnbaPeriodGamelogs.js.
+router.get('/wnba/period-gamelogs', async (req, res) => {
+  try {
+    const ids = String(req.query.athletes || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 400);
+    if (!ids.length) return res.status(400).json({ error: 'pass ?athletes=id,id,...' });
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
+    res.json({ since, logs: await wnbaPeriodGamelogs.periodGamelogsAsync(ids, { since }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/nba/dvp?since=2025-10-01
 // Defense-vs-position grid computed from nba_player_box: per team, per
 // G/F/C, allowed-per-game for pts/reb/ast/3pm/stl/blk/to + a 1-30 rank.
-router.get('/nba/dvp', (req, res) => {
+router.get('/nba/dvp', async (req, res) => {
   try {
-    if (!nbaHist.hasData()) return res.status(404).json({ error: 'nba_player_box not populated — run scripts/ingest-hoopr-nba.js' });
+    if (!(await nbaHist.hasData())) return res.status(404).json({ error: 'nba_player_box not populated — run scripts/ingest-hoopr-nba.js' });
     const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
-    const asOf = db.prepare(`SELECT MAX(game_date) d FROM nba_player_box${since ? ' WHERE game_date >= ?' : ''}`).get(...(since ? [since] : []));
-    res.json({ since, asOf: asOf && asOf.d, source: 'BeatsEdge computed (hoopR box scores)', grid: nbaHist.dvpGrid({ since }) });
+    const asOf = await historicalStore.queryOne(`SELECT MAX(game_date) d FROM nba_player_box${since ? ' WHERE game_date >= ?' : ''}`, since ? [since] : []);
+    res.json({ since, asOf: asOf && asOf.d, source: 'BeatsEdge computed (hoopR box scores)', grid: await nbaHist.dvpGrid({ since }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -325,27 +417,24 @@ router.get('/nba/dvp', (req, res) => {
 // injury fetch (fetchLiveInjuries/sidelinedByTeam), not from anything this
 // route looks up itself. Response never fabricates: any player with
 // insufficient real history gets active:false with null impact fields.
-router.post('/nba/next-man-up', (req, res) => {
+router.post('/nba/next-man-up', async (req, res) => {
   try {
     const { asOfDate, players } = req.body || {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '')) return res.status(400).json({ error: 'asOfDate must be YYYY-MM-DD' });
     if (!Array.isArray(players) || !players.length) return res.status(400).json({ error: 'players must be a non-empty array' });
     if (players.length > 500) return res.status(400).json({ error: 'too many players (max 500 per request)' });
 
-    const signals = {};
-    for (const p of players) {
-      if (!p || !p.athleteId) continue;
-      signals[p.athleteId] = buildNextManUpSignal({
-        db,
-        athleteId: String(p.athleteId),
-        athleteName: p.athleteName || null,
-        team: p.team || null,
-        posGroup: p.posGroup || null,
-        asOfDate,
-        unavailableTeammates: Array.isArray(p.unavailableTeammates) ? p.unavailableTeammates : [],
-        dataFreshness: p.dataFreshness || null,
-      });
-    }
+    const requests = players.filter(p => p && p.athleteId).map(p => ({
+      athleteId: String(p.athleteId),
+      athleteName: p.athleteName || null,
+      team: p.team || null,
+      posGroup: p.posGroup || null,
+      unavailableTeammates: Array.isArray(p.unavailableTeammates) ? p.unavailableTeammates : [],
+      dataFreshness: p.dataFreshness || null,
+    }));
+    // Bulk, historicalStore-backed: ONE query for the whole request,
+    // regardless of players.length (Phase 4 -- was up to 3 queries/player).
+    const signals = await buildNextManUpSignalsBulk(requests, asOfDate);
     res.json({ source: 'BeatsEdge computed (real nba_player_box history, research-only, not part of the graded model)', asOfDate, signals });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -359,12 +448,12 @@ router.post('/nba/next-man-up', (req, res) => {
 // if omitted. Never writes to or reads from player.paceRating/paceDetail —
 // those are existing fields the frozen model already reads; this is a
 // distinct `gameEnvironment` field the caller attaches separately.
-router.get('/nba/game-environment', (req, res) => {
+router.get('/nba/game-environment', async (req, res) => {
   try {
     const { team, opponent } = req.query;
     const asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.asOfDate || '') ? req.query.asOfDate : new Date().toISOString().slice(0, 10);
     if (!team || !opponent) return res.status(400).json({ error: 'team and opponent are required' });
-    const signal = buildGameEnvironmentSignal({ db, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), asOfDate });
+    const signal = await buildGameEnvironmentSignal({ db, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), asOfDate });
     res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', asOfDate, ...signal });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -375,11 +464,11 @@ router.get('/nba/game-environment', (req, res) => {
 // Bulk real per-game team_game_advanced rows for a set of teams — lets a
 // caller (the backtest script/tool) build its own as-of trailing windows
 // in memory instead of one request per prediction point. Read-only.
-router.get('/nba/team-advanced-history', (req, res) => {
+router.get('/nba/team-advanced-history', async (req, res) => {
   try {
     const teams = String(req.query.teams || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 60);
     if (!teams.length) return res.status(400).json({ error: 'pass ?teams=BOS,LAL,...' });
-    res.json({ source: 'BeatsEdge computed (real team_game_advanced rows, research-only)', history: bulkTeamHistory(db, teams) });
+    res.json({ source: 'BeatsEdge computed (real team_game_advanced rows, research-only)', history: await bulkTeamHistory(db, teams) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -391,7 +480,7 @@ router.get('/nba/team-advanced-history', (req, res) => {
 // season 2025+ only (2022-2024 rows carry unpopulated zeros for these
 // columns). No real game_date exists for this table, so this endpoint is
 // ordered by season/week, not date.
-router.get('/nfl/game-environment', (req, res) => {
+router.get('/nfl/game-environment', async (req, res) => {
   try {
     const { team, opponent } = req.query;
     const season = parseInt(req.query.season, 10);
@@ -399,7 +488,7 @@ router.get('/nfl/game-environment', (req, res) => {
     if (!team || !opponent || !Number.isFinite(season) || !Number.isFinite(week)) {
       return res.status(400).json({ error: 'team, opponent, season, and week are all required' });
     }
-    const signal = buildNflGameEnvironmentSignal({ db: nflDb, team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), season, week });
+    const signal = await buildNflGameEnvironmentSignalAsync({ team: String(team).toUpperCase(), opponent: String(opponent).toUpperCase(), season, week });
     res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', season, week, ...signal });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -410,11 +499,11 @@ router.get('/nfl/game-environment', (req, res) => {
 // A real NFL skill-position player pool with enough historical games to
 // walk forward, sourced from nfl_player_game_stats — mirrors
 // /api/nba/backtest-pool. Research-only, for the Phase 6 backtest.
-router.get('/nfl/backtest-pool', (req, res) => {
+router.get('/nfl/backtest-pool', async (req, res) => {
   try {
     const minGames = Math.max(5, Math.min(50, parseInt(req.query.minGames, 10) || 15));
     const limit = Math.max(10, Math.min(500, parseInt(req.query.limit, 10) || 300));
-    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', pool: nflBacktestPool(nflDb, { minGames, limit }) });
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', pool: await nflBacktestPoolAsync({ minGames, limit }) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -424,11 +513,11 @@ router.get('/nfl/backtest-pool', (req, res) => {
 // Bulk real per-player-per-game rows from nfl_player_game_stats — the SAME
 // backend table lib/nflMatchupSignal.js's defense-allowed data comes from,
 // so the Phase 6 backtest sources both from one consistent pipeline.
-router.get('/nfl/player-history', (req, res) => {
+router.get('/nfl/player-history', async (req, res) => {
   try {
     const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 400);
     if (!ids.length) return res.status(400).json({ error: 'pass ?ids=id,id,...' });
-    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', history: bulkPlayerHistory(nflDb, ids) });
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats, research-only)', history: await bulkPlayerHistoryAsync(ids) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -439,12 +528,12 @@ router.get('/nfl/player-history', (req, res) => {
 // allowed, from Phase 6's audit) for a set of defenses/positions — lets a
 // caller (the backtest) build its own as-of trailing windows in memory.
 // SEPARATE, ADDITIVE research signal — see lib/nflMatchupSignal.js's header.
-router.get('/nfl/matchup-history', (req, res) => {
+router.get('/nfl/matchup-history', async (req, res) => {
   try {
     const teams = String(req.query.teams || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 60);
     const positions = String(req.query.positions || 'WR,RB').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
     if (!teams.length) return res.status(400).json({ error: 'pass ?teams=DAL,SF,...' });
-    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats rows, research-only)', history: bulkDefenseAllowedHistory(nflDb, teams, positions) });
+    res.json({ source: 'BeatsEdge computed (real nfl_player_game_stats rows, research-only)', history: await bulkDefenseAllowedHistoryAsync(teams, positions) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -455,7 +544,7 @@ router.get('/nfl/matchup-history', (req, res) => {
 // stat-specific defense-allowed for one team/position/stat. Research-only;
 // NOT read by calculateEdgeScore (see lib/nflMatchupSignal.js's header for
 // the full audit of why this exists and what it does not do).
-router.get('/nfl/defense-allowed', (req, res) => {
+router.get('/nfl/defense-allowed', async (req, res) => {
   try {
     const { team, position, statKey } = req.query;
     const season = parseInt(req.query.season, 10);
@@ -463,7 +552,7 @@ router.get('/nfl/defense-allowed', (req, res) => {
     if (!team || !position || !statKey || !Number.isFinite(season) || !Number.isFinite(week)) {
       return res.status(400).json({ error: 'team, position, statKey, season, and week are all required' });
     }
-    const signal = computeDefenseAllowedAsOf(nflDb, String(team).toUpperCase(), String(position).toUpperCase(), statKey, season, week);
+    const signal = await computeDefenseAllowedAsOfAsync(String(team).toUpperCase(), String(position).toUpperCase(), statKey, season, week);
     res.json({ source: 'BeatsEdge computed (research-only, not part of the graded model)', team: String(team).toUpperCase(), position, statKey, season, week, ...signal });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -481,24 +570,21 @@ router.get('/nfl/defense-allowed', (req, res) => {
 // lineup source exists; a historical caller passes the completed box
 // score's own starter flag). availabilityStatus/minutesRestriction are
 // always null here (no reconstructable source) -- never fabricated.
-router.post('/nba/player-availability', (req, res) => {
+router.post('/nba/player-availability', async (req, res) => {
   try {
     const { asOfDate, players } = req.body || {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '')) return res.status(400).json({ error: 'asOfDate must be YYYY-MM-DD' });
     if (!Array.isArray(players) || !players.length) return res.status(400).json({ error: 'players must be a non-empty array' });
     if (players.length > 500) return res.status(400).json({ error: 'too many players (max 500 per request)' });
 
-    const signals = {};
-    for (const p of players) {
-      if (!p || !p.athleteId) continue;
-      signals[p.athleteId] = buildAvailabilityRoleSignal({
-        db,
-        athleteId: String(p.athleteId),
-        team: p.team || null,
-        asOfDate,
-        targetGameStarter: p.targetGameStarter === 1 || p.targetGameStarter === 0 ? p.targetGameStarter : null,
-      });
-    }
+    const requests = players.filter(p => p && p.athleteId).map(p => ({
+      athleteId: String(p.athleteId),
+      team: p.team || null,
+      targetGameStarter: p.targetGameStarter === 1 || p.targetGameStarter === 0 ? p.targetGameStarter : null,
+    }));
+    // Bulk, historicalStore-backed: 2 queries total for the whole request,
+    // regardless of players.length (Phase 4 -- was up to 7 queries/player).
+    const signals = await buildAvailabilityRoleSignalsBulk(requests, asOfDate);
     res.json({ source: 'BeatsEdge computed (real nba_player_box history, research-only, not part of the graded model)', asOfDate, signals });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -515,10 +601,10 @@ router.post('/nba/player-availability', (req, res) => {
 // GET /api/mlb/pitcher/:playerId?window=season|last5starts
 // Real ERA/WHIP/K-9/HR-9 for a specific pitcher — the real matchup context
 // for a BATTER prop (who is this batter facing tonight).
-router.get('/mlb/pitcher/:playerId', (req, res) => {
+router.get('/mlb/pitcher/:playerId', async (req, res) => {
   const { playerId } = req.params;
   const windowType = req.query.window || 'season';
-  const row = mlbDb.prepare(`SELECT * FROM mlb_pitcher_rollup WHERE player_id = ? AND window_type = ?`).get(playerId, windowType);
+  const row = await getPitcherRollupAsync(playerId, windowType);
   if (!row) return res.status(404).json({ error: `No computed pitcher data for ${playerId}` });
   res.json({ source: 'BeatsEdge computed (real statsapi.mlb.com box scores)', ...row });
 });
@@ -526,10 +612,10 @@ router.get('/mlb/pitcher/:playerId', (req, res) => {
 // GET /api/mlb/team-batting/:team?window=season|last15games
 // Real team-wide batting profile — the real matchup context for a
 // PITCHER prop (what lineup is this pitcher facing tonight).
-router.get('/mlb/team-batting/:team', (req, res) => {
+router.get('/mlb/team-batting/:team', async (req, res) => {
   const { team } = req.params;
   const windowType = req.query.window || 'season';
-  const row = mlbDb.prepare(`SELECT * FROM mlb_team_batting_rollup WHERE team = ? AND window_type = ?`).get(team.toUpperCase(), windowType);
+  const row = await getTeamBattingRollupAsync(team.toUpperCase(), windowType);
   if (!row) return res.status(404).json({ error: `No computed batting data for ${team}` });
   res.json({ source: 'BeatsEdge computed (real statsapi.mlb.com box scores)', ...row });
 });
@@ -541,10 +627,10 @@ router.get('/mlb/team-batting/:team', (req, res) => {
 // ============================================================
 
 // GET /api/nhl/defense/by-position/:team?window=season|last10|last5
-router.get('/nhl/defense/by-position/:team', (req, res) => {
+router.get('/nhl/defense/by-position/:team', async (req, res) => {
   const { team } = req.params;
   const windowType = req.query.window || 'season';
-  const byPosition = getNhlDefenseByPosition(team.toUpperCase(), windowType);
+  const byPosition = await getNhlDefenseByPositionAsync(team.toUpperCase(), windowType);
   if (Object.keys(byPosition).length === 0) {
     return res.status(404).json({ error: `No computed NHL data for ${team}` });
   }
@@ -554,10 +640,10 @@ router.get('/nhl/defense/by-position/:team', (req, res) => {
 // GET /api/nhl/team-shooting/:team?window=season|last10
 // Real shots/goals generated per game — the matchup context for a
 // GOALIE prop (saves, goals against): how much volume are they facing.
-router.get('/nhl/team-shooting/:team', (req, res) => {
+router.get('/nhl/team-shooting/:team', async (req, res) => {
   const { team } = req.params;
   const windowType = req.query.window || 'season';
-  const row = nhlDb.prepare(`SELECT * FROM nhl_team_shooting_rollup WHERE team = ? AND window_type = ?`).get(team.toUpperCase(), windowType);
+  const row = await getTeamShootingRollupAsync(team.toUpperCase(), windowType);
   if (!row) return res.status(404).json({ error: `No computed shooting data for ${team}` });
   res.json({ source: 'BeatsEdge computed (real api-web.nhle.com box scores)', ...row });
 });
