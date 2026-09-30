@@ -13154,12 +13154,37 @@
                 const oppHand = (pitchData && pitchData.people && pitchData.people[0] && pitchData.people[0].pitchHand && pitchData.people[0].pitchHand.code) || null;
 
                 const abbrById = mlbCache.current.abbrById;
+                // abbrById is built fresh each day from ONLY today's slate games
+                // (see fetchMlbSlate) -- a historical opponent whose team isn't
+                // playing today has no entry there, so this used to fall all the
+                // way through to the raw full team name ("Texas Rangers",
+                // "Cleveland Guardians") in the compact chart, overlapping and
+                // unreadable. This is the real, static MLB Stats API team.name ->
+                // abbreviation mapping (all 30 current teams, including the
+                // post-2025-relocation "Athletics" name already relied on above
+                // for abbrById itself) -- display-only, never touches model
+                // inputs, hit rates, or window membership (g.opponent is only
+                // ever compared against p.opponent, which is always today's
+                // opponent and therefore always already resolved via abbrById).
+                const MLB_TEAM_ABBR_BY_NAME = {
+                    'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
+                    'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
+                    'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
+                    'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
+                    'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
+                    'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
+                    'New York Yankees': 'NYY', 'Athletics': 'ATH', 'Oakland Athletics': 'ATH',
+                    'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
+                    'Seattle Mariners': 'SEA', 'San Francisco Giants': 'SF', 'St. Louis Cardinals': 'STL',
+                    'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
+                    'Washington Nationals': 'WSH'
+                };
                 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                 const mapSplits = (arr, seasonYr) => arr.map(sp => {
                     const iso = sp.date || '';
                     const parts = iso.split('-'); // YYYY-MM-DD
                     const disp = parts.length === 3 ? `${MON[+parts[1] - 1] || parts[1]} ${+parts[2]}, ${parts[0]}` : iso;
-                    const oppAbbr = (sp.opponent && (abbrById[sp.opponent.id] || sp.opponent.name)) || '';
+                    const oppAbbr = (sp.opponent && (abbrById[sp.opponent.id] || MLB_TEAM_ABBR_BY_NAME[sp.opponent.name] || sp.opponent.name)) || '';
                     return {
                         ts: Date.parse(iso) || 0,
                         gamePk: (sp.game && sp.game.gamePk) || null,
@@ -13247,6 +13272,12 @@
                             date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
                             points: getV(g.stat) || 0, line, season: g.season,
                             pa: !isPitcher && g.stat.plateAppearances != null ? g.stat.plateAppearances : null,
+                            // Real historical AB (at-bats), straight off the same
+                            // already-fetched MLB Stats API gameLog stat blob as
+                            // `pa` above -- never derived/estimated from PA. Left
+                            // null (omitted, not fabricated) if the field is
+                            // genuinely absent from a given game's stat object.
+                            ab: !isPitcher && g.stat.atBats != null ? g.stat.atBats : null,
                             ip: isPitcher && g.stat.inningsPitched != null ? g.stat.inningsPitched : null
                         }));
                     });
@@ -21626,7 +21657,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     const participationLabel = (g) => {
                                         if ((player.sport === 'nba' || player.sport === 'wnba') && g.min != null) return `${g.min} MIN`;
                                         if (player.sport === 'mlb') {
-                                            if (g.pa != null) return `${g.pa} PA`;
+                                            // Real AB (at-bats), never PA -- see nextLogByKey's `ab`
+                                            // field (sourced directly from the gameLog stat blob's
+                                            // real atBats, not derived from PA). Omitted, not
+                                            // fabricated, when the field is genuinely absent.
+                                            if (g.ab != null) return `${g.ab} AB`;
                                             if (g.ip != null) return `${g.ip} IP`;
                                         }
                                         return null;
