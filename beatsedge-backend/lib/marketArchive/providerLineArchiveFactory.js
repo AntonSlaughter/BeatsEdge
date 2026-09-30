@@ -74,6 +74,86 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
 
   function differs(a, b) { return CHANGE_FIELDS.some(f => (a[f] ?? null) !== (b[f] ?? null)); }
 
+  // Stable string key for IDENTITY_COLS -- used only as an in-memory Map
+  // key (never sent to the DB), so it never needs to match SQL's NULL
+  // semantics, just be collision-free per distinct (col value) tuple.
+  function identityKeyOf(row) {
+    return IDENTITY_COLS.map(c => (row[c] === null || row[c] === undefined) ? '\u0000' : String(row[c])).join('\u0001');
+  }
+
+  // Batched replacement for calling mostRecentForIdentity() once per row.
+  // Real production logs showed a single refresh producing thousands of
+  // eligible rows (e.g. one real NHL pull: eligible=7481) -- that many
+  // individual "SELECT ... ORDER BY captured_at DESC LIMIT 1" round trips
+  // per refresh, across all six sports on this factory + the two standalone
+  // NBA/WNBA modules, every ~2-minute cache cycle, is the measured, code-
+  // supported explanation for the Turso beatsedge-snapshots quota
+  // exhaustion this fixes. This changes ONLY how the "what's the current
+  // latest row for each identity" lookup is obtained -- never what counts
+  // as changed/unchanged (still differs(), untouched), never what identity
+  // means (IDENTITY_COLS untouched), never an overwrite of any existing
+  // row (still INSERT-only, no UPDATE/REPLACE, so every prior observation
+  // stays exactly as archived for real-line/movement history).
+  //
+  // One SELECT (scoped to just this batch's own distinct event_ids -- never
+  // the whole table) using ROW_NUMBER() OVER (PARTITION BY <identity>...)
+  // to get the latest row per identity server-side, instead of N SELECTs.
+  // window functions have been in SQLite (and therefore libSQL/Turso, and
+  // the bundled better-sqlite3 used locally) since 3.25 -- both backends
+  // this app already supports run the identical SQL here.
+  async function fetchLatestForIdentities(normalizedRows) {
+    const map = new Map();
+    const eventIds = [...new Set(normalizedRows.map(r => r.event_id))];
+    if (!eventIds.length) return map;
+    const placeholders = eventIds.map(() => '?').join(',');
+    const partitionCols = IDENTITY_COLS.join(', ');
+    const sql = `
+      SELECT * FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY ${partitionCols} ORDER BY captured_at DESC) AS _rn
+        FROM ${TABLE}
+        WHERE sport IS ? AND event_id IN (${placeholders})
+      ) WHERE _rn = 1
+    `;
+    const rows = await store.query(sql, [sport, ...eventIds]);
+    for (const row of rows) map.set(identityKeyOf(row), row);
+    return map;
+  }
+
+  // Applies the EXACT existing changed/unchanged decision (differs()) to
+  // every normalized row in one pass, using the batched lookup above
+  // instead of a per-row DB read, then inserts every changed row inside
+  // ONE transaction (still one INSERT per new row -- no INSERT OR REPLACE,
+  // no UPDATE -- just far fewer round trips than one transaction per row).
+  // Two (or more) incoming rows that happen to share the same identity
+  // within a single payload are still compared IN ORDER against each
+  // other, exactly as sequential recordObservation() calls would have --
+  // the in-memory map is updated after each decision, so a later duplicate
+  // in the same batch correctly compares against the earlier one's outcome
+  // instead of stale DB state.
+  async function recordNormalizedBatch(normalizedRows) {
+    if (!normalizedRows.length) return { inserted: 0, unchanged: 0 };
+    const latestByIdentity = await fetchLatestForIdentities(normalizedRows);
+    const toInsert = [];
+    let unchanged = 0;
+    for (const row of normalizedRows) {
+      const key = identityKeyOf(row);
+      const prior = latestByIdentity.get(key) || null;
+      if (prior && !differs(row, prior)) { unchanged++; continue; }
+      toInsert.push(row);
+      latestByIdentity.set(key, row);
+    }
+    if (toInsert.length) {
+      const cols = Object.keys(toInsert[0]);
+      const placeholders = cols.map(() => '?').join(',');
+      await store.transaction(async (exec) => {
+        for (const row of toInsert) {
+          await exec(`INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders})`, cols.map(c => row[c]));
+        }
+      });
+    }
+    return { inserted: toInsert.length, unchanged };
+  }
+
   async function recordObservation(obs) {
     const row = normalize(obs);
     if (!row.event_id || !row.player_raw || !row.market_key_raw || !row.source) {
@@ -116,8 +196,7 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
 
   function isPropsPath(upstreamPath) { return propsPathRegex.test(upstreamPath || ''); }
 
-  async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
-    if (!isPropsPath(upstreamPath)) return { archived: 0, applicable: false };
+  async function _archiveFromRawParlayResponseImpl(bodyText) {
     let rows;
     try {
       rows = JSON.parse(bodyText);
@@ -130,7 +209,10 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
       return { archived: 0, applicable: true, error: 'unparseable response body: ' + e.message };
     }
     const capturedAt = Date.now();
-    let inserted = 0, unchanged = 0, skipped = 0, eligible = 0, failedCount = 0;
+    let skipped = 0, eligible = 0, failedCount = 0;
+    // Same eligibility filter and same normalize() call as before -- only
+    // the LOOKUP strategy below changes (batched instead of per-row).
+    const candidates = [];
     for (const row of rows) {
       if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
       eligible++;
@@ -138,7 +220,7 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
       const lastUpdateMs = lastUpdate ? Date.parse(lastUpdate) : NaN;
       const ageSeconds = Number.isFinite(lastUpdateMs) ? (capturedAt - lastUpdateMs) / 1000 : null;
       try {
-        const r = await recordObservation({
+        candidates.push(normalize({
           capturedAt, providerLastUpdate: lastUpdate, ageSeconds,
           sport, eventId: row.event_id,
           homeTeam: row.home_team || null, awayTeam: row.away_team || null,
@@ -149,13 +231,32 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
           projectionType: row.projection_type || null, oddsType: row.odds_type || null, side: row.side || null,
           line: row.line, overPrice: row.over_price ?? null, underPrice: row.under_price ?? null,
           projectionMetadata: null, raw: row, semanticsStatus: 'CONFIRMED',
-        });
-        if (r.inserted) inserted++; else unchanged++;
+        }));
       } catch (e) { skipped++; failedCount++; }
     }
+    // Batched: one SELECT (scoped to this batch's own event_ids) instead of
+    // one per candidate row, then one transaction for every changed row --
+    // see recordNormalizedBatch's own comment for the full rationale.
+    const { inserted, unchanged } = await recordNormalizedBatch(candidates);
     const skippedForLog = skipped - failedCount + unchanged;
     console.log(`[${sport}-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
     return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
+  }
+
+  // In-flight guard: this factory is one instance per sport, so this
+  // closure-scoped variable naturally coalesces per sport -- if a previous
+  // archive pass over this same table is still running (e.g. a slow Turso
+  // round trip) when the NEXT refresh's response arrives, the new call
+  // reuses that SAME in-flight promise instead of starting a second
+  // concurrent full pass over the same identities. Purely a concurrency
+  // guard -- never changes which rows get archived, only prevents two
+  // passes from ever overlapping.
+  let _inFlight = null;
+  async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
+    if (!isPropsPath(upstreamPath)) return { archived: 0, applicable: false };
+    if (_inFlight) return _inFlight;
+    _inFlight = _archiveFromRawParlayResponseImpl(bodyText).finally(() => { _inFlight = null; });
+    return _inFlight;
   }
 
   return {
