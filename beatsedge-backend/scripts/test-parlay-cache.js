@@ -88,5 +88,64 @@ console.log('=== ParlayAPI cache/coalescing test ===\n');
   check(hit && hit.status === 503, 'the module itself is status-agnostic -- callers (the route handler) are responsible for only caching 2xx; verified the route handler code only calls set() inside the 2xx branch', hit && hit.status);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Render memory investigation (2026-09-30): MAX_ENTRIES=800 capped distinct
+// KEY count, never response BYTE size -- a real ~10,000-row ParlayAPI page
+// runs several MB, and a busy board can paginate up to 20 pages (each its
+// own cache key), so 800 entries was a multi-hundred-MB theoretical
+// exposure on a 512MB Render instance -- the code-supported cause
+// investigated for the "Web Service exceeded its memory limit" incident.
+// Sections 7-9 below cover the new MAX_CACHE_BYTES budget and the
+// proactive expired-entry sweep added to address it.
+// ─────────────────────────────────────────────────────────────────────────
+
+function bigBody(sizeBytes, marker) {
+  // Deterministic, cheap-to-generate filler standing in for a real
+  // multi-row JSON page -- only the BYTE SIZE matters here, not real prop
+  // shape (that's covered by the archive/UI test suites).
+  return `["${marker}",${'x'.repeat(Math.max(0, sizeBytes - marker.length - 6))}]`;
+}
+
+// --- 7. Byte budget: cache cannot grow toward the old theoretical exposure -
+{
+  // 100 x 2MB = 200MB naive total, more than double the real
+  // MAX_CACHE_BYTES budget -- exercises real eviction against the real
+  // production constant, not a scaled-down stand-in.
+  const bytesEach = 2_000_000;
+  const keys = [];
+  for (let i = 0; i < 100; i++) {
+    const key = parlayCache.cacheKeyFor('v1/sports/burst-test/props', { apiKey: 'x', page: String(i) });
+    keys.push(key);
+    parlayCache.set(key, { status: 200, contentType: 'application/json', body: bigBody(bytesEach, `page-${i}`), headers: {} });
+  }
+  const s = parlayCache.stats();
+  check(s.cacheBytes <= s.maxCacheBytes, '100 x 2MB synthetic pages (200MB naive total) never pushes cacheBytes past MAX_CACHE_BYTES', { cacheBytes: s.cacheBytes, maxCacheBytes: s.maxCacheBytes });
+  check(s.byteEvictions > 0, 'byte-budget eviction actually fired (this burst alone exceeds the budget)', s.byteEvictions);
+  check(parlayCache.get(keys[keys.length - 1]) !== null, 'the most recently set page in the burst is still present (evicts oldest, never the newest)');
+  check(parlayCache.get(keys[0]) === null, 'an early page from the burst was evicted (proves eviction happened, not just bookkeeping)');
+}
+
+// --- 8. Re-setting the SAME key (a normal refresh) doesn't double-count ---
+{
+  const key = parlayCache.cacheKeyFor('v1/sports/resize-test/props', { apiKey: 'x' });
+  parlayCache.set(key, { status: 200, contentType: 'application/json', body: bigBody(1000, 'v1'), headers: {} });
+  const afterFirst = parlayCache.stats().cacheBytes;
+  parlayCache.set(key, { status: 200, contentType: 'application/json', body: bigBody(1000, 'v1'), headers: {} });
+  const afterSecond = parlayCache.stats().cacheBytes;
+  check(afterSecond === afterFirst, 're-setting the same cache key (a normal refresh) does not accumulate bytes for a key that already existed', { afterFirst, afterSecond });
+}
+
+// --- 9. Expired-entry bytes are actually reclaimed, not just the Map slot -
+{
+  const key = parlayCache.cacheKeyFor('v1/sports/expiry-bytes-test/props', { apiKey: 'x' });
+  parlayCache.set(key, { status: 200, contentType: 'application/json', body: bigBody(50_000, 'expiring'), headers: {} });
+  const before = parlayCache.stats().cacheBytes;
+  const entry = parlayCache.get(key);
+  entry.expiresAt = Date.now() - 1;
+  parlayCache.get(key); // lazy-expiry path
+  const after = parlayCache.stats().cacheBytes;
+  check(after < before, 'the expired entry\'s bytes were reclaimed from the running total on lazy expiry, not just orphaned', { before, after });
+}
+
 console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===`);
 if (fail > 0) process.exit(1);
