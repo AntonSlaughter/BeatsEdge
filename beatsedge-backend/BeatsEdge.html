@@ -5896,7 +5896,61 @@
         // (resolvePlayerIdentity/extractGameTeamAbbrs, sport-agnostic).
         const nhlMatchKey = (name) => {
             if (!name) return null;
-            const parts = String(name).trim().split(/\s+/);
+            // Two-player combo props ("Sidney Crosby + Evgeni Malkin",
+            // real production data 2026-09-30) are never a single real
+            // player's name. Without this guard, the last-token-as-
+            // surname logic below combines the FIRST player's initial
+            // with the SECOND player's surname -- almost always a
+            // nonsense hybrid, but when the two combo'd players happen
+            // to share a first initial (e.g. "Sidney Crosby + Steven
+            // Stamkos" -> "s.stamkos"), that hybrid can coincidentally
+            // equal the SECOND player's own real match key, which would
+            // wrongly attach that player's individual model projection
+            // to a multi-player combo row. Returning null here -- before
+            // any candidate lookup happens -- makes that impossible
+            // regardless of which real players appear in a combo string,
+            // rather than relying on the hybrid key happening not to
+            // collide. Combo markets stay provider-only, same as any
+            // other unsupported market.
+            if (/\s\+\s/.test(name)) return null;
+            // Real production data (2026-09-30, tmp/diagnose-nonascii.js
+            // against the live /api/nhl/player-projections pool) confirmed
+            // two independent name-format traps in this shared key, used
+            // for BOTH the raw provider name and the projections engine
+            // name: (1) diacritics ("Hakanpää", "Lafrenière",
+            // "Slafkovský") were being DROPPED outright by the a-z filter
+            // below rather than folded to their base letter, so an
+            // accented name and its ASCII-normalized counterpart on the
+            // other side produced two different, non-matching keys
+            // ("j.hakanp" vs whatever the ASCII side computed) instead of
+            // the same one; (2) a real, confirmed subset of projections
+            // playerName values arrive with no space after the initial's
+            // period ("D.Jiricek"), which the whitespace split below
+            // treated as a single unsplittable token and returned null
+            // for every time, regardless of team/roster context.
+            // Second real-data pass (2026-09-30, live unmatchedSample):
+            // the dominant remaining failure class -- roughly 80% of a
+            // real unmatched sample -- was a trailing "(TEAM)" suffix on
+            // the raw provider name ("Adam Pelech (NYI)", "Auston
+            // Matthews (TOR)"). The naive last-whitespace-token-as-
+            // surname logic below then took the parenthesized team code
+            // itself as the "surname" (e.g. "a.nyi" instead of
+            // "a.pelech"), which can never match any real player. The
+            // projections-engine side never carries this suffix, so
+            // stripping it here is a no-op on that side and a real fix
+            // on the provider side -- not a guess about any one player.
+            // NFD-normalize + strip only the combining marks so accented
+            // Latin letters fold to their plain ASCII letter (a real
+            // fix, not a guess about any specific player), and insert a
+            // missing space after a leading "X." initial before
+            // splitting. Both sides of every comparison run through this
+            // same function, so this raises match quality identically
+            // for the provider name and the projections name.
+            const normalized = String(name).trim()
+                .replace(/\s*\([^)]*\)\s*$/, '')
+                .normalize('NFD').replace(/[̀-ͯ]/g, '')
+                .replace(/^([A-Za-z])\.(?=\S)/, '$1. ');
+            const parts = normalized.split(/\s+/);
             if (parts.length < 2) return null;
             const last = parts[parts.length - 1].toLowerCase().replace(/[^a-z'-]/g, '');
             const initial = parts[0].replace(/[^A-Za-z]/g, '').charAt(0).toLowerCase();
@@ -10007,8 +10061,27 @@
                 // A live-pipeline sport's cache entry is only trustworthy once
                 // at least one prop in it actually carries a real prop.lineSource.
                 const LIVE_PIPELINE_SPORTS = new Set(['mlb', 'nfl', 'ncaaf', 'nba', 'wnba']);
-                const cacheHasRealLines = !cached || !LIVE_PIPELINE_SPORTS.has(selectedSport)
-                    || cached.players.some(p => (p.props || []).some(pr => pr.lineSource));
+                // NHL population-integration bug (2026-09-29): NHL props never
+                // carry lineSource (a different concept for this sport), so it
+                // fell through to `!LIVE_PIPELINE_SPORTS.has('nhl')` -> always
+                // true -- meaning ANY cached NHL snapshot was trusted for the
+                // full 5-minute TTL regardless of content. Unlike the other
+                // sports' seed-vs-real distinction, NHL's identity/projection
+                // JOIN quality depends on backend materialization freshness in
+                // a way a cached snapshot's own shape can never demonstrate --
+                // there is no shape difference between "resolved when cached"
+                // and "would resolve more players now that materialization has
+                // caught up". Real symptom this caused: a player simulated
+                // directly against the live /api/nhl/player-projections
+                // endpoint resolved correctly, while the browser kept showing
+                // stale "Model not supported yet" / no headshot for that same
+                // player across an entire 5-minute window, because it was
+                // still serving a snapshot from before that player's
+                // projection existed. NHL therefore never trusts this cache --
+                // always a fresh fetch, exactly like it already never uses a
+                // mock/seed fallback.
+                const cacheHasRealLines = selectedSport === 'nhl' ? false : (!cached || !LIVE_PIPELINE_SPORTS.has(selectedSport)
+                    || cached.players.some(p => (p.props || []).some(pr => pr.lineSource)));
                 if (cached && Date.now() - cached.at < 5 * 60 * 1000
                     && slateMatchesSport(cached.players, selectedSport)
                     && !cached.players.some(p => p && p._mock)
@@ -15733,7 +15806,7 @@
 
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const built = [];
-                let modelSupportedCount = 0, unsupportedCount = 0;
+                const SUPPORTED_STAT_KEYS = new Set(['shots_on_goal', 'goalie_saves', 'goals_at_least_1', 'assists_at_least_1', 'points_at_least_1']);
 
                 Object.values(pa.byNorm).forEach((byStat) => {
                     let playerRaw = null, homeTeam = null, awayTeam = null, commenceMs = null;
@@ -15744,14 +15817,42 @@
                     if (!playerRaw) return;
                     // Non-player market safety: real discovery confirmed some
                     // provider rows use a "player" field that's actually a
-                    // team matchup ("MTL Canadiens vs TOR Maple Leafs") or a
-                    // score string ("0 - 2") for team/game-level markets
-                    // (correct score, totals, etc.) that PARLAY_NHL_MKT
-                    // never classifies as a supported stat. Those already
-                    // can't get a model output, but without this they'd
-                    // still render as a fake "player" card. Skip them here
-                    // too -- default-deny, not a player-field-presence check.
-                    if (/^\d+\s*-\s*\d+/.test(playerRaw) || / vs /i.test(playerRaw)) return;
+                    // team matchup ("MTL Canadiens vs TOR Maple Leafs",
+                    // "Florida Panthers @ Carolina Hurricanes" -- confirmed
+                    // live, a real team/game total rendering as a fake
+                    // player card) or a score string ("0 - 2") for team/
+                    // game-level markets (correct score, totals, etc.) that
+                    // PARLAY_NHL_MKT never classifies as a supported stat.
+                    // Those already can't get a model output, but without
+                    // this they'd still render as a fake "player" card.
+                    // Skip them here too -- default-deny, not a player-
+                    // field-presence check.
+                    // Real diagnostic data (2026-09-30) confirmed a further
+                    // shape still reaching this point ("New York Islanders
+                    // - 1P", "Philadelphia Flyers - 1P") -- the provider
+                    // itself labels some team/period markets with a
+                    // "player_"-prefixed raw key (confirmed in the raw
+                    // market-key log, e.g. "player_total_goals___1st_
+                    // period_..."), so the market-classification admission
+                    // below alone isn't sufficient for those. A team name
+                    // followed by " - " and a short period/segment code
+                    // (1P, 2P, OT) is a shape no real player name has.
+                    if (/^\d+\s*-\s*\d+/.test(playerRaw) || / vs /i.test(playerRaw) || / @ /.test(playerRaw) || / - \d*[A-Za-z]{1,3}$/.test(playerRaw)) return;
+                    // General market-classification admission (real
+                    // discovery kept finding new team-string separators --
+                    // "TeamName - 1P" period-scoped team/game markets like
+                    // PUCK LINE slipped past the patterns above entirely).
+                    // Every real player-level market_key ever observed is
+                    // "player_"-prefixed (validated or not -- an unmapped
+                    // one keeps that raw prefix as its own sk, only a
+                    // MAPPED one becomes a bare statKey like
+                    // "shots_on_goal", covered by SUPPORTED_STAT_KEYS
+                    // below). A team/game market (puck line, totals,
+                    // moneyline, period spreads) never has either shape,
+                    // regardless of what its own "player" field string
+                    // looks like -- admits on what the row actually IS,
+                    // not on enumerating team names.
+                    if (!Object.keys(byStat).some(k => k.startsWith('player_') || SUPPORTED_STAT_KEYS.has(k))) return;
                     const mk = nhlMatchKey(playerRaw);
                     // Player resolver -- FAILS CLOSED. Real audit of the
                     // full 1,362-player historical dataset (see
@@ -15779,7 +15880,6 @@
                     const resolvedStats = resolvedPlayerId ? candidates.filter(c => c.playerId === resolvedPlayerId) : null;
                     const statsByStatKey = {};
                     (resolvedStats || []).forEach(c => { statsByStatKey[c.statKey] = c; });
-                    const SUPPORTED_KEYS = new Set(['shots_on_goal', 'goalie_saves', 'goals_at_least_1', 'assists_at_least_1', 'points_at_least_1']);
 
                     const props = [];
                     Object.entries(byStat).forEach(([statKey, byBook]) => {
@@ -15787,9 +15887,8 @@
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
                         const model = statsByStatKey[statKey];
-                        const isSupported = SUPPORTED_KEYS.has(statKey) && !!model;
-                        if (isSupported) modelSupportedCount++; else unsupportedCount++;
-                        const rawMarket = pr.rawMarket || (SUPPORTED_KEYS.has(statKey) ? null : statKey);
+                        const isSupported = SUPPORTED_STAT_KEYS.has(statKey) && !!model;
+                        const rawMarket = pr.rawMarket || (SUPPORTED_STAT_KEYS.has(statKey) ? null : statKey);
                         props.push({
                             statKey, line: pr.line, over: pr.over, under: pr.under, book: wantBook,
                             period: pr.period || 'FULL', projectionType: pr.projectionType || null,
@@ -15848,7 +15947,6 @@
                 markFresh();
                 setPropLineSource(built.length ? 'live' : 'sample');
                 setProplineError(built.length ? null : 'ParlayAPI reached but produced no NHL props for this slate.');
-                console.log(`[NHL] built ${built.length} players — ${modelSupportedCount} model-supported prop rows, ${unsupportedCount} provider-only ("Model not supported yet") rows.`);
                 return built;
             };
 
@@ -22229,7 +22327,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             const gradedPlayers = React.useMemo(() => {
                 if (!selectedGameEventId && periodFilter === 'all') return preGameFilterPlayers;
                 const periodOf = (pr) => pr.period || 'UNKNOWN';
-                const applies = (p) => !p._mock && LIVE_PIPELINE_SPORTS.has(p.sport) && Array.isArray(p.props);
+                // NHL added here ONLY (not to the shared LIVE_PIPELINE_SPORTS
+                // set itself, which gates a different, unrelated structural
+                // live-prop check elsewhere that NHL deliberately still
+                // fails since its props carry no lineSource) -- this local
+                // `applies` only controls whether the period chip above
+                // actually narrows a sport's props, which is presentation-
+                // only and safe to extend to NHL on its own.
+                const applies = (p) => !p._mock && (LIVE_PIPELINE_SPORTS.has(p.sport) || p.sport === 'nhl') && Array.isArray(p.props);
                 return preGameFilterPlayers
                     .map(x => applies(x.p)
                         ? {
@@ -22368,6 +22473,27 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 return [...ordered, ...extra];
             }, [basePlayers, selectedSport]);
 
+            // NHL period chips: NHL games have periods (P1/P2/P3), never
+            // basketball's 1Q/1H/2H -- those hardcoded chips previously
+            // showed for every sport including NHL, which was never even a
+            // real NHL provider value (so clicking one silently showed
+            // nothing). Derived from periods ACTUALLY present in the
+            // current NHL props (mirrors statCats' own real-data-driven
+            // pattern) -- if the live slate only has P1 lines today, only
+            // "P1" appears, never a fabricated P2/P3 chip with no real
+            // data behind it. Presentation/filter only -- no period model
+            // exists for NHL (that stays unsupported, matches the rest of
+            // this project's explicit scope).
+            const nhlPeriodsPresent = React.useMemo(() => {
+                if (selectedSport !== 'nhl') return [];
+                const seen = new Set();
+                basePlayers.forEach(p => {
+                    if (p.sport !== 'nhl' || !Array.isArray(p.props)) return;
+                    p.props.forEach(pr => { if (pr.period && pr.period !== 'FULL') seen.add(pr.period); });
+                });
+                return ['P1', 'P2', 'P3'].filter(p => seen.has(p));
+            }, [basePlayers, selectedSport]);
+
             return (
                 <div className="app-container">
                     <header className="header">
@@ -22458,13 +22584,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                     {currentView === 'browse' && (
                     <div className="period-select-bar">
-                        {[
-                            { id: 'all', label: 'All Periods' },
-                            { id: 'FULL_GAME', label: 'Full Game' },
-                            { id: '1Q', label: '1Q' },
-                            { id: '1H', label: '1H' },
-                            { id: '2H', label: '2H' }
-                        ].map(pd => (
+                        {(selectedSport === 'nhl'
+                            // NHL props store their full-game period as 'FULL'
+                            // (see fetchNhlPropLines: `period: pr.period || 'FULL'`),
+                            // not 'FULL_GAME' like the other sports below -- using
+                            // the wrong id here would silently zero out every NHL
+                            // full-game prop the moment this chip is clicked.
+                            ? [{ id: 'all', label: 'All Periods' }, { id: 'FULL', label: 'Full Game' }, ...nhlPeriodsPresent.map(p => ({ id: p, label: p }))]
+                            : [
+                                { id: 'all', label: 'All Periods' },
+                                { id: 'FULL_GAME', label: 'Full Game' },
+                                { id: '1Q', label: '1Q' },
+                                { id: '1H', label: '1H' },
+                                { id: '2H', label: '2H' }
+                            ]).map(pd => (
                             <button
                                 key={pd.id}
                                 className={`period-select-chip ${periodFilter === pd.id ? 'active' : ''}`}
@@ -22720,7 +22853,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             // zero real provider markets right now — never manufactured,
                                             // never silently identical to the generic "no players" text.
                                             : (periodFilter !== 'all')
-                                                ? <>No {periodFilter === 'FULL_GAME' ? 'Full Game' : periodFilter} provider markets currently available{selectedGameEventId ? ' for this game' : ` for ${SPORT_LABELS[selectedSport]}`}.{' '}
+                                                ? <>No {(periodFilter === 'FULL_GAME' || periodFilter === 'FULL') ? 'Full Game' : periodFilter} provider markets currently available{selectedGameEventId ? ' for this game' : ` for ${SPORT_LABELS[selectedSport]}`}.{' '}
                                                     <span style={{ color: 'var(--accent-red)', cursor: 'pointer' }} onClick={() => setPeriodFilter('all')}>Show all periods</span></>
                                                 : selectedGameEventId
                                                 ? <>No props for this game right now.{' '}
