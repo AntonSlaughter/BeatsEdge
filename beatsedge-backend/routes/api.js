@@ -690,6 +690,41 @@ router.get('/nhl/player-projections', async (req, res) => {
   }
 });
 
+// GET /api/nhl/player-history/:playerId
+// Real chronological per-game rows for ONE resolved NHL player_id, from
+// nhl_player_box (lib/nhlProjectionEngine.js's getPlayerGameHistory) --
+// powers the frontend's historical detail modal for the 5 validated NHL
+// stat families only (shots_on_goal, goalie_saves, goals/assists/points
+// at-least-1). Same historicalStore/Turso abstraction every other NHL
+// read already uses here -- no new DB connection. playerId must be the
+// resolved real player_id the frontend already resolved via nhlMatchKey +
+// team corroboration before ever calling this (an unresolved/ambiguous/
+// combo player has no such id, so the frontend simply never calls this
+// route for one -- fails closed on the frontend, not here). Only the
+// real stored box-score columns needed for the detail UI are returned --
+// no internal ids, no raw provider payloads.
+router.get('/nhl/player-history/:playerId', async (req, res) => {
+  const { playerId } = req.params;
+  if (!/^\d+$/.test(String(playerId))) {
+    return res.status(400).json({ error: 'playerId must be a real numeric NHL player_id.' });
+  }
+  try {
+    const { getPlayerGameHistory } = require('../lib/nhlProjectionEngine');
+    const games = await getPlayerGameHistory(playerId);
+    if (!games.length) {
+      // `games: []` + `playerId` make "genuinely no stored history" an
+      // explicit part of the JSON contract. The frontend only treats a
+      // JSON body with an empty games array as "no history"; a bare 404
+      // (e.g. Express's HTML "Cannot GET" when this route isn't deployed)
+      // is an error, not an empty player.
+      return res.status(404).json({ error: `No stored game history for NHL player_id ${playerId}.`, playerId, games: [] });
+    }
+    res.json({ playerId, source: 'BeatsEdge computed (real nhl_player_box box scores)', games });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/mlb/probable-pitcher/:team?date=YYYY-MM-DD
 // Real "who's actually pitching against this team tonight" — closes the
 // gap that previously left batter matchups on sample data by default.

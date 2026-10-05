@@ -148,8 +148,28 @@ async function computeAllProjections() {
   return { shots_on_goal: sog, goalie_saves: saves, goals_at_least_1: goals, assists_at_least_1: assists, points_at_least_1: points };
 }
 
+// Real, chronological, full per-game history for ONE resolved player --
+// powers the frontend's historical detail modal (L5/L10/L15/L20/Season/
+// Vs Opponent). A sibling read next to getPlayerGames() above, not a
+// modification of it: getPlayerGames() stays bulk-scanned-across-all-
+// players for projection computation, untouched; this is a single-player,
+// all-columns read for display only. A skater row always has null
+// saves/shots_against and a goalie row always has null
+// goals/assists/points/shots_on_goal (separate INSERT statements in
+// lib/nhlPlayerBoxSync.js, never mixed for the same player_id) -- the
+// caller picks the right column per stat family.
+async function getPlayerGameHistory(playerId) {
+  return store.query(`
+    SELECT game_id, player_id, player_name, team, opponent, game_date, season,
+           goals, assists, points, shots_on_goal, saves, shots_against
+    FROM nhl_player_box
+    WHERE player_id = ?
+    ORDER BY game_date ASC
+  `, [playerId]);
+}
+
 module.exports = {
   shrinkageFive, trailingMean, poissonPOver1, savesProjection,
   computeShotsOnGoalProjections, computeGoalieSavesProjections, computeBinaryThresholdProjections,
-  computeAllProjections,
+  computeAllProjections, getPlayerGameHistory,
 };

@@ -3258,8 +3258,24 @@
             const factors = [];
 
             // Per-prop stat windows when available (MLB multi-prop); otherwise
-            // the single `player.stats` block (NBA/NFL/NHL, and MLB fallback).
-            const s = (player.statsByKey && prop.statKey && player.statsByKey[prop.statKey]) || player.stats;
+            // the single `player.stats` block (NBA/NFL, and MLB fallback).
+            //
+            // NHL BOUNDARY (Phase 1, NHL release audit): players built by the
+            // validated NHL pipeline (`_isNhl`, fetchNhlPropLines) are
+            // explicitly EXCLUDED from this factor/grade model, decided by
+            // identity rather than by "happens to have no stats". The old
+            // implicit exclusion ("NHL never populates statsByKey/stats") was
+            // one assignment away from failing: the first NHL history feature
+            // wrote statsByKey onto NHL players, `s` became truthy, the guard
+            // below was skipped and `s.season.avg` threw inside App's
+            // playerBestGrade useMemo -- unmounting the whole app (and,
+            // had it not thrown, the basketball engine would have graded NHL).
+            // NHL history now lives only in NhlPlayerCard's own state and can
+            // never reach this function; this line keeps the exclusion true
+            // even if some future change attaches stats to an NHL player.
+            const s = player._isNhl
+                ? null
+                : ((player.statsByKey && prop.statKey && player.statsByKey[prop.statKey]) || player.stats);
 
             // PRODUCTION BUG FIX (2026-09-29): a real user reported a full
             // black screen on MLB -> NHL. Root cause: NHL player objects
@@ -9208,6 +9224,15 @@
             const [loading, setLoading] = useState(false);
             const [playersData, setPlayersData] = useState([]);
             const [detailModal, setDetailModal] = useState(null); // { playerId, propIdx, propId } — opens the full-breakdown popup
+            // NHL detail history + selected window tab. Lives HERE (App level) rather than inside NhlPlayerCard because the
+            // card components are declared inside App: every App re-render creates a new component type and React remounts
+            // them, which wiped card-local state mid-flight (the rendered regression test saw 3 history requests for one
+            // player and a tab reset). It is deliberately NOT part of playersData / player objects: nothing the grade
+            // engine, sorting, ranking or Top Picks read can ever see it. { [nhlPlayerId]: { status, stats?, log?, reason? } }
+            // status: idle -> loading -> loaded | empty | error (see fetchNhlHistory for the exact classification).
+            const [nhlHistoryById, setNhlHistoryById] = useState({});
+            const [nhlDetailTab, setNhlDetailTab] = useState('last10');
+            const nhlHistoryInflight = React.useRef(new Set());
             // propIdx is only ever used to resolve an initial propId HERE, at
             // click time, from the player's props as they exist right now —
             // everything downstream (PlayerCard, the prop <select>, closing
@@ -15921,6 +15946,15 @@
                         const isSupported = SUPPORTED_STAT_KEYS.has(statKey) && !!model;
                         const rawMarket = pr.rawMarket || (SUPPORTED_STAT_KEYS.has(statKey) ? null : statKey);
                         props.push({
+                            // Stable id, same convention/purpose every other
+                            // sport's props already carry (assignPropIds) --
+                            // lets openDetail's existing generic propId
+                            // capture work correctly for NHL too, so the
+                            // detail modal tracks the SAME prop the user
+                            // actually clicked even if a background refresh
+                            // re-orders player.props afterward, instead of
+                            // drifting to whatever now sits at that index.
+                            id: `${mk || playerRaw}:${statKey}`,
                             statKey, line: pr.line, over: pr.over, under: pr.under, book: wantBook,
                             period: pr.period || 'FULL', projectionType: pr.projectionType || null,
                             eventId: pr.eventId || null, rawMarket,
@@ -15971,6 +16005,14 @@
                         // ambiguous players get no headshot attempt at all,
                         // same as a player with no candidates.
                         headshot: resolvedPlayerId ? `https://assets.nhle.com/mugs/nhl/latest/${resolvedPlayerId}.png` : null,
+                        // Real, resolved nhl_player_box player_id -- same one the
+                        // headshot URL above already uses, same fail-closed rule
+                        // (null for every unresolved/ambiguous/combo player, see
+                        // the resolver above). Powers the historical detail modal
+                        // (GET /api/nhl/player-history/:playerId): a null here is
+                        // what keeps a combo/unresolved card's prop-pill from ever
+                        // getting a click handler at all (see NhlPlayerCard).
+                        nhlPlayerId: resolvedPlayerId,
                         props, _isNhl: true,
                     });
                 });
@@ -15979,6 +16021,116 @@
                 setPropLineSource(built.length ? 'live' : 'sample');
                 setProplineError(built.length ? null : 'ParlayAPI reached but produced no NHL props for this slate.');
                 return built;
+            };
+
+            const NHL_STAT_FIELD = { shots_on_goal: 'shots_on_goal', goalie_saves: 'saves', goals_at_least_1: 'goals', assists_at_least_1: 'assists', points_at_least_1: 'points' };
+            // NHL historical-detail adapter: turns real, chronological
+            // nhl_player_box rows (GET /api/nhl/player-history/:playerId) into
+            // the SAME statsByKey/gameLogByKey shape every other sport's own
+            // ComputeWindows function already produces for the shared detail
+            // UI (see nbaComputeWindows) -- reuses the identical `v > line`
+            // hit-rate convention, fed the REAL preserved provider line, which
+            // already evaluates the three binary families' real stat>=1
+            // semantics correctly for both the 0- and 0.5-line provider
+            // conventions PARLAY_NHL_MKT gates on, with no special-casing
+            // needed. Adapts the ROW SHAPE only (goals/assists/points/
+            // shots_on_goal/saves columns instead of NBA_PROP_DEFS get/has
+            // accessors) -- does not reimplement the window/hit-rate math.
+            const nhlComputeWindows = (games, lineFor, oppAbbr) => {
+                const statsByKey = {}, gameLogByKey = {};
+                const mean = (arr) => arr.length ? Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 10) / 10 : null;
+                Object.keys(NHL_STAT_FIELD).forEach(k => {
+                    const field = NHL_STAT_FIELD[k];
+                    const rows = games.filter(g => g[field] != null);
+                    if (!rows.length) return;
+                    const vals = rows.map(g => g[field]);
+                    const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
+                    const rate = (arr) => arr.length ? Math.round((arr.filter(v => v > line).length / arr.length) * 100) : null;
+                    const windowOf = (n) => { const arr = vals.slice(-n); return { avg: mean(arr), hitRate: rate(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n }; };
+                    // "Season" = the most recent real season actually present
+                    // in this player's history -- never a hardcoded year, so
+                    // this is correct the moment a new NHL season's real games
+                    // start landing in nhl_player_box, same reasoning
+                    // lib/nhlProjectionEngine.js's own no-season-whitelist
+                    // comment already documents for the live projections.
+                    const latestSeason = rows[rows.length - 1].season;
+                    const seasonRows = latestSeason != null ? rows.filter(g => g.season === latestSeason) : rows;
+                    const seasonVals = seasonRows.map(g => g[field]);
+                    const oppRows = oppAbbr ? rows.filter(g => (g.opponent || '').toUpperCase() === oppAbbr) : [];
+                    const oppVals = oppRows.map(g => g[field]);
+                    statsByKey[k] = {
+                        last5: windowOf(5), last10: windowOf(10), last15: windowOf(15), last20: windowOf(20),
+                        trueSeason: { avg: mean(seasonVals), hitRate: rate(seasonVals), games: seasonVals.length, requestedGames: null, availableGames: seasonVals.length, complete: true },
+                        vsOpp: oppVals.length
+                            ? { avg: mean(oppVals), hitRate: rate(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true }
+                            : { avg: null, hitRate: null, games: 0, requestedGames: null, availableGames: 0, complete: true },
+                    };
+                    gameLogByKey[k] = rows.slice(-40).map(g => ({ date: g.game_date, opponent: g.opponent, points: g[field], season: g.season, line }));
+                });
+                return { statsByKey, gameLogByKey };
+            };
+
+            // Request + classification for ONE resolved NHL player's real
+            // per-game history (GET /api/nhl/player-history/:playerId, backed
+            // by lib/nhlProjectionEngine.js's getPlayerGameHistory). A pure
+            // function of (backendUrl, playerId) -- it touches no React state
+            // and no player object, so it can't contaminate grade/sort/rank
+            // logic, and it is unit-testable by extraction.
+            //
+            // Returns exactly one of:
+            //   { status: 'loaded', games }   200 + JSON { games: [...non-empty] }
+            //   { status: 'empty' }           the ONLY genuine "no history" answer:
+            //                                 a JSON body with games: [] (the route
+            //                                 sends this with HTTP 404 for an id with
+            //                                 no stored rows)
+            //   { status: 'error', reason }   everything else
+            // Crucially a non-JSON 404 (what Express answers with when the
+            // route isn't deployed: "Cannot GET /api/nhl/player-history/..."),
+            // a 5xx, a proxy/maintenance page, a malformed body, a response
+            // for a different player, or a network failure are all ERRORS --
+            // never presented as "this player has no history". (Before this,
+            // every 404 was treated as final "no history": against a backend
+            // without the route that showed "No stored NHL game history"
+            // under a projection built from 186+ real games.)
+            const fetchNhlHistory = async (backendUrl, playerId) => {
+                if (!backendUrl) return { status: 'error', reason: 'no-backend' };
+                if (playerId == null || playerId === '') return { status: 'error', reason: 'no-player' };
+                try {
+                    const r = await fetch(`${backendUrl}/api/nhl/player-history/${encodeURIComponent(playerId)}`);
+                    const isJson = /application\/json/i.test((r.headers && r.headers.get && r.headers.get('content-type')) || '');
+                    let body = null;
+                    if (isJson) { try { body = await r.json(); } catch (e) { body = null; } }
+                    if (!body || typeof body !== 'object' || !Array.isArray(body.games)) {
+                        return { status: 'error', reason: r.status === 404 ? 'route-unavailable' : `http-${r.status}` };
+                    }
+                    // Defense in depth against attaching someone else's history.
+                    if (body.playerId != null && String(body.playerId) !== String(playerId)) return { status: 'error', reason: 'wrong-player' };
+                    if (body.games.some(g => g && g.player_id != null && String(g.player_id) !== String(playerId))) return { status: 'error', reason: 'wrong-player' };
+                    if (r.ok) return body.games.length ? { status: 'loaded', games: body.games } : { status: 'empty' };
+                    if (r.status === 404 && body.games.length === 0) return { status: 'empty' };
+                    return { status: 'error', reason: `http-${r.status}` };
+                } catch (e) {
+                    return { status: 'error', reason: 'network' };
+                }
+            };
+
+            // Loads one resolved NHL player's history into the App-level nhlHistoryById map (never onto the player object).
+            // Idempotent per player: a request already in flight is not repeated.
+            const loadNhlHistory = async (player) => {
+                const id = player.nhlPlayerId;
+                if (id == null || nhlHistoryInflight.current.has(id)) return;
+                nhlHistoryInflight.current.add(id);
+                setNhlHistoryById(prev => ({ ...prev, [id]: { status: 'loading' } }));
+                try {
+                    const res = await fetchNhlHistory(backendUrl, id);
+                    if (res.status !== 'loaded') { setNhlHistoryById(prev => ({ ...prev, [id]: res })); return; }
+                    // Only the 5 validated families ever get a real line to key hit-rate windows off of; an
+                    // unsupported prop's statKey never appears in lineFor, so no history is invented for it.
+                    const lineFor = {};
+                    (player.props || []).forEach(pr => { if (pr.modelSupported) lineFor[pr.statKey] = pr.line; });
+                    const w = nhlComputeWindows(res.games, lineFor, (player.opponent || '').toUpperCase());
+                    setNhlHistoryById(prev => ({ ...prev, [id]: { status: 'loaded', stats: w.statsByKey, log: w.gameLogByKey } }));
+                } finally { nhlHistoryInflight.current.delete(id); }
             };
 
             const fetchWnbaPlayerDetail = async (player) => {
@@ -19885,7 +20037,73 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // No Details button / modal: PlayerCard's modal body assumes
             // exactly the NBA-shaped fields NHL doesn't have (see the
             // comment on the original NhlPlayerCard decision above this).
-            const NhlPlayerCard = ({ player }) => (
+            const NhlPlayerCard = ({ player }) => {
+                // NHL history + selected window live in App-level state keyed by
+                // the resolved NHL player id (nhlHistoryById / nhlDetailTab) --
+                // never on the player object, never in playersData, never under
+                // statsByKey/gameLogByKey -- so it can't reach calculateEdgeScore,
+                // playerBestGrade, sorting, Top Picks or any grade/Prime/
+                // confluence path (the exact contamination the NHL release
+                // audit found). It is App-level (not card-local) because this
+                // component is re-created on every App render. Request states:
+                //   idle -> loading -> loaded | empty | error
+                // 'empty' = a successful answer that this player has no stored
+                // rows; 'error' = anything else (missing route, 5xx, network,
+                // malformed/other-player response) and is retryable.
+                const selectedPropTab = nhlDetailTab, setSelectedPropTab = setNhlDetailTab;
+                const hist = nhlHistoryById[player.nhlPlayerId] || { status: 'idle' };
+                const setHistStatus = (status) => setNhlHistoryById(prev => ({ ...prev, [player.nhlPlayerId]: { status } }));
+                const activeInModal = !!(detailModal && detailModal.playerId === player.id);
+
+                // Resolve by STABLE id first (same propId-over-index pattern
+                // PlayerCard's own comment documents -- "background enrichment
+                // re-sorts a player's props... tracking by index would
+                // silently swap the displayed prop for a different one
+                // mid-view"), falling back to the index only when no id
+                // match exists yet (first resolve after a fresh click).
+                const activeProp = Array.isArray(player.props)
+                    ? (player.props.find(p => p.id === (detailModal && detailModal.propId))
+                        || player.props[(detailModal && detailModal.propIdx) || 0]
+                        || player.props[0])
+                    : null;
+                // Hard gate, independent of how detailModal got set (click,
+                // stale state after a background refresh, anything): the
+                // model-detail modal is only ever allowed to actually render
+                // when the CURRENTLY RESOLVED prop is a validated family on a
+                // resolved player. Anything else (Blocked Shots, First/Last
+                // Goal Scorer, combo/unresolved, period markets, ...) shows
+                // no modal at all -- "Model not supported yet" stays exactly
+                // where it already was, inline on the pill itself.
+                const modalEligible = activeInModal && !!activeProp && activeProp.modelSupported === true && !!player.nhlPlayerId;
+                // Fetch only when the model-detail modal is actually eligible
+                // (validated family + resolved player) -- an unsupported prop,
+                // combo or unresolved player never issues a history request.
+                useEffect(() => { if (modalEligible && hist.status === 'idle') loadNhlHistory(player); }, [modalEligible, hist.status]);
+                // A failed load is retried the next time the modal is opened.
+                useEffect(() => { if (!activeInModal && hist.status === 'error') setHistStatus('idle'); }, [activeInModal, hist.status]);
+                const cStats = (hist.status === 'loaded' && activeProp && hist.stats[activeProp.statKey]) || {};
+                const cLog = (hist.status === 'loaded' && activeProp && hist.log[activeProp.statKey]) || [];
+                const WIN = { last5: 5, last10: 10, last15: 15, last20: 20 };
+                const dirUnder = !!(activeProp && activeProp.direction === 'under');
+                const oppU = (player.opponent || '').toUpperCase();
+                const shownGames = selectedPropTab === 'vsOpp'
+                    ? cLog.filter(g => (g.opponent || '').toUpperCase() === oppU)
+                    : (selectedPropTab === 'trueSeason'
+                        ? (cLog.length ? cLog.filter(g => g.season === cLog[cLog.length - 1].season) : [])
+                        : cLog.slice(-(WIN[selectedPropTab] || 10)));
+                const windowLine = activeProp ? activeProp.line : ((cLog[0] && cLog[0].line) || 0);
+                const clearedOf = (g) => dirUnder ? g.points < windowLine : g.points >= windowLine;
+                const shownVals = shownGames.map(g => g.points);
+                const shownSorted = [...shownVals].sort((a, b) => a - b);
+                const windowAvg = shownVals.length ? Math.round((shownVals.reduce((s, v) => s + v, 0) / shownVals.length) * 10) / 10 : null;
+                const windowMedian = shownSorted.length ? shownSorted[shownSorted.length >> 1] : null;
+                const windowRange = shownSorted.length ? [shownSorted[0], shownSorted[shownSorted.length - 1]] : null;
+                const windowHitCount = shownGames.filter(clearedOf).length;
+                const windowHitRate = shownGames.length ? Math.round((windowHitCount / shownGames.length) * 100) : null;
+                const tabMeta = cStats[selectedPropTab] || {};
+                const maxV = Math.max(...shownVals, windowLine * 1.3, 1) * 1.14;
+
+                return (
                 <div className="player-card">
                     <div className="player-header">
                         <div className="player-avatar">
@@ -19907,37 +20125,230 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     </div>
                     <div className="props-pills">
                         {player.props
-                            .filter(pr => statFilter === 'all' || pr.type === statFilter)
-                            .map((pr, i) => (
-                            <div key={i} className="prop-pill" style={!pr.modelSupported ? { opacity: 0.72 } : undefined} title={pr.modelSupported ? 'Validated NHL model output' : 'Real provider line — no validated NHL model for this market yet'}>
-                                <div className="prop-pill-label">
-                                    {pr.label}
-                                    {pr.period && pr.period !== 'FULL' && <span className="prop-pill-alt" title="Period-scoped market — outside the validated FULL-game model">{pr.period}</span>}
-                                    {pr.projectionType && pr.projectionType !== 'STANDARD' && <span className="pp-kind" title="DFS projection type">{pr.projectionType}</span>}
-                                </div>
-                                <div className="prop-pill-value">
-                                    {formatProviderLine(pr.line)}
-                                    <span style={{ fontSize: '0.68rem', opacity: 0.6, marginLeft: '0.35rem' }}>{pr.book}</span>
-                                </div>
-                                {pr.modelSupported ? (
-                                    <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', color: 'var(--text-muted, #9ca3af)' }}>
-                                        {pr.projection != null && <span>Model Proj {Math.round(pr.projection * 100) / 100}</span>}
-                                        {pr.probability != null && <span>Model P(≥1) {(pr.probability * 100).toFixed(1)}%</span>}
-                                        {pr.edge != null && (
-                                            <span style={{ marginLeft: '0.4rem', color: pr.edge > 0 ? 'var(--success-green, #4ade80)' : 'var(--danger-red, #f87171)' }}>
-                                                Edge {pr.edge > 0 ? '+' : ''}{pr.edge}
-                                            </span>
-                                        )}
-                                        <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>({pr.gamesSampled} real games)</span>
+                            .map((pr, origIdx) => ({ pr, origIdx }))
+                            .filter(({ pr }) => statFilter === 'all' || pr.type === statFilter)
+                            .map(({ pr, origIdx }) => {
+                                // Click (and therefore the history modal) is only
+                                // ever wired for a validated family on a RESOLVED
+                                // player -- nhlPlayerId is null for every
+                                // unresolved/ambiguous/combo player (see
+                                // fetchNhlPropLines' resolver), so a combo or
+                                // unresolved card's pill simply never gets an
+                                // onClick at all. Fail-closed by construction.
+                                const clickable = !!pr.modelSupported && !!player.nhlPlayerId;
+                                const isActive = modalEligible && activeProp && activeProp.id === pr.id;
+                                return (
+                                <div key={origIdx} className="prop-pill"
+                                    style={{ opacity: pr.modelSupported ? 1 : 0.72, cursor: clickable ? 'pointer' : 'default', outline: isActive ? '2px solid var(--accent-red)' : 'none', outlineOffset: '1px' }}
+                                    title={clickable ? "Click to open this prop's real historical breakdown" : (pr.modelSupported ? 'Validated NHL model output' : 'Real provider line — no validated NHL model for this market yet')}
+                                    onClick={clickable ? () => openDetail(player.id, origIdx) : undefined}
+                                >
+                                    <div className="prop-pill-label">
+                                        {pr.label}
+                                        {pr.period && pr.period !== 'FULL' && <span className="prop-pill-alt" title="Period-scoped market — outside the validated FULL-game model">{pr.period}</span>}
+                                        {pr.projectionType && pr.projectionType !== 'STANDARD' && <span className="pp-kind" title="DFS projection type">{pr.projectionType}</span>}
                                     </div>
-                                ) : (
-                                    <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', fontStyle: 'italic', color: 'var(--text-muted, #9ca3af)' }}>{pr.note}</div>
-                                )}
-                            </div>
-                        ))}
+                                    <div className="prop-pill-value">
+                                        {formatProviderLine(pr.line)}
+                                        <span style={{ fontSize: '0.68rem', opacity: 0.6, marginLeft: '0.35rem' }}>{pr.book}</span>
+                                    </div>
+                                    {pr.modelSupported ? (
+                                        <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', color: 'var(--text-muted, #9ca3af)' }}>
+                                            {pr.projection != null && <span>Model Proj {Math.round(pr.projection * 100) / 100}</span>}
+                                            {pr.probability != null && <span>Model P(≥1) {(pr.probability * 100).toFixed(1)}%</span>}
+                                            {pr.edge != null && (
+                                                <span style={{ marginLeft: '0.4rem', color: pr.edge > 0 ? 'var(--success-green, #4ade80)' : 'var(--danger-red, #f87171)' }}>
+                                                    Edge {pr.edge > 0 ? '+' : ''}{pr.edge}
+                                                </span>
+                                            )}
+                                            <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>({pr.gamesSampled} real games)</span>
+                                        </div>
+                                    ) : (
+                                        <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', fontStyle: 'italic', color: 'var(--text-muted, #9ca3af)' }}>{pr.note}</div>
+                                    )}
+                                </div>
+                                );
+                            })}
                     </div>
+                    {modalEligible && (
+                      <div className="modal-overlay" onClick={() => setDetailModal(null)}>
+                        <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+                          <div className="modal-header">
+                            <div className="modal-title">
+                                {player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}
+                                {player.name}
+                                <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}> · {player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}{player.gameTime ? ` · ${player.gameTime}` : ''}</span>
+                            </div>
+                            <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
+                          </div>
+                          <div className="modal-body player-details">
+                            {/* No grade, no Prime, no confluence, no factors, no
+                                matchup verdict, no projected minutes, no
+                                defense-vs-position -- NHL Grades are NOT
+                                ENABLED by design (see _calculateEdgeScoreImpl's
+                                own NHL fallback comment), and none of those
+                                basketball-only signals exist for NHL to begin
+                                with. This section mirrors PlayerCard's real
+                                layout (edge-section / edge-body /
+                                edge-prop-summary / projection-box -- same
+                                classes, same visual hierarchy) with ONLY the
+                                fields NHL's validated pipeline actually
+                                produces: the real projection/probability/edge
+                                already on the prop object (lib/nhlProjectionEngine.js),
+                                never recomputed or fabricated. No "Edge vs
+                                Price"/implied-probability row either -- NHL has
+                                no real book-price/vig data behind it. */}
+                            <div className="edge-section">
+                                <div className="edge-section-header"><div className="edge-section-title">🎯 BeatsEdge NHL Projection</div></div>
+                                <div className="edge-body">
+                                    <div className="edge-prop-summary">
+                                        {player.headshot && (
+                                            <img className="edge-prop-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                                        )}
+                                        <div>
+                                            <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
+                                            <div className="edge-prop-line">
+                                                Line: {formatProviderLine(activeProp.line)}
+                                                {activeProp.direction ? (activeProp.direction === 'over' ? ' O' : ' U') : ''}
+                                                {' • '}{player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}
+                                            </div>
+                                            <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: 'var(--success-green)' }}>
+                                                🟢 Real line — {activeProp.book}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="projection-box">
+                                        {activeProp.projection != null && (
+                                            <div className="projection-item">
+                                                <div className="projection-label">Model Projection</div>
+                                                <div className="projection-value">{Math.round(activeProp.projection * 100) / 100}</div>
+                                            </div>
+                                        )}
+                                        <div className="projection-item">
+                                            <div className="projection-label">Line</div>
+                                            <div className="projection-value">{formatProviderLine(activeProp.line)}</div>
+                                        </div>
+                                        {activeProp.probability != null && (
+                                            <div className="projection-item">
+                                                <div className="projection-label">Model P(≥1)</div>
+                                                <div className="projection-value" style={{ color: 'var(--accent-red)' }}>{(activeProp.probability * 100).toFixed(1)}%</div>
+                                            </div>
+                                        )}
+                                        {activeProp.edge != null && (
+                                            <div className="projection-item">
+                                                <div className="projection-label">Edge</div>
+                                                <div className={`projection-value ${activeProp.edge >= 0 ? 'edge-positive' : 'edge-negative'}`}>{activeProp.edge >= 0 ? '+' : ''}{activeProp.edge}</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                                        {activeProp.gamesSampled} real games sampled (nhl_player_box) · shrinkage-5 / trailing-mean / Poisson P(≥1) — no NHL grade, Prime, or confluence (not enabled for NHL).
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Explicit history request states (see the `hist` state
+                                comment): only a SUCCESSFUL empty answer says "no
+                                history"; a missing route / 5xx / network failure is
+                                an error with a Retry, never "this player has none". */}
+                            {(hist.status === 'idle' || hist.status === 'loading') && (
+                                <div className="stats-insufficient" role="status" data-nhl-history="loading" style={{ padding: '1rem 1.5rem' }}>Loading real game history…</div>
+                            )}
+                            {hist.status === 'error' && (
+                                <div className="stats-insufficient" role="alert" data-nhl-history="error" style={{ padding: '1rem 1.5rem' }}>
+                                    Couldn’t load this player’s game history{hist.reason === 'route-unavailable' ? ' (the history service isn’t available on this backend)' : hist.reason === 'network' ? ' (network error)' : hist.reason === 'wrong-player' ? ' (unexpected response)' : ''}. The projection above is unaffected.{' '}
+                                    <button className="stats-tab" data-nhl-history-retry="1" onClick={() => setHistStatus('idle')}>Retry</button>
+                                </div>
+                            )}
+                            {hist.status === 'empty' && (
+                                <div data-nhl-history="empty" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No stored NHL game history for this player yet.</div>
+                            )}
+                            {hist.status === 'loaded' && (<React.Fragment>
+                            {/* Same "Hit Rate" headline block every working sport's
+                                detail modal shows above its window tabs (hit-rate-
+                                section/header/title/main/bars -- identical classnames,
+                                confirmed against the real rendered NBA modal), reusing
+                                cStats' already-computed per-window hitRate fields --
+                                no new data, no new math, just rendering what
+                                nhlComputeWindows already produces. */}
+                            {cLog.length > 0 && activeProp.modelSupported !== false && (() => {
+                                const bars = [
+                                    { label: 'L5', value: cStats.last5 && cStats.last5.hitRate },
+                                    { label: 'L10', value: cStats.last10 && cStats.last10.hitRate },
+                                    { label: 'L15', value: cStats.last15 && cStats.last15.hitRate },
+                                    { label: 'L20', value: cStats.last20 && cStats.last20.hitRate },
+                                    { label: 'Season', value: cStats.trueSeason && cStats.trueSeason.hitRate },
+                                    { label: 'Vs Opp', value: cStats.vsOpp && cStats.vsOpp.hitRate },
+                                ].filter(b => b.value != null);
+                                const headline = cStats.trueSeason && cStats.trueSeason.hitRate != null ? cStats.trueSeason.hitRate : windowHitRate;
+                                if (!bars.length && headline == null) return null;
+                                return (
+                                    <div className="hit-rate-section">
+                                        <div className="hit-rate-header">
+                                            <div>
+                                                <div className="hit-rate-title">Hit Rate — {activeProp.type} {dirUnder ? 'Under' : 'Over'} {formatProviderLine(activeProp.line)}</div>
+                                                <div className="hit-rate-main">{headline ?? '—'}%</div>
+                                            </div>
+                                            <div style={{ fontSize: '0.8rem' }}>Share of real games {dirUnder ? 'at or below' : 'above'} {formatProviderLine(activeProp.line)}, straight from nhl_player_box.</div>
+                                        </div>
+                                        <div className="hit-rate-bars">
+                                            {bars.map((bar, idx) => (
+                                                <div key={idx} className="hit-rate-bar">
+                                                    <div className="hit-rate-bar-label">{bar.label}</div>
+                                                    <div className="hit-rate-bar-value">{bar.value}%</div>
+                                                    <div className="hit-rate-bar-visual">
+                                                        <div className="hit-rate-bar-fill" style={{ width: `${bar.value}%` }}></div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+
+                            <div className="stats-tabs">
+                                {[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent || ''}`]].map(([tab, label]) => (
+                                    <button key={tab} className={`stats-tab ${selectedPropTab === tab ? 'active' : ''}`} onClick={() => setSelectedPropTab(tab)}>{label}</button>
+                                ))}
+                            </div>
+                            {tabMeta.complete === false && (
+                                <div className="stats-insufficient">{tabMeta.availableGames} game{tabMeta.availableGames === 1 ? '' : 's'} available</div>
+                            )}
+                            {cLog.length === 0 ? (
+                                <div data-nhl-history="no-stat-rows" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No stored games with this stat for this player.</div>
+                            ) : (
+                            <div className="stats-table" data-nhl-history="loaded">
+                                <div className="section-title-label">📊 Analytics — {activeProp.type}</div>
+                                <div className="stats-summary">
+                                    <div className="stat-summary-item"><div className="stat-summary-label">Hit Rate</div><div className="stat-summary-value">{windowHitRate ?? '—'}%</div></div>
+                                    <div className="stat-summary-item"><div className="stat-summary-label">Average</div><div className="stat-summary-value">{windowAvg ?? '—'}</div></div>
+                                    <div className="stat-summary-item"><div className="stat-summary-label">Median</div><div className="stat-summary-value">{windowMedian ?? '—'}</div></div>
+                                    <div className="stat-summary-item"><div className="stat-summary-label">Range</div><div className="stat-summary-value">{windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—'}</div></div>
+                                    <div className="stat-summary-item"><div className="stat-summary-label">Games</div><div className="stat-summary-value">{shownGames.length}</div></div>
+                                </div>
+                                <div className="chart-bars">
+                                    {shownGames.map((g, i) => {
+                                        const good = clearedOf(g);
+                                        return (
+                                            <div key={i} className="chart-bar-col" title={`${g.date} — vs ${g.opponent || '—'} — ${g.points} (${g.points >= windowLine ? 'over' : 'under'} ${windowLine})`}>
+                                                <div className="chart-bar-val">{g.points}</div>
+                                                <div className={`chart-bar ${good ? 'over' : 'under'}`} style={{ height: Math.max(3, Math.round((g.points / maxV) * 100)) + 'px' }}></div>
+                                                <div className="chart-bar-date"><span className="cbd-opp">{g.opponent ? `vs ${g.opponent}` : ''}</span><span className="cbd-date">{g.date}</span></div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <div className="chart-foot">Tap a window above (L5 · L10 · L15 · L20 · Season · Vs {player.opponent || 'opponent'}) to change the range.</div>
+                            </div>
+                            )}
+                            </React.Fragment>)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                 </div>
-            );
+                );
+            };
 
             const PlayerCard = ({ player }) => {
                 const [pillDir, setPillDir] = useState('all'); // 'all' | 'over' | 'under'

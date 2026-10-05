@@ -37,7 +37,10 @@ const impl = (startIdx > -1 && endIdx > startIdx) ? html.slice(startIdx, endIdx)
 
 check('the defensive guard exists right after computing `s`, before any other code touches it',
   (() => {
-    const sIdx = impl.indexOf('const s = (player.statsByKey');
+    // Phase 1 (NHL release audit): `s` is now computed as
+    //   const s = player._isNhl ? null : ((player.statsByKey ...) || player.stats);
+    // so NHL is excluded by identity. Anchor on either shape; the ordering requirement is unchanged.
+    const sIdx = impl.search(/const s = (?:player\._isNhl\s*\?\s*null\s*:\s*)?\(+player\.statsByKey/);
     const guardIdx = impl.indexOf('if (!s) {');
     const factor1Idx = impl.indexOf('// Factor 1');
     // Ordering matters, not distance (a comment explaining the fix sits
