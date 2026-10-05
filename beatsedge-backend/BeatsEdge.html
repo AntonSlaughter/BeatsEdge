@@ -337,6 +337,19 @@
         }
         .stat-cat-bar::-webkit-scrollbar { height: 6px; }
         .stat-cat-bar::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        /* NHL's long market list: slim, themed scrollbar (transparent track, no native arrows) and a soft
+           fade on the right edge to signal "more markets"; trailing padding keeps the last chip clear of it. */
+        .stat-cat-bar.is-scrollable {
+            scrollbar-color: var(--border-color) transparent;
+            padding-right: 2rem;
+            -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+        }
+        .stat-cat-bar.is-scrollable::-webkit-scrollbar { height: 5px; background: transparent; }
+        .stat-cat-bar.is-scrollable::-webkit-scrollbar-track { background: transparent; }
+        .stat-cat-bar.is-scrollable::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+        .stat-cat-bar.is-scrollable::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        .stat-cat-bar.is-scrollable::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
         .stat-cat-chip {
             flex: 0 0 auto;
             background: var(--bg-primary);
@@ -1087,6 +1100,21 @@
             font-size: 0.72rem; font-weight: 700; font-style: italic; color: var(--text-muted);
         }
 
+        /* NHL pills: a modeled prop carries a subtle BeatsEdge accent; a provider-only prop is fully
+           readable (it's a real live line) with only its "Model not supported yet" note kept quiet.
+           Scoped to NHL pills -- other sports' pills are untouched. */
+        .prop-pill.nhl-modeled {
+            border-color: rgba(255, 68, 54, 0.4);
+            background: linear-gradient(180deg, var(--accent-glow), transparent 75%), var(--bg-secondary);
+        }
+        .prop-pill.nhl-modeled .prop-pill-label,
+        .prop-pill.nhl-unmodeled .prop-pill-label { color: var(--text-secondary); }
+        .prop-pill.nhl-unmodeled:hover { border-color: var(--border-color); background: var(--bg-secondary); }
+        .prop-pill-source { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-left: 0.35rem; }
+        .nhl-model-line { font-size: 0.72rem; margin-top: 0.35rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+        .nhl-model-line .nhl-model-sep { color: var(--text-muted); }
+        .nhl-no-model { font-size: 0.68rem; margin-top: 0.35rem; color: var(--text-muted); }
+
         .hit-indicator {
             width: 8px;
             height: 8px;
@@ -1142,6 +1170,13 @@
             gap: 0.5rem;
             margin-top: 1rem;
         }
+
+        /* Compact header (NHL): the window summary sits right beside the headline % instead of
+           floating at the far edge, and the bar for the selected window is emphasised. */
+        .hit-rate-header.is-compact { justify-content: flex-start; align-items: flex-end; gap: 1.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+        .hit-rate-header.is-compact .hit-rate-main { font-size: 2.25rem; line-height: 1.1; }
+        .hit-rate-bar.is-active .hit-rate-bar-label { color: var(--text-primary); }
+        .hit-rate-bar.is-active .hit-rate-bar-visual { box-shadow: 0 0 0 1px var(--accent-red); }
 
         .hit-rate-bar {
             flex: 1;
@@ -1404,6 +1439,17 @@
         }
         .chart-bar-date .cbd-opp { color: var(--text-secondary); font-weight: 700; }
         .chart-bar-date .cbd-participation { font-size: 0.54rem; opacity: 0.8; }
+        /* Larger, spread-out labels (NHL): bars share the full width and the opponent/date text is
+           readable at normal desktop size. Scrolls horizontally if a window is wider than the modal. */
+        .game-log-chart.is-roomy .chart-bars { gap: 0.15rem; }
+        .game-log-chart.is-roomy .chart-bar-col { flex: 1 0 38px; min-width: 38px; }
+        .game-log-chart.is-roomy .chart-bar-date { font-size: 0.66rem; }
+        .game-log-chart.is-roomy .chart-bar-val { font-size: 0.78rem; }
+        .game-log-chart.is-roomy .chart-plot { scrollbar-width: thin; scrollbar-color: var(--border-color) transparent; }
+        .game-log-chart.is-roomy .chart-plot::-webkit-scrollbar { height: 5px; background: transparent; }
+        .game-log-chart.is-roomy .chart-plot::-webkit-scrollbar-track { background: transparent; }
+        .game-log-chart.is-roomy .chart-plot::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+        .game-log-chart.is-roomy .chart-plot::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
 
         .chart-foot {
             font-size: 0.72rem;
@@ -6054,6 +6100,180 @@
             // those two defs.
             player_offensive_rebounds: 'offensiveRebounds', player_defensive_rebounds: 'defensiveRebounds'
         };
+
+        // ─────────────────────────────────────────────────────────────────
+        // Shared player-card / detail-modal PRESENTATION (Phase 2, NHL UX
+        // unification). Pure: props in, markup out. Nothing here reads App
+        // state, calls the grade/edge engine, or computes a model number --
+        // every sport (PlayerCard) and NHL (NhlPlayerCard) hands it values it
+        // already computed, plus nodes for the sport-specific bits. Declared
+        // at module level on purpose: unlike PlayerCard/NhlPlayerCard (which
+        // are declared inside App and so are re-created on each App render),
+        // these keep a stable component type and never remount on their own.
+        // The markup/classNames are byte-for-byte what PlayerCard rendered
+        // inline before the extraction.
+        // ─────────────────────────────────────────────────────────────────
+        function PlayerAvatar({ player }) {
+            return (
+                <div className="player-avatar">
+                    <span className="player-avatar-initials">{player.name.split(' ').map(n => n[0]).join('').slice(0, 2)}</span>
+                    {player.headshot && (
+                        <img src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                    )}
+                </div>
+            );
+        }
+        // nameSuffix: inline inside .player-name (position chip). chips: siblings after the name (status/SAMPLE tags).
+        // teamInfo: the contents of .player-team-info. right: everything after .player-info (game time, grade, Details).
+        function PlayerHeader({ player, onClick, nameSuffix, chips, teamInfo, right }) {
+            return (
+                <div className="player-header" onClick={onClick}>
+                    <PlayerAvatar player={player} />
+                    <div className="player-info">
+                        <div className="player-name-row">
+                            <div className="player-name">{player.name}{nameSuffix}</div>
+                            {chips}
+                        </div>
+                        <div className="player-team-info">{teamInfo}</div>
+                    </div>
+                    {right}
+                </div>
+            );
+        }
+        // One prop pill. label/value are nodes; children is the footer slot (model line, grade, "Model not supported yet", news).
+        function PropPill({ className = 'prop-pill', style, title, onClick, label, value, children }) {
+            return (
+                <div className={className} style={style} title={title} onClick={onClick}>
+                    <div className="prop-pill-label">{label}</div>
+                    <div className="prop-pill-value">{value}</div>
+                    {children}
+                </div>
+            );
+        }
+        // The full-breakdown modal frame. title: contents of .modal-title. children: contents of .modal-body.
+        function DetailModalShell({ onClose, title, children }) {
+            return (
+                <div className="modal-overlay" onClick={onClose}>
+                    <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <div className="modal-title">{title}</div>
+                            <button className="close-btn" onClick={onClose}>×</button>
+                        </div>
+                        <div className="modal-body player-details">{children}</div>
+                    </div>
+                </div>
+            );
+        }
+        // Historical hit-rate headline + per-window bars. bars: [{label, value}] already filtered to real values.
+        // compact (optional): tighter header; bars[i].active (optional): emphasise the selected window.
+        function HitRateSection({ title, headline, note, bars, compact }) {
+            return (
+                <div className="hit-rate-section">
+                    <div className={compact ? 'hit-rate-header is-compact' : 'hit-rate-header'}>
+                        <div>
+                            <div className="hit-rate-title">{title}</div>
+                            <div className="hit-rate-main">{headline ?? '—'}%</div>
+                        </div>
+                        {note}
+                    </div>
+                    <div className="hit-rate-bars">
+                        {bars.map((bar, idx) => (
+                            <div key={idx} className={bar.active ? 'hit-rate-bar is-active' : 'hit-rate-bar'}>
+                                <div className="hit-rate-bar-label">{bar.label}</div>
+                                <div className="hit-rate-bar-value">{bar.value}%</div>
+                                <div className="hit-rate-bar-visual">
+                                    <div className="hit-rate-bar-fill" style={{ width: `${bar.value}%` }}></div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+        // L5 | L10 | L15 | L20 | Season | Vs Opp. tabs: [[key, label]].
+        function WindowTabs({ tabs, selected, onSelect }) {
+            return (
+                <div className="stats-tabs">
+                    {tabs.map(([tab, label]) => (
+                        <button key={tab} className={`stats-tab ${selected === tab ? 'active' : ''}`} onClick={() => onSelect(tab)}>{label}</button>
+                    ))}
+                </div>
+            );
+        }
+        // Analytics block: title + Hit Rate / Average / Median / Range / Games (+ sport extras). items: [{label, value}].
+        function AnalyticsSummary({ title, items }) {
+            return (
+                <div className="stats-table">
+                    <div className="section-title-label">{title}</div>
+                    <div className="stats-summary">
+                        {items.map((it, i) => (
+                            <div key={i} className="stat-summary-item">
+                                <div className="stat-summary-label">{it.label}</div>
+                                <div className="stat-summary-value">{it.value}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+        // Game-by-game bar chart with the dashed line + legend + hit line. games: [{ value, valueExtra, good, tooltip, opp, date, participation }]
+        // (value = the stat total; good = whether it cleared the line, decided by the caller).
+        // roomy (optional): bars spread across the full width with larger opponent/date labels.
+        function GameLogChart({ title, windowText, titleExtra, dirUnder, line, games, hitCount, hitPct, emptyText, foot, after, roomy }) {
+            const plotH = 190, dateH = 44, barAreaH = plotH - dateH;
+            const maxV = Math.max(...games.map(g => g.value), line * 1.3, 1) * 1.14;
+            const px = (v) => (v / maxV) * barAreaH;
+            return (
+                <div className={roomy ? 'game-log-chart is-roomy' : 'game-log-chart'}>
+                    <div className="chart-top">
+                        <div className="chart-title">
+                            {title}
+                            <span className="chart-window"> · {windowText}</span>
+                            {titleExtra}
+                        </div>
+                        <div className="chart-legend">
+                            <span><i className="dot over"></i>{dirUnder ? 'Stayed under' : 'Hit the over'}</span>
+                            <span><i className="dot under"></i>Missed</span>
+                        </div>
+                    </div>
+                    {games.length === 0 ? (
+                        <div className="chart-empty">{emptyText}</div>
+                    ) : (
+                        <React.Fragment>
+                            <div className="chart-hitline">
+                                <strong>{hitCount} of {games.length}</strong> games {dirUnder ? `stayed under ${line}` : `cleared ${line}`}
+                                <span className="chart-hitpct"> · {hitPct}% hit rate</span>
+                            </div>
+                            <div className="chart-plot" style={{ height: plotH + 'px' }}>
+                                <div className="chart-inner" style={roomy ? { width: (games.length * 41) + 'px', minWidth: '100%' } : { width: (games.length * 46) + 'px' }}>
+                                    <div className="chart-line" style={{ bottom: (dateH + px(line)) + 'px' }}>
+                                        <span className="chart-line-label">Line {line}</span>
+                                    </div>
+                                    <div className="chart-bars">
+                                        {games.map((g, i) => (
+                                            <div key={i} className="chart-bar-col" title={g.tooltip}>
+                                                <div className="chart-bar-val">
+                                                    {g.value}
+                                                    {g.valueExtra}
+                                                </div>
+                                                <div className={`chart-bar ${g.good ? 'over' : 'under'}`} style={{ height: Math.max(3, px(g.value)) + 'px' }}></div>
+                                                <div className="chart-bar-date" style={{ height: dateH + 'px' }}>
+                                                    <span className="cbd-opp">{g.opp}</span>
+                                                    <span className="cbd-date">{g.date}</span>
+                                                    {g.participation && <span className="cbd-participation">{g.participation}</span>}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="chart-foot">{foot}</div>
+                            {after}
+                        </React.Fragment>
+                    )}
+                </div>
+            );
+        }
 
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
         // the report is (that's the edge — act before the line moves), and who
@@ -19993,6 +20213,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // never discarded (see rawMarket/statKey on the prop object) --
             // this only changes what's SHOWN.
             const NHL_LABEL_OVERRIDES = {
+                // same market as the modeled "Shots on Goal" family (e.g. a combo listing keeps the raw key) --
+                // one label so the market filter doesn't show two near-identical chips
+                player_shots_on_goal: 'Shots on Goal',
                 player_faceoffs_won: 'Faceoffs Won',
                 player_first_goal_scorer: 'First Goal Scorer',
                 player_last_goal_scorer: 'Last Goal Scorer',
@@ -20028,15 +20251,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 if (rawMarket && NHL_LABEL_OVERRIDES[rawMarket]) return NHL_LABEL_OVERRIDES[rawMarket];
                 return humanizeMarketKey(rawMarket || statKey);
             };
-            // Same visual family as PlayerCard (player-card/player-header/
-            // player-avatar/player-info/player-team-info/props-pills/
-            // prop-pill -- all existing, shared CSS, zero new rules needed)
-            // deliberately without any of PlayerCard's NBA-shaped fields
-            // (statsByKey, gameLog, DvP, projected minutes/position) --
-            // NHL never had that data to begin with, so it's never faked.
-            // No Details button / modal: PlayerCard's modal body assumes
-            // exactly the NBA-shaped fields NHL doesn't have (see the
-            // comment on the original NhlPlayerCard decision above this).
+            // NHL card. Built from the SAME shared presentation components the
+            // other sports use (PlayerHeader / PropPill / DetailModalShell /
+            // HitRateSection / WindowTabs / AnalyticsSummary / GameLogChart, all
+            // declared above App), so it looks and behaves like a BeatsEdge card.
+            // It deliberately has none of PlayerCard's basketball-shaped model
+            // data (statsByKey, gameLog, DvP, projected minutes, grade engine) --
+            // NHL never had it, so it is never faked: the pill/modal show only the
+            // real provider line plus the validated projection / probability /
+            // edge already on each prop, and real NHL game history.
             const NhlPlayerCard = ({ player }) => {
                 // NHL history + selected window live in App-level state keyed by
                 // the resolved NHL player id (nhlHistoryById / nhlDetailTab) --
@@ -20092,7 +20315,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         ? (cLog.length ? cLog.filter(g => g.season === cLog[cLog.length - 1].season) : [])
                         : cLog.slice(-(WIN[selectedPropTab] || 10)));
                 const windowLine = activeProp ? activeProp.line : ((cLog[0] && cLog[0].line) || 0);
-                const clearedOf = (g) => dirUnder ? g.points < windowLine : g.points >= windowLine;
+                // Over = strictly above the line: the SAME `v > line` rule nhlComputeWindows uses for the
+                // hit-rate bars, so Analytics / chart / bars can never disagree (a `>=` here showed a
+                // line-0 "Anytime Goal Scorer" as 100% while its bars said ~20%).
+                const clearedOf = (g) => dirUnder ? g.points < windowLine : g.points > windowLine;
                 const shownVals = shownGames.map(g => g.points);
                 const shownSorted = [...shownVals].sort((a, b) => a - b);
                 const windowAvg = shownVals.length ? Math.round((shownVals.reduce((s, v) => s + v, 0) / shownVals.length) * 10) / 10 : null;
@@ -20103,31 +20329,37 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const tabMeta = cStats[selectedPropTab] || {};
                 const maxV = Math.max(...shownVals, windowLine * 1.3, 1) * 1.14;
 
+                // Presentation-only derivations (no model math): which pills are visible
+                // under the active stat filter, the provider's display name, and the
+                // props the detail modal may switch between (validated family on a
+                // resolved player -- the same gate as the click itself).
+                const bookName = (id) => (platforms.find(p => p.id === id) || {}).name || id;
+                const visibleProps = Array.isArray(player.props)
+                    ? player.props.map((pr, origIdx) => ({ pr, origIdx })).filter(({ pr }) => statFilter === 'all' || pr.type === statFilter)
+                    : [];
+                const firstOpenable = visibleProps.find(({ pr }) => !!pr.modelSupported && !!player.nhlPlayerId);
+                const switchableProps = (Array.isArray(player.props) && player.nhlPlayerId)
+                    ? player.props.map((p, idx) => ({ p, idx })).filter(({ p }) => p.modelSupported === true)
+                    : [];
+
                 return (
                 <div className="player-card">
-                    <div className="player-header">
-                        <div className="player-avatar">
-                            <span className="player-avatar-initials">{player.name.split(' ').map(n => n[0]).join('').slice(0, 2)}</span>
-                            {player.headshot && (
-                                <img src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
-                            )}
-                        </div>
-                        <div className="player-info">
-                            <div className="player-name-row">
-                                <div className="player-name">{player.name}</div>
+                    <PlayerHeader player={player}
+                        onClick={firstOpenable ? () => openDetail(player.id, firstOpenable.origIdx) : undefined}
+                        teamInfo={<React.Fragment>
+                            <span className="team">{player.team || ''}</span>
+                            {player.opponent && <span className="opponent"> vs {player.opponent}</span>}
+                        </React.Fragment>}
+                        right={
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                {player.gameTime && <div className="player-time">{player.gameTime}</div>}
+                                {firstOpenable && (
+                                    <button className="details-btn" onClick={(e) => { e.stopPropagation(); openDetail(player.id, firstOpenable.origIdx); }}>Details</button>
+                                )}
                             </div>
-                            <div className="player-team-info">
-                                <span className="team">{player.team || ''}</span>
-                                {player.opponent && <span className="opponent"> vs {player.opponent}</span>}
-                            </div>
-                        </div>
-                        {player.gameTime && <div className="player-time">{player.gameTime}</div>}
-                    </div>
+                        } />
                     <div className="props-pills">
-                        {player.props
-                            .map((pr, origIdx) => ({ pr, origIdx }))
-                            .filter(({ pr }) => statFilter === 'all' || pr.type === statFilter)
-                            .map(({ pr, origIdx }) => {
+                        {visibleProps.map(({ pr, origIdx }) => {
                                 // Click (and therefore the history modal) is only
                                 // ever wired for a validated family on a RESOLVED
                                 // player -- nhlPlayerId is null for every
@@ -20138,86 +20370,89 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 const clickable = !!pr.modelSupported && !!player.nhlPlayerId;
                                 const isActive = modalEligible && activeProp && activeProp.id === pr.id;
                                 return (
-                                <div key={origIdx} className="prop-pill"
-                                    style={{ opacity: pr.modelSupported ? 1 : 0.72, cursor: clickable ? 'pointer' : 'default', outline: isActive ? '2px solid var(--accent-red)' : 'none', outlineOffset: '1px' }}
-                                    title={clickable ? "Click to open this prop's real historical breakdown" : (pr.modelSupported ? 'Validated NHL model output' : 'Real provider line — no validated NHL model for this market yet')}
+                                <PropPill key={pr.id || origIdx}
+                                    className={pr.modelSupported ? 'prop-pill nhl-modeled' : 'prop-pill nhl-unmodeled'}
+                                    style={{ cursor: clickable ? 'pointer' : 'default', outline: isActive ? '2px solid var(--accent-red)' : 'none', outlineOffset: '1px' }}
+                                    title={clickable ? "Click to open this prop's full breakdown" : (pr.modelSupported ? 'BeatsEdge model projection' : "Real provider line — BeatsEdge doesn't have a research model for this market yet")}
                                     onClick={clickable ? () => openDetail(player.id, origIdx) : undefined}
-                                >
-                                    <div className="prop-pill-label">
+                                    label={<React.Fragment>
                                         {pr.label}
-                                        {pr.period && pr.period !== 'FULL' && <span className="prop-pill-alt" title="Period-scoped market — outside the validated FULL-game model">{pr.period}</span>}
+                                        {pr.period && pr.period !== 'FULL' && <span className="prop-pill-alt" title="Period market — BeatsEdge models full-game props only">{pr.period}</span>}
                                         {pr.projectionType && pr.projectionType !== 'STANDARD' && <span className="pp-kind" title="DFS projection type">{pr.projectionType}</span>}
-                                    </div>
-                                    <div className="prop-pill-value">
+                                    </React.Fragment>}
+                                    value={<React.Fragment>
                                         {formatProviderLine(pr.line)}
-                                        <span style={{ fontSize: '0.68rem', opacity: 0.6, marginLeft: '0.35rem' }}>{pr.book}</span>
-                                    </div>
+                                        <span className="prop-pill-source">{bookName(pr.book)}</span>
+                                    </React.Fragment>}
+                                >
                                     {pr.modelSupported ? (
-                                        <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', color: 'var(--text-muted, #9ca3af)' }}>
-                                            {pr.projection != null && <span>Model Proj {Math.round(pr.projection * 100) / 100}</span>}
-                                            {pr.probability != null && <span>Model P(≥1) {(pr.probability * 100).toFixed(1)}%</span>}
+                                        <div className="nhl-model-line" title="BeatsEdge model estimate from recent NHL games">
+                                            {pr.projection != null && <span>Model {Math.round(pr.projection * 100) / 100}</span>}
+                                            {pr.probability != null && <span>Model Probability {(pr.probability * 100).toFixed(1)}%</span>}
                                             {pr.edge != null && (
-                                                <span style={{ marginLeft: '0.4rem', color: pr.edge > 0 ? 'var(--success-green, #4ade80)' : 'var(--danger-red, #f87171)' }}>
-                                                    Edge {pr.edge > 0 ? '+' : ''}{pr.edge}
-                                                </span>
+                                                <span><span className="nhl-model-sep"> · </span><span style={{ color: pr.edge > 0 ? 'var(--success-green)' : pr.edge < 0 ? 'var(--danger-red)' : 'var(--text-muted)' }}>{pr.edge >= 0 ? '+' : ''}{pr.edge}</span></span>
                                             )}
-                                            <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>({pr.gamesSampled} real games)</span>
                                         </div>
                                     ) : (
-                                        <div style={{ fontSize: '0.7rem', marginTop: '0.15rem', fontStyle: 'italic', color: 'var(--text-muted, #9ca3af)' }}>{pr.note}</div>
+                                        <div className="nhl-no-model" title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no probability or edge is invented for it.">{pr.note}</div>
                                     )}
-                                </div>
+                                </PropPill>
                                 );
                             })}
                     </div>
                     {modalEligible && (
-                      <div className="modal-overlay" onClick={() => setDetailModal(null)}>
-                        <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-                          <div className="modal-header">
-                            <div className="modal-title">
-                                {player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}
-                                {player.name}
-                                <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}> · {player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}{player.gameTime ? ` · ${player.gameTime}` : ''}</span>
-                            </div>
-                            <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
-                          </div>
-                          <div className="modal-body player-details">
-                            {/* No grade, no Prime, no confluence, no factors, no
-                                matchup verdict, no projected minutes, no
-                                defense-vs-position -- NHL Grades are NOT
-                                ENABLED by design (see _calculateEdgeScoreImpl's
-                                own NHL fallback comment), and none of those
-                                basketball-only signals exist for NHL to begin
-                                with. This section mirrors PlayerCard's real
-                                layout (edge-section / edge-body /
-                                edge-prop-summary / projection-box -- same
-                                classes, same visual hierarchy) with ONLY the
-                                fields NHL's validated pipeline actually
-                                produces: the real projection/probability/edge
+                      <DetailModalShell onClose={() => setDetailModal(null)}
+                        title={<React.Fragment>
+                            {player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}
+                            {player.name}
+                            <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}> · {player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}{player.gameTime ? ` · ${player.gameTime}` : ''}</span>
+                        </React.Fragment>}>
+                            {/* Same section order as every working sport's detail
+                                modal: selected prop + model summary, historical
+                                hit-rate, window tabs, analytics, game-by-game chart.
+                                NHL shows ONLY what its validated pipeline actually
+                                produces: the real projection / probability / edge
                                 already on the prop object (lib/nhlProjectionEngine.js),
-                                never recomputed or fabricated. No "Edge vs
-                                Price"/implied-probability row either -- NHL has
-                                no real book-price/vig data behind it. */}
+                                never recomputed or fabricated. No grade, Prime,
+                                confluence, projected minutes, matchup factors or
+                                defense-vs-position (none exist for NHL), and no
+                                "Edge vs Price"/implied-probability row (NHL has no
+                                real book-price/vig data behind it). */}
                             <div className="edge-section">
-                                <div className="edge-section-header"><div className="edge-section-title">🎯 BeatsEdge NHL Projection</div></div>
+                                <div className="edge-section-header">
+                                    <div className="edge-section-title">🎯 BeatsEdge Projection</div>
+                                    {switchableProps.length > 1 && (
+                                        <select className="edge-prop-select" aria-label="Choose prop" value={activeProp.id}
+                                            onChange={(e) => { const hit = switchableProps.find(({ p }) => p.id === e.target.value); if (hit) openDetail(player.id, hit.idx); }}>
+                                            {switchableProps.map(({ p }) => (
+                                                <option key={p.id} value={p.id}>{p.type} {formatProviderLine(p.line)}</option>
+                                            ))}
+                                        </select>
+                                    )}
+                                </div>
                                 <div className="edge-body">
                                     <div className="edge-prop-summary">
-                                        {player.headshot && (
-                                            <img className="edge-prop-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
-                                        )}
-                                        <div>
-                                            <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
-                                            <div className="edge-prop-line">
-                                                Line: {formatProviderLine(activeProp.line)}
-                                                {activeProp.direction ? (activeProp.direction === 'over' ? ' O' : ' U') : ''}
-                                                {' • '}{player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}
-                                            </div>
-                                            <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: 'var(--success-green)' }}>
-                                                🟢 Real line — {activeProp.book}
+                                        <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-start' }}>
+                                            {player.headshot && (
+                                                <img className="edge-prop-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                                            )}
+                                            <div>
+                                                <div className="edge-prop-name">{player.name} — {activeProp.type}</div>
+                                                <div className="edge-prop-line">
+                                                    Line: {formatProviderLine(activeProp.line)}
+                                                    {activeProp.direction ? (activeProp.direction === 'over' ? ' O' : ' U') : ''}
+                                                    {' • '}{player.team || ''}{player.opponent ? ` vs ${player.opponent}` : ''}
+                                                </div>
+                                                <div className="edge-prop-line" style={{ fontSize: '0.8rem', color: 'var(--success-green)' }}>
+                                                    🟢 Real line — {bookName(activeProp.book)}
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="projection-box">
+                                    {/* Same projection-box as the other sports; only the cells NHL really has (Projection +
+                                        Edge for Shots/Saves, Model Probability for Goal/Assist/Point), column count matched
+                                        to the cells so a two-cell box stays centred. */}
+                                    <div className="projection-box" style={{ gridTemplateColumns: `repeat(${(activeProp.projection != null ? 1 : 0) + 1 + (activeProp.edge != null ? 1 : 0) + (activeProp.probability != null ? 1 : 0)}, 1fr)` }}>
                                         {activeProp.projection != null && (
                                             <div className="projection-item">
                                                 <div className="projection-label">Model Projection</div>
@@ -20225,12 +20460,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             </div>
                                         )}
                                         <div className="projection-item">
-                                            <div className="projection-label">Line</div>
+                                            <div className="projection-label" title="The real posted line from the source book">Line</div>
                                             <div className="projection-value">{formatProviderLine(activeProp.line)}</div>
                                         </div>
                                         {activeProp.probability != null && (
                                             <div className="projection-item">
-                                                <div className="projection-label">Model P(≥1)</div>
+                                                <div className="projection-label" title="Model probability of recording at least one">Model Probability</div>
                                                 <div className="projection-value" style={{ color: 'var(--accent-red)' }}>{(activeProp.probability * 100).toFixed(1)}%</div>
                                             </div>
                                         )}
@@ -20242,7 +20477,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         )}
                                     </div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                                        {activeProp.gamesSampled} real games sampled (nhl_player_box) · shrinkage-5 / trailing-mean / Poisson P(≥1) — no NHL grade, Prime, or confluence (not enabled for NHL).
+                                        Model estimate based on {activeProp.gamesSampled} NHL games
                                     </div>
                                 </div>
                             </div>
@@ -20252,99 +20487,94 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 history"; a missing route / 5xx / network failure is
                                 an error with a Retry, never "this player has none". */}
                             {(hist.status === 'idle' || hist.status === 'loading') && (
-                                <div className="stats-insufficient" role="status" data-nhl-history="loading" style={{ padding: '1rem 1.5rem' }}>Loading real game history…</div>
+                                <div className="stats-insufficient" role="status" data-nhl-history="loading" style={{ padding: '1rem 1.5rem' }}>Loading game history…</div>
                             )}
                             {hist.status === 'error' && (
                                 <div className="stats-insufficient" role="alert" data-nhl-history="error" style={{ padding: '1rem 1.5rem' }}>
-                                    Couldn’t load this player’s game history{hist.reason === 'route-unavailable' ? ' (the history service isn’t available on this backend)' : hist.reason === 'network' ? ' (network error)' : hist.reason === 'wrong-player' ? ' (unexpected response)' : ''}. The projection above is unaffected.{' '}
+                                    Couldn’t load this player’s game history{hist.reason === 'route-unavailable' ? ' (game history is temporarily unavailable)' : hist.reason === 'network' ? ' (network error)' : hist.reason === 'wrong-player' ? ' (unexpected response)' : ''}. The projection above is unaffected.{' '}
                                     <button className="stats-tab" data-nhl-history-retry="1" onClick={() => setHistStatus('idle')}>Retry</button>
                                 </div>
                             )}
                             {hist.status === 'empty' && (
-                                <div data-nhl-history="empty" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No stored NHL game history for this player yet.</div>
+                                <div data-nhl-history="empty" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No NHL game history for this player yet.</div>
                             )}
                             {hist.status === 'loaded' && (<React.Fragment>
                             {/* Same "Hit Rate" headline block every working sport's
-                                detail modal shows above its window tabs (hit-rate-
-                                section/header/title/main/bars -- identical classnames,
-                                confirmed against the real rendered NBA modal), reusing
+                                detail modal shows above its window tabs, reusing
                                 cStats' already-computed per-window hitRate fields --
                                 no new data, no new math, just rendering what
                                 nhlComputeWindows already produces. */}
                             {cLog.length > 0 && activeProp.modelSupported !== false && (() => {
                                 const bars = [
-                                    { label: 'L5', value: cStats.last5 && cStats.last5.hitRate },
-                                    { label: 'L10', value: cStats.last10 && cStats.last10.hitRate },
-                                    { label: 'L15', value: cStats.last15 && cStats.last15.hitRate },
-                                    { label: 'L20', value: cStats.last20 && cStats.last20.hitRate },
-                                    { label: 'Season', value: cStats.trueSeason && cStats.trueSeason.hitRate },
-                                    { label: 'Vs Opp', value: cStats.vsOpp && cStats.vsOpp.hitRate },
-                                ].filter(b => b.value != null);
-                                const headline = cStats.trueSeason && cStats.trueSeason.hitRate != null ? cStats.trueSeason.hitRate : windowHitRate;
+                                    { tab: 'last5', label: 'L5', value: cStats.last5 && cStats.last5.hitRate },
+                                    { tab: 'last10', label: 'L10', value: cStats.last10 && cStats.last10.hitRate },
+                                    { tab: 'last15', label: 'L15', value: cStats.last15 && cStats.last15.hitRate },
+                                    { tab: 'last20', label: 'L20', value: cStats.last20 && cStats.last20.hitRate },
+                                    { tab: 'trueSeason', label: 'Season', value: cStats.trueSeason && cStats.trueSeason.hitRate },
+                                    { tab: 'vsOpp', label: 'Vs Opp', value: cStats.vsOpp && cStats.vsOpp.hitRate },
+                                ].filter(b => b.value != null).map(b => ({ ...b, active: b.tab === selectedPropTab }));
+                                // The headline follows the SELECTED window (same hitRate the bar for that
+                                // window shows -- nhlComputeWindows' own number, not a new calculation).
+                                const selectedRate = cStats[selectedPropTab] && cStats[selectedPropTab].hitRate;
+                                const headline = selectedRate != null ? selectedRate : null;
                                 if (!bars.length && headline == null) return null;
+                                const nShown = shownGames.length;
+                                const windowName = selectedPropTab === 'trueSeason' ? 'Current season'
+                                    : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent || 'opponent'}`
+                                    : `Last ${nShown}`;
                                 return (
-                                    <div className="hit-rate-section">
-                                        <div className="hit-rate-header">
-                                            <div>
-                                                <div className="hit-rate-title">Hit Rate — {activeProp.type} {dirUnder ? 'Under' : 'Over'} {formatProviderLine(activeProp.line)}</div>
-                                                <div className="hit-rate-main">{headline ?? '—'}%</div>
+                                    <HitRateSection compact
+                                        title={`Hit Rate — ${activeProp.type} ${dirUnder ? 'Under' : 'Over'} ${formatProviderLine(activeProp.line)}`}
+                                        headline={headline}
+                                        bars={bars}
+                                        note={
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', paddingBottom: '0.35rem' }}>
+                                                <div style={{ fontWeight: 600 }}>{windowName} · {nShown} game{nShown === 1 ? '' : 's'}</div>
+                                                <div style={{ fontSize: '0.8rem' }}>Games {dirUnder ? 'at or below' : 'above'} {formatProviderLine(activeProp.line)}, from the game log</div>
                                             </div>
-                                            <div style={{ fontSize: '0.8rem' }}>Share of real games {dirUnder ? 'at or below' : 'above'} {formatProviderLine(activeProp.line)}, straight from nhl_player_box.</div>
-                                        </div>
-                                        <div className="hit-rate-bars">
-                                            {bars.map((bar, idx) => (
-                                                <div key={idx} className="hit-rate-bar">
-                                                    <div className="hit-rate-bar-label">{bar.label}</div>
-                                                    <div className="hit-rate-bar-value">{bar.value}%</div>
-                                                    <div className="hit-rate-bar-visual">
-                                                        <div className="hit-rate-bar-fill" style={{ width: `${bar.value}%` }}></div>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
+                                        } />
                                 );
                             })()}
 
-                            <div className="stats-tabs">
-                                {[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent || ''}`]].map(([tab, label]) => (
-                                    <button key={tab} className={`stats-tab ${selectedPropTab === tab ? 'active' : ''}`} onClick={() => setSelectedPropTab(tab)}>{label}</button>
-                                ))}
-                            </div>
+                            <WindowTabs
+                                tabs={[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent || 'Opp'}`]]}
+                                selected={selectedPropTab} onSelect={setSelectedPropTab} />
                             {tabMeta.complete === false && (
                                 <div className="stats-insufficient">{tabMeta.availableGames} game{tabMeta.availableGames === 1 ? '' : 's'} available</div>
                             )}
                             {cLog.length === 0 ? (
-                                <div data-nhl-history="no-stat-rows" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No stored games with this stat for this player.</div>
+                                <div data-nhl-history="no-stat-rows" style={{ padding: '1rem 1.5rem', color: 'var(--text-muted)' }}>No games with this stat for this player yet.</div>
                             ) : (
-                            <div className="stats-table" data-nhl-history="loaded">
-                                <div className="section-title-label">📊 Analytics — {activeProp.type}</div>
-                                <div className="stats-summary">
-                                    <div className="stat-summary-item"><div className="stat-summary-label">Hit Rate</div><div className="stat-summary-value">{windowHitRate ?? '—'}%</div></div>
-                                    <div className="stat-summary-item"><div className="stat-summary-label">Average</div><div className="stat-summary-value">{windowAvg ?? '—'}</div></div>
-                                    <div className="stat-summary-item"><div className="stat-summary-label">Median</div><div className="stat-summary-value">{windowMedian ?? '—'}</div></div>
-                                    <div className="stat-summary-item"><div className="stat-summary-label">Range</div><div className="stat-summary-value">{windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—'}</div></div>
-                                    <div className="stat-summary-item"><div className="stat-summary-label">Games</div><div className="stat-summary-value">{shownGames.length}</div></div>
-                                </div>
-                                <div className="chart-bars">
-                                    {shownGames.map((g, i) => {
-                                        const good = clearedOf(g);
-                                        return (
-                                            <div key={i} className="chart-bar-col" title={`${g.date} — vs ${g.opponent || '—'} — ${g.points} (${g.points >= windowLine ? 'over' : 'under'} ${windowLine})`}>
-                                                <div className="chart-bar-val">{g.points}</div>
-                                                <div className={`chart-bar ${good ? 'over' : 'under'}`} style={{ height: Math.max(3, Math.round((g.points / maxV) * 100)) + 'px' }}></div>
-                                                <div className="chart-bar-date"><span className="cbd-opp">{g.opponent ? `vs ${g.opponent}` : ''}</span><span className="cbd-date">{g.date}</span></div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                                <div className="chart-foot">Tap a window above (L5 · L10 · L15 · L20 · Season · Vs {player.opponent || 'opponent'}) to change the range.</div>
+                            <div data-nhl-history="loaded" style={{ display: 'contents' }}>
+                                <AnalyticsSummary
+                                    title={`📊 Analytics — ${activeProp.type}`}
+                                    items={[
+                                        { label: 'Hit Rate', value: `${windowHitRate ?? '—'}%` },
+                                        { label: 'Average', value: windowAvg ?? '—' },
+                                        { label: 'Median', value: windowMedian ?? '—' },
+                                        { label: 'Range', value: windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—' },
+                                        { label: 'Games', value: shownGames.length },
+                                    ]} />
+                                <GameLogChart
+                                    title={`${activeProp.type} ${dirUnder ? 'Under' : 'Over'} ${windowLine}`}
+                                    windowText={selectedPropTab === 'trueSeason' ? 'Season' : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent || 'Opp'} · Games: ${shownGames.length}` : `Last ${shownGames.length}`}
+                                    dirUnder={dirUnder} line={windowLine}
+                                    games={shownGames.map(g => ({
+                                        value: g.points,
+                                        good: clearedOf(g),
+                                        tooltip: `${g.date} — vs ${g.opponent || '—'} — ${g.points} (${g.points > windowLine ? 'over' : 'under'} ${windowLine})`,
+                                        opp: g.opponent ? `vs ${g.opponent}` : '',
+                                        // display only: 2026-01-21 -> 1/21/26 (full date stays in the tooltip)
+                                        date: String(g.date || '').replace(/^(\d{4})-(\d{2})-(\d{2}).*$/, (m, y, mo, d) => `${+mo}/${+d}/${y.slice(2)}`),
+                                    }))}
+                                    roomy
+                                    hitCount={windowHitCount} hitPct={windowHitRate}
+                                    emptyText={selectedPropTab === 'vsOpp' ? `No previous games vs ${player.opponent || 'this opponent'}` : 'No games in this window yet.'}
+                                    foot={`Tap a window above (L5 · L10 · L15 · L20 · Season · Vs ${player.opponent || 'opponent'}) to change the range.`} />
                             </div>
                             )}
                             </React.Fragment>)}
-                          </div>
-                        </div>
-                      </div>
+                      </DetailModalShell>
                     )}
                 </div>
                 );
@@ -20508,21 +20738,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                 return (
                     <div className="player-card">
-                        <div className="player-header" onClick={() => openDetail(player.id, firstCatIdx)}>
-                            <div className="player-avatar">
-                                <span className="player-avatar-initials">{player.name.split(' ').map(n => n[0]).join('').slice(0, 2)}</span>
-                                {player.headshot && (
-                                    <img
-                                        src={player.headshot}
-                                        alt=""
-                                        loading="lazy"
-                                        onError={(e) => { e.target.style.display = 'none'; }}
-                                    />
-                                )}
-                            </div>
-                            <div className="player-info">
-                                <div className="player-name-row">
-                                    <div className="player-name">{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}</div>
+                        <PlayerHeader player={player} onClick={() => openDetail(player.id, firstCatIdx)}
+                            nameSuffix={player.position ? <span className="pos-chip">{player.position}</span> : null}
+                            chips={<React.Fragment>
                                     {player._mock && (
                                         <span className="sample-tag" title="No live slate/line found for this sport and date — this card is hardcoded sample data, not a real player, game, or line. See the SAMPLE banner above.">SAMPLE</span>
                                     )}
@@ -20564,8 +20782,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     {player.b2b && player.b2b.tonight !== 'second' && player.b2b.first !== 'first' && player.b2b.restDays != null && player.b2b.restDays >= 3 && (
                                         <span className="rest-tag" title={`${player.b2b.restDays} days since the last game`}>🛌 {player.b2b.restDays}d rest</span>
                                     )}
-                                </div>
-                                <div className="player-team-info">
+                            </React.Fragment>}
+                            teamInfo={<React.Fragment>
                                     <span className="team">{player.team}</span>
                                     <span className="opponent"> vs {player.opponent}</span>
                                     {(player.sport === 'nba' || player.sport === 'wnba') && player.projMin != null && (
@@ -20574,8 +20792,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     {player.sport === 'mlb' && player.abPerGame != null && (
                                         <span className="opponent" title={`Season: ~${player.paPerGame} plate appearances / game, ~${player.abPerGame} official at-bats / game${player.battingOrder ? ` · bats ${player.battingOrder}${player.battingOrder === 1 ? 'st' : player.battingOrder === 2 ? 'nd' : player.battingOrder === 3 ? 'rd' : 'th'}` : ''}`}> · ~{player.abPerGame} AB/g</span>
                                     )}
-                                </div>
-                            </div>
+                            </React.Fragment>}
+                            right={
                             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                                 <div className="player-time">{player.gameTime}</div>
                                 {player.status !== 'OUT' && player.props && player.props.length > 0 && (() => {
@@ -20589,7 +20807,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 })()}
                                 <button className="details-btn" onClick={(e) => { e.stopPropagation(); openDetail(player.id, firstCatIdx); }}>Details</button>
                             </div>
-                        </div>
+                            } />
 
                         {/* Compact numeric presentation, same as the inline
                             "~36 min" shown elsewhere on this card — no giant
@@ -20651,14 +20869,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             // a model input either way.
                                             const propNews = playerResearch ? buildPropNewsContext(prop, player, playerResearch) : null;
                                             return (
-                                            <div
+                                            <PropPill
                                                 key={prop.id || idx}
                                                 className={`prop-pill ${isPropSelected(player, prop) ? 'selected' : ''}`}
                                                 onClick={() => openDetail(player.id, idx)}
                                                 style={{ cursor: 'pointer', outline: isActive ? '2px solid var(--accent-red)' : 'none', outlineOffset: '1px' }}
                                                 title="Click to open this prop's full breakdown"
-                                            >
-                                                <div className="prop-pill-label">
+                                                label={<React.Fragment>
                                                     <span className={`prop-pill-dir ${prop.direction}`}>{prop.direction === 'under' ? 'UNDER' : 'OVER'}</span> {prop.type}
                                                     {prop.ppKind === 'goblin' && <span className="pp-kind goblin" title="PrizePicks Goblin — easier line, smaller payout. Over only.">👺 GOBLIN</span>}
                                                     {prop.ppKind === 'demon' && <span className="pp-kind demon" title="PrizePicks Demon — harder line, bigger payout. Over only.">😈 DEMON</span>}
@@ -20666,8 +20883,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {prop.altLine && !prop.ppKind && <span className="prop-pill-alt">ALT</span>}
                                                     {prop.plusEV && prop.plusEV.eligible && <span className="pp-kind plusev" title={`PrizePicks +EV — line ${prop.plusEV.prizePicksLine} vs market median ${prop.plusEV.marketMedianLine} (${prop.plusEV.sportsbookCount} books), BeatsEdge projects ${prop.plusEV.modelProjection}. A market-price-value signal, independent of Grade/Prime.`}>💰 +EV</span>}
                                                     {prop.altLineValue && prop.altLineValue.eligible && <span className="pp-kind altvalue" title={`Alt-Line Value — this ${prop.ppKind} line still clears the sportsbook market (${prop.altLineValue.marketMedianLine}) and BeatsEdge's projection (${prop.altLineValue.modelProjection}) by more than its intentional offset alone would explain. NOT the same as +EV — some gap here is expected by design.`}>🔁 Alt Value</span>}
-                                                </div>
-                                                <div className="prop-pill-value">
+                                                </React.Fragment>}
+                                                value={<React.Fragment>
                                                     {/* isProjection = no book/DFS platform posts this stat — there is
                                                         NO real sportsbook/PrizePicks line to show, full stop. The line
                                                         slot must never hold BeatsEdge's own estimate — that's a
@@ -20704,7 +20921,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     {prop.move && prop.move.priceOnly && (
                                                         <span className="prop-move price" title="Odds moved, line held">⚡</span>
                                                     )}
-                                                </div>
+                                                </React.Fragment>}>
                                                 {edge ? (
                                                     <React.Fragment>
                                                         <div className={`grade-badge-sm ${GRADE_META[edge.grade].cls}`} style={{ marginTop: '0.35rem' }}>{edge.grade}</div>
@@ -20736,7 +20953,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {propNews.conflict && ' ⚠️'}
                                                     </div>
                                                 )}
-                                            </div>
+                                            </PropPill>
                                             );
                                         })}
                                 </div>
@@ -20862,13 +21079,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         })()}
 
                         {activeInModal && player.status !== 'OUT' && (
-                          <div className="modal-overlay" onClick={() => setDetailModal(null)}>
-                            <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-                              <div className="modal-header">
-                                <div className="modal-title">{player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}{player._mock && <span className="sample-tag" title="No live slate/line found for this sport and date — this is hardcoded sample data, not a real player, game, or line.">SAMPLE</span>} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></div>
-                                <button className="close-btn" onClick={() => setDetailModal(null)}>×</button>
-                              </div>
-                              <div className="modal-body player-details">
+                          <DetailModalShell onClose={() => setDetailModal(null)}
+                            title={<React.Fragment>{player.headshot && <img className="modal-title-photo" src={player.headshot} alt="" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />}{player.name}{player.position ? <span className="pos-chip">{player.position}</span> : null}{player._mock && <span className="sample-tag" title="No live slate/line found for this sport and date — this is hardcoded sample data, not a real player, game, or line.">SAMPLE</span>} <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.9rem' }}>· {player.team} vs {player.opponent} · {player.gameTime}</span></React.Fragment>}>
                                 {(player.injuryDetail && player.status !== 'ACTIVE') && (
                                     <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '8px', background: 'rgba(245,166,35,0.1)', border: '1px solid rgba(245,166,35,0.35)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                                         <strong style={{ color: 'var(--warning-yellow)' }}>{player.status}</strong>
@@ -21932,82 +22144,36 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     const headline = useGl ? (oppVals.length >= 4 ? gr(oppVals) : gr(glv))
                                         : (hr(cStats.vsOpp && cStats.vsOpp.hitRate) != null ? hr(cStats.vsOpp.hitRate) : hr(cStats.trueSeason && cStats.trueSeason.hitRate));
                                     return (
-                                        <div className="hit-rate-section">
-                                            <div className="hit-rate-header">
-                                                <div>
-                                                    <div className="hit-rate-title">
-                                                        Hit Rate{cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${formatProviderLine(cardProp.line)}` : ''}
-                                                    </div>
-                                                    <div className="hit-rate-main">{headline ?? '—'}%</div>
-                                                </div>
+                                        <HitRateSection
+                                            title={`Hit Rate${cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${formatProviderLine(cardProp.line)}` : ''}`}
+                                            headline={headline}
+                                            bars={bars}
+                                            note={
                                                 <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                                                     <div style={{ fontWeight: 600 }}>{useGl && oppVals.length >= 4 ? `Hit rate vs ${player.opponent} (${oppVals.length}g)` : `${dirUnder ? 'Under' : 'Over'} rate — last ${Math.min(glv.length, 40)} games`}</div>
                                                     <div style={{ fontSize: '0.8rem' }}>Share of games {dirUnder ? 'at or below' : 'above'} {cardProp ? cardProp.line : 'this line'}, straight from the game log.</div>
                                                 </div>
-                                            </div>
-                                            <div className="hit-rate-bars">
-                                                {bars.map((bar, idx) => (
-                                                    <div key={idx} className="hit-rate-bar">
-                                                        <div className="hit-rate-bar-label">{bar.label}</div>
-                                                        <div className="hit-rate-bar-value">{bar.value}%</div>
-                                                        <div className="hit-rate-bar-visual">
-                                                            <div className="hit-rate-bar-fill" style={{ width: `${bar.value}%` }}></div>
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
+                                            } />
                                     );
                                 })()}
 
-                                <div className="stats-tabs">
-                                    {[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent}`]].map(([tab, label]) => (
-                                        <button
-                                            key={tab}
-                                            className={`stats-tab ${selectedPropTab === tab ? 'active' : ''}`}
-                                            onClick={() => setSelectedPropTab(tab)}
-                                        >
-                                            {label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <WindowTabs
+                                    tabs={[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent}`]]}
+                                    selected={selectedPropTab} onSelect={setSelectedPropTab} />
                                 {tabMeta.complete === false && (
                                     <div className="stats-insufficient">{windowLabel} — {tabMeta.availableGames} game{tabMeta.availableGames === 1 ? '' : 's'} available</div>
                                 )}
 
-                                <div className="stats-table">
-                                    <div className="section-title-label">
-                                        📊 Analytics{cardProp ? ` — ${cardProp.type}` : ''}
-                                    </div>
-                                    <div className="stats-summary">
-                                        <div className="stat-summary-item">
-                                            <div className="stat-summary-label">Hit Rate</div>
-                                            <div className="stat-summary-value">{windowHitRate ?? '—'}%</div>
-                                        </div>
-                                        <div className="stat-summary-item">
-                                            <div className="stat-summary-label">Average</div>
-                                            <div className="stat-summary-value">{windowAvg ?? '—'}</div>
-                                        </div>
-                                        <div className="stat-summary-item">
-                                            <div className="stat-summary-label">Median</div>
-                                            <div className="stat-summary-value">{windowMedian ?? '—'}</div>
-                                        </div>
-                                        <div className="stat-summary-item">
-                                            <div className="stat-summary-label">Range</div>
-                                            <div className="stat-summary-value">{windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—'}</div>
-                                        </div>
-                                        <div className="stat-summary-item">
-                                            <div className="stat-summary-label">Games</div>
-                                            <div className="stat-summary-value">{shownGames.length}</div>
-                                        </div>
-                                        {player.sport === 'nba' && (
-                                            <div className="stat-summary-item">
-                                                <div className="stat-summary-label">Min / Game</div>
-                                                <div className="stat-summary-value">{windowMinAvg ?? '—'}</div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
+                                <AnalyticsSummary
+                                    title={`📊 Analytics${cardProp ? ` — ${cardProp.type}` : ''}`}
+                                    items={[
+                                        { label: 'Hit Rate', value: `${windowHitRate ?? '—'}%` },
+                                        { label: 'Average', value: windowAvg ?? '—' },
+                                        { label: 'Median', value: windowMedian ?? '—' },
+                                        { label: 'Range', value: windowRange ? `${windowRange[0]} - ${windowRange[1]}` : '—' },
+                                        { label: 'Games', value: shownGames.length },
+                                        ...(player.sport === 'nba' ? [{ label: 'Min / Game', value: windowMinAvg ?? '—' }] : []),
+                                    ]} />
 
                                 {player.sport === 'nba' && (() => {
                                     const h2h = (Array.isArray(cLog) ? cLog : [])
@@ -22054,10 +22220,6 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     const chartWindowLabel = selectedPropTab === 'trueSeason' ? 'Season'
                                         : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}`
                                         : `Last ${shownGames.length}`;
-                                    // dateH bumped 32->44 (2026-09-27 playing-time context fix)
-                                    // to fit a third, small participation line (MIN/PA/IP) under
-                                    // the existing opponent/date lines without clipping.
-                                    const plotH = 190, dateH = 44, barAreaH = plotH - dateH;
                                     // Sport/role-aware, real-value-only participation label for one
                                     // game-log row `g` — architected so a future sport (e.g. Soccer,
                                     // MIN) only needs one more branch here, never a chart rewrite.
@@ -22077,86 +22239,39 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         }
                                         return null;
                                     };
-                                    const maxV = Math.max(...shownGames.map(g => g.points), windowLine * 1.3, 1) * 1.14;
-                                    const px = (v) => (v / maxV) * barAreaH;
-
+                                    // The chart itself is the shared GameLogChart (pure presentation);
+                                    // everything sport-specific is decided here and handed over as data.
+                                    const chartGames = shownGames.map(g => ({
+                                        value: g.points,
+                                        valueExtra: (player.sport === 'nba' && g.min != null) ? <span className="chart-bar-min">{g.min}′</span> : null,
+                                        good: clearedOf(g),
+                                        tooltip: `${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= windowLine ? 'over' : 'under'} ${windowLine})${g.min != null ? ` · ${g.min} min` : ''}`,
+                                        opp: g.vsLabel || (g.opponent ? 'vs ' + g.opponent : ''),
+                                        date: g.dateShort || g.date,
+                                        participation: participationLabel(g),
+                                    }));
+                                    const nflSeasonNote = (player.sport === 'nfl' && selectedPropTab !== 'trueSeason' && selectedPropTab !== 'vsOpp' && shownGames.length > 0) ? (() => {
+                                        // Context-only, factual indicator (Part 7 of the 2026-09-26 NFL
+                                        // context-accuracy fix): rolling windows (L5/L10/L15/L20) cross
+                                        // season boundaries by design (see nflComputeWindows) — this
+                                        // never labels that good or bad, it only exposes it. The
+                                        // separate "Season" tab (trueSeason) already shows current-
+                                        // season-only numbers side by side, so this note only needs to
+                                        // appear on the rolling-window tabs.
+                                        const seasonsInWindow = [...new Set(shownGames.map(g => g.season).filter(v => v != null))].sort();
+                                        if (seasonsInWindow.length <= 1) return null;
+                                        return <div className="chart-foot" style={{ paddingTop: '0.2rem' }}>Cross-season sample · includes {seasonsInWindow.join(' + ')}</div>;
+                                    })() : null;
                                     return (
-                                    <div className="game-log-chart">
-                                        <div className="chart-top">
-                                            <div className="chart-title">
-                                                {cardProp ? `${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${windowLine}` : 'Recent games'}
-                                                <span className="chart-window"> · {chartWindowLabel}{selectedPropTab === 'vsOpp' ? ` · Games: ${shownGames.length}` : ''}</span>
-                                                {player.sport === 'mlb' && !player._detailLoaded && <span className="chart-loading"> · loading game log…</span>}
-                                            </div>
-                                            <div className="chart-legend">
-                                                <span><i className="dot over"></i>{dirUnder ? 'Stayed under' : 'Hit the over'}</span>
-                                                <span><i className="dot under"></i>Missed</span>
-                                            </div>
-                                        </div>
-
-                                        {shownGames.length === 0 ? (
-                                            <div className="chart-empty">
-                                                {player.sport === 'mlb' && !player._detailLoaded ? 'Loading real game log…' : (selectedPropTab === 'vsOpp' ? `No previous games vs ${player.opponent}` : 'No games in this window yet.')}
-                                            </div>
-                                        ) : (
-                                            <React.Fragment>
-                                                <div className="chart-hitline">
-                                                    <strong>{windowHitCount} of {shownGames.length}</strong> games {dirUnder ? `stayed under ${windowLine}` : `cleared ${windowLine}`}
-                                                    <span className="chart-hitpct"> · {windowHitRate}% hit rate</span>
-                                                </div>
-                                                <div className="chart-plot" style={{ height: plotH + 'px' }}>
-                                                    {/* .chart-line used to be positioned directly inside
-                                                        .chart-plot (the overflow-x:auto SCROLL VIEWPORT),
-                                                        so its left:0/right:0 resolved against the visible
-                                                        width, not the actual scrollable content width —
-                                                        the dashed threshold line stopped at whatever was
-                                                        on-screen at render time and never extended into
-                                                        the rest of the chart while scrolling. .chart-inner
-                                                        carries the one real content width (same formula
-                                                        .chart-bars always used); .chart-line and .chart-bars
-                                                        both size to it, so the line now always spans the
-                                                        full dataset, at 5/10/20/40+ games, on every sport. */}
-                                                    <div className="chart-inner" style={{ width: (shownGames.length * 46) + 'px' }}>
-                                                        <div className="chart-line" style={{ bottom: (dateH + px(windowLine)) + 'px' }}>
-                                                            <span className="chart-line-label">Line {windowLine}</span>
-                                                        </div>
-                                                        <div className="chart-bars">
-                                                        {shownGames.map((g, i) => {
-                                                            const good = clearedOf(g);
-                                                            return (
-                                                                <div key={i} className="chart-bar-col" title={`${g.date} — ${g.vsLabel || ('vs ' + (g.opponent || '—'))} — ${g.points} (${g.points >= windowLine ? 'over' : 'under'} ${windowLine})${g.min != null ? ` · ${g.min} min` : ''}`}>
-                                                                    <div className="chart-bar-val">
-                                                                        {g.points}
-                                                                        {player.sport === 'nba' && g.min != null && <span className="chart-bar-min">{g.min}′</span>}
-                                                                    </div>
-                                                                    <div className={`chart-bar ${good ? 'over' : 'under'}`} style={{ height: Math.max(3, px(g.points)) + 'px' }}></div>
-                                                                    <div className="chart-bar-date" style={{ height: dateH + 'px' }}>
-                                                                        <span className="cbd-opp">{g.vsLabel || (g.opponent ? 'vs ' + g.opponent : '')}</span>
-                                                                        <span className="cbd-date">{g.dateShort || g.date}</span>
-                                                                        {participationLabel(g) && <span className="cbd-participation">{participationLabel(g)}</span>}
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div className="chart-foot">Tap a window above (L5 · L10 · L15 · L20 · Season · Vs {player.opponent}) to change the range.</div>
-                                                {player.sport === 'nfl' && selectedPropTab !== 'trueSeason' && selectedPropTab !== 'vsOpp' && (() => {
-                                                    // Context-only, factual indicator (Part 7 of the 2026-09-26 NFL
-                                                    // context-accuracy fix): rolling windows (L5/L10/L15/L20) cross
-                                                    // season boundaries by design (see nflComputeWindows) — this
-                                                    // never labels that good or bad, it only exposes it. The
-                                                    // separate "Season" tab (trueSeason) already shows current-
-                                                    // season-only numbers side by side, so this note only needs to
-                                                    // appear on the rolling-window tabs.
-                                                    const seasonsInWindow = [...new Set(shownGames.map(g => g.season).filter(v => v != null))].sort();
-                                                    if (seasonsInWindow.length <= 1) return null;
-                                                    return <div className="chart-foot" style={{ paddingTop: '0.2rem' }}>Cross-season sample · includes {seasonsInWindow.join(' + ')}</div>;
-                                                })()}
-                                            </React.Fragment>
-                                        )}
-                                    </div>
+                                        <GameLogChart
+                                            title={cardProp ? `${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${windowLine}` : 'Recent games'}
+                                            windowText={<React.Fragment>{chartWindowLabel}{selectedPropTab === 'vsOpp' ? ` · Games: ${shownGames.length}` : ''}</React.Fragment>}
+                                            titleExtra={player.sport === 'mlb' && !player._detailLoaded ? <span className="chart-loading"> · loading game log…</span> : null}
+                                            dirUnder={dirUnder} line={windowLine} games={chartGames}
+                                            hitCount={windowHitCount} hitPct={windowHitRate}
+                                            emptyText={player.sport === 'mlb' && !player._detailLoaded ? 'Loading real game log…' : (selectedPropTab === 'vsOpp' ? `No previous games vs ${player.opponent}` : 'No games in this window yet.')}
+                                            foot={`Tap a window above (L5 · L10 · L15 · L20 · Season · Vs ${player.opponent}) to change the range.`}
+                                            after={nflSeasonNote} />
                                     );
                                 })()}
 
@@ -22331,9 +22446,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                         </div>
                                     </div>
                                 )}
-                              </div>
-                            </div>
-                          </div>
+                          </DetailModalShell>
                         )}
                     </div>
                 );
@@ -23256,7 +23369,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         </div>
 
                         {isPro && statCats.length > 0 && (
-                            <div className="stat-cat-bar">
+                            <div className={`stat-cat-bar${selectedSport === 'nhl' ? ' is-scrollable' : ''}`}>
                                 <button
                                     className={`stat-cat-chip ${statFilter === 'all' ? 'active' : ''}`}
                                     onClick={() => setStatFilter('all')}
@@ -23288,7 +23401,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 )}
                                 <div className="grid-count">
                                     {isPro
-                                        ? <>{filteredPlayers.length} {filteredPlayers.length === 1 ? 'player' : 'players'}{statFilter !== 'all' ? ` · ${statFilter}` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}</>
+                                        ? (() => {
+                                            // NHL's board also carries real provider listings that are not a single
+                                            // identified player (combo props like "A + B", names we can't match to
+                                            // one NHL player). They stay visible; they just aren't counted as players.
+                                            const nhlBoard = selectedSport === 'nhl' && filteredPlayers.length > 0 && filteredPlayers.every(p => p._isNhl);
+                                            const nPlayers = nhlBoard ? filteredPlayers.filter(p => p.nhlPlayerId).length : filteredPlayers.length;
+                                            const nOther = nhlBoard ? filteredPlayers.length - nPlayers : 0;
+                                            return <>{nPlayers} {nPlayers === 1 ? 'player' : 'players'}{nOther > 0 ? ` · ${nOther} combo / unmatched ${nOther === 1 ? 'listing' : 'listings'}` : ''}{statFilter !== 'all' ? ` · ${statFilter}` : ''}{playerSearch ? ` matching “${playerSearch}”` : ''}</>;
+                                        })()
                                         : <>Showing your {freePickCount} free research pick{freePickCount === 1 ? '' : 's'}</>}
                                 </div>
                                 {browsePlayers.length === 0 ? (

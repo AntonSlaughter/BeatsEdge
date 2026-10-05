@@ -160,7 +160,7 @@ eval(extractConst(src, 'nhlComputeWindows'));
   check('26: a stable id is assigned to every NHL prop at push time (openDetail can now correctly capture propId, not just propIdx)', src.includes('id: `${mk || playerRaw}:${statKey}`'));
   check('27: the active prop is resolved by stable id FIRST, index only as a fallback -- same pattern PlayerCard itself uses to avoid a background refresh silently swapping the displayed prop', cardSrc.includes('player.props.find(p => p.id === (detailModal && detailModal.propId))'));
   check('28: the modal can only become eligible to render when the resolved prop is model-supported AND the player is resolved', cardSrc.includes('const modalEligible = activeInModal && !!activeProp && activeProp.modelSupported === true && !!player.nhlPlayerId;'));
-  check('29: the modal overlay itself is gated on modalEligible, not merely on "a detail modal is open for this player"', cardSrc.includes('{modalEligible && (') && cardSrc.includes('className="modal-overlay"'));
+  check('29: the modal overlay itself is gated on modalEligible, not merely on "a detail modal is open for this player"', /\{modalEligible && \(\s*<DetailModalShell/.test(cardSrc) && !cardSrc.includes('className="modal-overlay"'));
   check('30: the modal body no longer contains a second, reachable "unsupported" branch -- ineligible props render no modal at all, per the real requirement', !cardSrc.includes('activeProp.modelSupported === false ?'));
 
   // Behavioral proof of the actual bug class, run against the real extracted
@@ -231,7 +231,7 @@ eval(extractConst(src, 'nhlComputeWindows'));
   check('52: history is only requested when the modal is eligible (supported family + resolved player)', cardSrc.includes('if (modalEligible && hist.status === \'idle\') loadNhlHistory(player);'));
   check('52b: loading is idempotent per player (an in-flight request is never repeated)', src.includes('nhlHistoryInflight.current.has(id)') && src.includes('nhlHistoryInflight.current.add(id)'));
   check('53: loading / error(with Retry) / empty / loaded each render their own state', ['data-nhl-history="loading"', 'data-nhl-history="error"', 'data-nhl-history-retry="1"', 'data-nhl-history="empty"', 'data-nhl-history="loaded"'].every(s => cardSrc.includes(s)));
-  check('54: "No stored NHL game history" appears ONLY in the genuine-empty state', (cardSrc.match(/No stored NHL game history/g) || []).length === 1 && /hist\.status === 'empty'[\s\S]{0,260}No stored NHL game history/.test(cardSrc));
+  check('54: "No NHL game history for this player" appears ONLY in the genuine-empty state', (cardSrc.match(/No NHL game history/g) || []).length === 1 && /hist\.status === 'empty'[\s\S]{0,260}No NHL game history/.test(cardSrc));
   check('55: a failed load is retried when the modal is next opened', cardSrc.includes("if (!activeInModal && hist.status === 'error') setHistStatus('idle');"));
 
   // ── Part H (Phase 1): the real route's JSON contract over real HTTP, and the real classifier against it. ──
