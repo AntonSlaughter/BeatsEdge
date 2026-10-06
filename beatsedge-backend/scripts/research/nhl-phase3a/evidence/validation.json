@@ -1,0 +1,2547 @@
+{
+  "tuned_sha256": "9a398db93a28e4ca19a0e59ffa7b7323e947649a12f3bea322d6f3c0888cce26",
+  "families": {
+    "sog": {
+      "family": "Shots on Goal",
+      "n_eligible_validation_rows": 49008,
+      "frozen_params": {
+        "g": 1,
+        "K": 0
+      },
+      "variants": {
+        "S0": {
+          "desc": "production baseline: shrinkageFive(all prior)",
+          "metrics": {
+            "n": 49008,
+            "MAE": 1.0467,
+            "RMSE": 1.3469,
+            "bias_actual_minus_pred": -0.0527,
+            "share_overprojected": 0.574,
+            "err_P10": -1.52,
+            "err_P50": -0.23,
+            "err_P90": 1.73,
+            "absErr_P90": 2.1,
+            "within_1": 0.56,
+            "within_2": 0.884,
+            "mean_pred": 1.636,
+            "mean_actual": 1.583,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 9801,
+                "meanPred": 0.764,
+                "meanActual": 0.864,
+                "MAE": 0.765
+              },
+              {
+                "bucket": "Q2",
+                "n": 9802,
+                "meanPred": 1.139,
+                "meanActual": 1.123,
+                "MAE": 0.868
+              },
+              {
+                "bucket": "Q3",
+                "n": 9801,
+                "meanPred": 1.491,
+                "meanActual": 1.429,
+                "MAE": 1.041
+              },
+              {
+                "bucket": "Q4",
+                "n": 9802,
+                "meanPred": 1.954,
+                "meanActual": 1.888,
+                "MAE": 1.158
+              },
+              {
+                "bucket": "Q5",
+                "n": 9802,
+                "meanPred": 2.83,
+                "meanActual": 2.611,
+                "MAE": 1.4
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": null,
+          "class": "BASELINE"
+        },
+        "S1": {
+          "desc": "opponent shots-allowed environment",
+          "metrics": {
+            "n": 49008,
+            "MAE": 1.0374,
+            "RMSE": 1.3454,
+            "bias_actual_minus_pred": 0.018,
+            "share_overprojected": 0.552,
+            "err_P10": -1.45,
+            "err_P50": -0.16,
+            "err_P90": 1.8,
+            "absErr_P90": 2.1,
+            "within_1": 0.571,
+            "within_2": 0.885,
+            "mean_pred": 1.565,
+            "mean_actual": 1.583,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 9801,
+                "meanPred": 0.72,
+                "meanActual": 0.849,
+                "MAE": 0.763
+              },
+              {
+                "bucket": "Q2",
+                "n": 9802,
+                "meanPred": 1.081,
+                "meanActual": 1.143,
+                "MAE": 0.86
+              },
+              {
+                "bucket": "Q3",
+                "n": 9801,
+                "meanPred": 1.421,
+                "meanActual": 1.44,
+                "MAE": 1.028
+              },
+              {
+                "bucket": "Q4",
+                "n": 9802,
+                "meanPred": 1.865,
+                "meanActual": 1.863,
+                "MAE": 1.148
+              },
+              {
+                "bucket": "Q5",
+                "n": 9802,
+                "meanPred": 2.739,
+                "meanActual": 2.619,
+                "MAE": 1.388
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0.997,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.886,
+            "ci95_pct": [
+              -1.074,
+              -0.697
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20880,
+                "rel_pct": -0.69
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12155,
+                "rel_pct": -0.97
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15973,
+                "rel_pct": -1.08
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32470,
+                "rel_pct": -0.95
+              },
+              {
+                "pos": "D",
+                "n": 16538,
+                "rel_pct": -0.74
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 3499,
+                "rel_pct": -1.36
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.67
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.96
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        },
+        "S2": {
+          "desc": "sample-size-aware shrinkage toward as-of position prior",
+          "metrics": {
+            "n": 49008,
+            "MAE": 1.0467,
+            "RMSE": 1.3469,
+            "bias_actual_minus_pred": -0.0527,
+            "share_overprojected": 0.574,
+            "err_P10": -1.52,
+            "err_P50": -0.23,
+            "err_P90": 1.73,
+            "absErr_P90": 2.1,
+            "within_1": 0.56,
+            "within_2": 0.884,
+            "mean_pred": 1.636,
+            "mean_actual": 1.583,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 9801,
+                "meanPred": 0.764,
+                "meanActual": 0.864,
+                "MAE": 0.765
+              },
+              {
+                "bucket": "Q2",
+                "n": 9802,
+                "meanPred": 1.139,
+                "meanActual": 1.123,
+                "MAE": 0.868
+              },
+              {
+                "bucket": "Q3",
+                "n": 9801,
+                "meanPred": 1.491,
+                "meanActual": 1.429,
+                "MAE": 1.041
+              },
+              {
+                "bucket": "Q4",
+                "n": 9802,
+                "meanPred": 1.954,
+                "meanActual": 1.888,
+                "MAE": 1.158
+              },
+              {
+                "bucket": "Q5",
+                "n": 9802,
+                "meanPred": 2.83,
+                "meanActual": 2.611,
+                "MAE": 1.4
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": 0,
+            "ci95_pct": [
+              0,
+              0
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20880,
+                "rel_pct": 0
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12155,
+                "rel_pct": 0
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15973,
+                "rel_pct": 0
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32470,
+                "rel_pct": 0
+              },
+              {
+                "pos": "D",
+                "n": 16538,
+                "rel_pct": 0
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 3499,
+                "rel_pct": 0
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": 0
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": 0
+              }
+            ]
+          },
+          "class": "DROP"
+        },
+        "S3": {
+          "desc": "EB shrinkage + opponent environment",
+          "metrics": {
+            "n": 49008,
+            "MAE": 1.0374,
+            "RMSE": 1.3454,
+            "bias_actual_minus_pred": 0.018,
+            "share_overprojected": 0.552,
+            "err_P10": -1.45,
+            "err_P50": -0.16,
+            "err_P90": 1.8,
+            "absErr_P90": 2.1,
+            "within_1": 0.571,
+            "within_2": 0.885,
+            "mean_pred": 1.565,
+            "mean_actual": 1.583,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 9801,
+                "meanPred": 0.72,
+                "meanActual": 0.849,
+                "MAE": 0.763
+              },
+              {
+                "bucket": "Q2",
+                "n": 9802,
+                "meanPred": 1.081,
+                "meanActual": 1.143,
+                "MAE": 0.86
+              },
+              {
+                "bucket": "Q3",
+                "n": 9801,
+                "meanPred": 1.421,
+                "meanActual": 1.44,
+                "MAE": 1.028
+              },
+              {
+                "bucket": "Q4",
+                "n": 9802,
+                "meanPred": 1.865,
+                "meanActual": 1.863,
+                "MAE": 1.148
+              },
+              {
+                "bucket": "Q5",
+                "n": 9802,
+                "meanPred": 2.739,
+                "meanActual": 2.619,
+                "MAE": 1.388
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0.997,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.886,
+            "ci95_pct": [
+              -1.074,
+              -0.697
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20880,
+                "rel_pct": -0.69
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12155,
+                "rel_pct": -0.97
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15973,
+                "rel_pct": -1.08
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32470,
+                "rel_pct": -0.95
+              },
+              {
+                "pos": "D",
+                "n": 16538,
+                "rel_pct": -0.74
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 3499,
+                "rel_pct": -1.36
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.67
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.96
+              }
+            ]
+          },
+          "class": "SUPERSEDED BY SIMPLER (S1)"
+        }
+      },
+      "tiebreak": {
+        "S3_vs_S1": {
+          "rel_pct": 0,
+          "ci95_pct": [
+            0,
+            0
+          ],
+          "big_clearly_better": false
+        },
+        "S3_vs_S2": {
+          "rel_pct": -0.886,
+          "ci95_pct": [
+            -1.074,
+            -0.697
+          ],
+          "big_clearly_better": true
+        }
+      }
+    },
+    "saves": {
+      "family": "Goalie Saves",
+      "n_eligible_validation_rows": 2839,
+      "frozen_params": {
+        "K1": 40,
+        "w2": 0.25,
+        "g3": 0.5,
+        "w4": 0.5,
+        "g4": 1,
+        "best": "V3"
+      },
+      "variants": {
+        "V0": {
+          "desc": "production baseline",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.9769,
+            "RMSE": 7.7179,
+            "bias_actual_minus_pred": -0.8182,
+            "share_overprojected": 0.538,
+            "err_P10": -10.07,
+            "err_P50": -0.63,
+            "err_P90": 8.64,
+            "absErr_P90": 12.59,
+            "within_1": 0.112,
+            "within_2": 0.22,
+            "mean_pred": 24.812,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 21.725,
+                "meanActual": 22.402,
+                "MAE": 5.907
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 23.735,
+                "meanActual": 23.743,
+                "MAE": 6.002
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.891,
+                "meanActual": 23.905,
+                "MAE": 5.795
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 25.972,
+                "meanActual": 24.826,
+                "MAE": 5.737
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 27.73,
+                "meanActual": 25.09,
+                "MAE": 6.443
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": null,
+          "class": "BASELINE"
+        },
+        "V1": {
+          "desc": "EB shrinkage toward as-of league goalie prior",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.8975,
+            "RMSE": 7.6617,
+            "bias_actual_minus_pred": -0.9742,
+            "share_overprojected": 0.544,
+            "err_P10": -10.21,
+            "err_P50": -0.76,
+            "err_P90": 8.32,
+            "absErr_P90": 12.45,
+            "within_1": 0.112,
+            "within_2": 0.23,
+            "mean_pred": 24.968,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 23.206,
+                "meanActual": 22.737,
+                "MAE": 5.629
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 24.318,
+                "meanActual": 23.475,
+                "MAE": 6.247
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.99,
+                "meanActual": 23.854,
+                "MAE": 5.749
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 25.645,
+                "meanActual": 24.732,
+                "MAE": 5.754
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 26.677,
+                "meanActual": 25.167,
+                "MAE": 6.11
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": -1.329,
+            "ci95_pct": [
+              -1.94,
+              -0.718
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 1199,
+                "rel_pct": -1.62
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 699,
+                "rel_pct": -1.34
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 941,
+                "rel_pct": -0.96
+              }
+            ],
+            "positions": null,
+            "history_strata": [
+              {
+                "stratum": "n<30",
+                "n": 256,
+                "rel_pct": -2.52
+              },
+              {
+                "stratum": "30-79",
+                "n": 1647,
+                "rel_pct": -1.22
+              },
+              {
+                "stratum": "n>=80",
+                "n": 936,
+                "rel_pct": -1.15
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        },
+        "V2": {
+          "desc": "team-saves pooling: (1-w)*base + w*teamSavesL10",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.9546,
+            "RMSE": 7.7062,
+            "bias_actual_minus_pred": -0.9429,
+            "share_overprojected": 0.54,
+            "err_P10": -10.12,
+            "err_P50": -0.77,
+            "err_P90": 8.49,
+            "absErr_P90": 12.45,
+            "within_1": 0.111,
+            "within_2": 0.221,
+            "mean_pred": 24.937,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 22.017,
+                "meanActual": 22.432,
+                "MAE": 5.576
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 23.836,
+                "meanActual": 23.324,
+                "MAE": 6.039
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.955,
+                "meanActual": 24.301,
+                "MAE": 6.055
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 26.021,
+                "meanActual": 24.729,
+                "MAE": 5.583
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 27.848,
+                "meanActual": 25.18,
+                "MAE": 6.518
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0.996,
+          "feature_coverage": 0.996,
+          "vs_baseline": {
+            "rel_pct": -0.373,
+            "ci95_pct": [
+              -0.734,
+              -0.012
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 1199,
+                "rel_pct": -0.22
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 699,
+                "rel_pct": -0.63
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 941,
+                "rel_pct": -0.37
+              }
+            ],
+            "positions": null,
+            "history_strata": [
+              {
+                "stratum": "n<30",
+                "n": 256,
+                "rel_pct": -1.7
+              },
+              {
+                "stratum": "30-79",
+                "n": 1647,
+                "rel_pct": -0.13
+              },
+              {
+                "stratum": "n>=80",
+                "n": 936,
+                "rel_pct": -0.4
+              }
+            ]
+          },
+          "class": "CONTEXT ONLY"
+        },
+        "V3": {
+          "desc": "opponent offence environment (shots-for L15 / league)",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.8938,
+            "RMSE": 7.6181,
+            "bias_actual_minus_pred": -0.2524,
+            "share_overprojected": 0.493,
+            "err_P10": -9.55,
+            "err_P50": 0.11,
+            "err_P90": 9.13,
+            "absErr_P90": 12.58,
+            "within_1": 0.111,
+            "within_2": 0.226,
+            "mean_pred": 24.246,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 20.903,
+                "meanActual": 22.268,
+                "MAE": 5.93
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 23.044,
+                "meanActual": 23.037,
+                "MAE": 6.015
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.28,
+                "meanActual": 24.187,
+                "MAE": 5.221
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 25.47,
+                "meanActual": 24.801,
+                "MAE": 6.026
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 27.527,
+                "meanActual": 25.673,
+                "MAE": 6.277
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0.996,
+          "feature_coverage": 0.996,
+          "vs_baseline": {
+            "rel_pct": -1.39,
+            "ci95_pct": [
+              -2.044,
+              -0.736
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 1199,
+                "rel_pct": -1.2
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 699,
+                "rel_pct": -1.56
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 941,
+                "rel_pct": -1.5
+              }
+            ],
+            "positions": null,
+            "history_strata": [
+              {
+                "stratum": "n<30",
+                "n": 256,
+                "rel_pct": -0.83
+              },
+              {
+                "stratum": "30-79",
+                "n": 1647,
+                "rel_pct": -2.03
+              },
+              {
+                "stratum": "n>=80",
+                "n": 936,
+                "rel_pct": -0.39
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        },
+        "V4": {
+          "desc": "pooling x opponent offence: (1-w)*base + w*teamSavesL10*(1+g(offense-1))",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.8695,
+            "RMSE": 7.6208,
+            "bias_actual_minus_pred": -0.4964,
+            "share_overprojected": 0.512,
+            "err_P10": -9.58,
+            "err_P50": -0.22,
+            "err_P90": 8.78,
+            "absErr_P90": 12.4,
+            "within_1": 0.118,
+            "within_2": 0.223,
+            "mean_pred": 24.49,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 21.275,
+                "meanActual": 22.3,
+                "MAE": 5.483
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 23.17,
+                "meanActual": 22.836,
+                "MAE": 5.756
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.412,
+                "meanActual": 24.31,
+                "MAE": 5.691
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 25.649,
+                "meanActual": 25.004,
+                "MAE": 5.919
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 27.939,
+                "meanActual": 25.516,
+                "MAE": 6.499
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 0.993,
+          "feature_coverage": 0.993,
+          "vs_baseline": {
+            "rel_pct": -1.796,
+            "ci95_pct": [
+              -2.709,
+              -0.883
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 1199,
+                "rel_pct": -1.5
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 699,
+                "rel_pct": -2.43
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 941,
+                "rel_pct": -1.69
+              }
+            ],
+            "positions": null,
+            "history_strata": [
+              {
+                "stratum": "n<30",
+                "n": 256,
+                "rel_pct": -3.43
+              },
+              {
+                "stratum": "30-79",
+                "n": 1647,
+                "rel_pct": -2.09
+              },
+              {
+                "stratum": "n>=80",
+                "n": 936,
+                "rel_pct": -0.73
+              }
+            ]
+          },
+          "class": "SUPERSEDED BY SIMPLER (V3)"
+        },
+        "V5": {
+          "desc": "EB shrinkage + best-of(V2,V3,V4) chosen on TRAIN",
+          "metrics": {
+            "n": 2839,
+            "MAE": 5.8129,
+            "RMSE": 7.5563,
+            "bias_actual_minus_pred": -0.405,
+            "share_overprojected": 0.507,
+            "err_P10": -9.48,
+            "err_P50": -0.13,
+            "err_P90": 8.9,
+            "absErr_P90": 12.5,
+            "within_1": 0.113,
+            "within_2": 0.231,
+            "mean_pred": 24.399,
+            "mean_actual": 23.994,
+            "calibration_by_projection_quintile": [
+              {
+                "bucket": "Q1",
+                "n": 567,
+                "meanPred": 22.145,
+                "meanActual": 22.226,
+                "MAE": 5.474
+              },
+              {
+                "bucket": "Q2",
+                "n": 568,
+                "meanPred": 23.534,
+                "meanActual": 22.889,
+                "MAE": 6.019
+              },
+              {
+                "bucket": "Q3",
+                "n": 568,
+                "meanPred": 24.392,
+                "meanActual": 24.171,
+                "MAE": 5.386
+              },
+              {
+                "bucket": "Q4",
+                "n": 568,
+                "meanPred": 25.237,
+                "meanActual": 24.695,
+                "MAE": 5.965
+              },
+              {
+                "bucket": "Q5",
+                "n": 568,
+                "meanPred": 26.682,
+                "meanActual": 25.984,
+                "MAE": 6.22
+              }
+            ]
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": -2.744,
+            "ci95_pct": [
+              -3.575,
+              -1.914
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 1199,
+                "rel_pct": -2.53
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 699,
+                "rel_pct": -3.07
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 941,
+                "rel_pct": -2.77
+              }
+            ],
+            "positions": null,
+            "history_strata": [
+              {
+                "stratum": "n<30",
+                "n": 256,
+                "rel_pct": -3.78
+              },
+              {
+                "stratum": "30-79",
+                "n": 1647,
+                "rel_pct": -3.13
+              },
+              {
+                "stratum": "n>=80",
+                "n": 936,
+                "rel_pct": -1.7
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        }
+      },
+      "tiebreak": {
+        "V4_vs_V2": {
+          "rel_pct": -1.428,
+          "ci95_pct": [
+            -2.177,
+            -0.68
+          ],
+          "big_clearly_better": true
+        },
+        "V4_vs_V3": {
+          "rel_pct": -0.412,
+          "ci95_pct": [
+            -1.054,
+            0.23
+          ],
+          "big_clearly_better": false
+        },
+        "V5_vs_V1": {
+          "rel_pct": -1.435,
+          "ci95_pct": [
+            -2.106,
+            -0.763
+          ],
+          "big_clearly_better": true
+        },
+        "V5_vs_V3": {
+          "rel_pct": -1.373,
+          "ci95_pct": [
+            -1.978,
+            -0.769
+          ],
+          "big_clearly_better": true
+        }
+      }
+    },
+    "goal": {
+      "family": "Goal >=1",
+      "n_eligible_validation_rows": 48422,
+      "frozen_params": {
+        "g": 1,
+        "K": 40
+      },
+      "variants": {
+        "B0": {
+          "desc": "production baseline: shrinkageFive(all prior)",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.1522,
+            "mean_pred": 0.1501,
+            "mean_gap": -0.0021,
+            "Brier": 0.12307,
+            "Brier_const_prior_rate": 0.12902,
+            "Brier_skill_vs_const": 0.0461,
+            "LogLoss": 0.4187,
+            "ECE10": 0.0241,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 19729,
+                "pred": 0.0466,
+                "act": 0.077
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 14308,
+                "pred": 0.1461,
+                "act": 0.1485
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 8617,
+                "pred": 0.2458,
+                "act": 0.2277
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 4276,
+                "pred": 0.3423,
+                "act": 0.2862
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 1296,
+                "pred": 0.4399,
+                "act": 0.365
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 193,
+                "pred": 0.5282,
+                "act": 0.3368
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 3,
+                "pred": 0.6068,
+                "act": 0
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 1492,
+              "pred": 0.452,
+              "act": 0.361
+            },
+            "tail_p_lt_0p10": {
+              "n": 19729,
+              "pred": 0.047,
+              "act": 0.077
+            }
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": null,
+          "class": "BASELINE"
+        },
+        "B1": {
+          "desc": "opponent shots-allowed environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.1522,
+            "mean_pred": 0.1442,
+            "mean_gap": -0.008,
+            "Brier": 0.12284,
+            "Brier_const_prior_rate": 0.12902,
+            "Brier_skill_vs_const": 0.0479,
+            "LogLoss": 0.4186,
+            "ECE10": 0.0224,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 20522,
+                "pred": 0.0464,
+                "act": 0.0778
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 14435,
+                "pred": 0.1455,
+                "act": 0.1517
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 8361,
+                "pred": 0.245,
+                "act": 0.2392
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 3812,
+                "pred": 0.3412,
+                "act": 0.2859
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 1135,
+                "pred": 0.4385,
+                "act": 0.3859
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 148,
+                "pred": 0.5302,
+                "act": 0.3446
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 9,
+                "pred": 0.6106,
+                "act": 0.2222
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 1292,
+              "pred": 0.45,
+              "act": 0.38
+            },
+            "tail_p_lt_0p10": {
+              "n": 20522,
+              "pred": 0.046,
+              "act": 0.078
+            }
+          },
+          "share_rows_prediction_changed": 0.977,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.185,
+            "ci95_pct": [
+              -0.286,
+              -0.084
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.11
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.33
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.18
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.17
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.26
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -0.36
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.1
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.22
+              }
+            ]
+          },
+          "class": "CONTEXT ONLY"
+        },
+        "B2": {
+          "desc": "sample-size-aware shrinkage toward as-of position prior",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.1522,
+            "mean_pred": 0.1548,
+            "mean_gap": 0.0026,
+            "Brier": 0.12195,
+            "Brier_const_prior_rate": 0.12902,
+            "Brier_skill_vs_const": 0.0548,
+            "LogLoss": 0.3991,
+            "ECE10": 0.0061,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 15358,
+                "pred": 0.0577,
+                "act": 0.0632
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 19204,
+                "pred": 0.1468,
+                "act": 0.1433
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 10059,
+                "pred": 0.2436,
+                "act": 0.2402
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 3238,
+                "pred": 0.3382,
+                "act": 0.3113
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 546,
+                "pred": 0.4305,
+                "act": 0.3938
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 17,
+                "pred": 0.5178,
+                "act": 0.3529
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 563,
+              "pred": 0.433,
+              "act": 0.393
+            },
+            "tail_p_lt_0p10": {
+              "n": 15358,
+              "pred": 0.058,
+              "act": 0.063
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": -0.913,
+            "ci95_pct": [
+              -1.049,
+              -0.777
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -1.03
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.82
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.83
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.8
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -1.41
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -1.51
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -1.05
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.8
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        },
+        "B3": {
+          "desc": "EB shrinkage + opponent environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.1522,
+            "mean_pred": 0.1487,
+            "mean_gap": -0.0035,
+            "Brier": 0.12184,
+            "Brier_const_prior_rate": 0.12902,
+            "Brier_skill_vs_const": 0.0556,
+            "LogLoss": 0.3988,
+            "ECE10": 0.0058,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 16531,
+                "pred": 0.0578,
+                "act": 0.0652
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 19216,
+                "pred": 0.1464,
+                "act": 0.1479
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 9395,
+                "pred": 0.2425,
+                "act": 0.2503
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 2810,
+                "pred": 0.3376,
+                "act": 0.3221
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 451,
+                "pred": 0.4288,
+                "act": 0.4102
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 19,
+                "pred": 0.5202,
+                "act": 0.3158
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 470,
+              "pred": 0.432,
+              "act": 0.406
+            },
+            "tail_p_lt_0p10": {
+              "n": 16531,
+              "pred": 0.058,
+              "act": 0.065
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.999,
+            "ci95_pct": [
+              -1.185,
+              -0.814
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -1.04
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -1.05
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.91
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.88
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -1.54
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -1.96
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -1.11
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.88
+              }
+            ]
+          },
+          "class": "SUPERSEDED BY SIMPLER (B2)"
+        }
+      },
+      "tiebreak": {
+        "B3_vs_B1": {
+          "rel_pct": -0.816,
+          "ci95_pct": [
+            -0.95,
+            -0.682
+          ],
+          "big_clearly_better": true
+        },
+        "B3_vs_B2": {
+          "rel_pct": -0.087,
+          "ci95_pct": [
+            -0.185,
+            0.012
+          ],
+          "big_clearly_better": false
+        }
+      }
+    },
+    "assist": {
+      "family": "Assist >=1",
+      "n_eligible_validation_rows": 48422,
+      "frozen_params": {
+        "g": 1,
+        "K": 20
+      },
+      "variants": {
+        "B0": {
+          "desc": "production baseline: shrinkageFive(all prior)",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.2401,
+            "mean_pred": 0.2381,
+            "mean_gap": -0.0021,
+            "Brier": 0.17413,
+            "Brier_const_prior_rate": 0.18247,
+            "Brier_skill_vs_const": 0.0457,
+            "LogLoss": 0.5362,
+            "ECE10": 0.0311,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 7397,
+                "pred": 0.0651,
+                "act": 0.1267
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 14304,
+                "pred": 0.1508,
+                "act": 0.1751
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 12784,
+                "pred": 0.2476,
+                "act": 0.239
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 7579,
+                "pred": 0.3456,
+                "act": 0.3159
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 4122,
+                "pred": 0.4443,
+                "act": 0.3976
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 1680,
+                "pred": 0.5398,
+                "act": 0.4601
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 456,
+                "pred": 0.6393,
+                "act": 0.5702
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 95,
+                "pred": 0.7307,
+                "act": 0.6526
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 5,
+                "pred": 0.8095,
+                "act": 0.4
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 6358,
+              "pred": 0.488,
+              "act": 0.43
+            },
+            "tail_p_lt_0p10": {
+              "n": 7397,
+              "pred": 0.065,
+              "act": 0.127
+            }
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": null,
+          "class": "BASELINE"
+        },
+        "B1": {
+          "desc": "opponent shots-allowed environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.2401,
+            "mean_pred": 0.2292,
+            "mean_gap": -0.0109,
+            "Brier": 0.17369,
+            "Brier_const_prior_rate": 0.18247,
+            "Brier_skill_vs_const": 0.0482,
+            "LogLoss": 0.5357,
+            "ECE10": 0.0283,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 8148,
+                "pred": 0.065,
+                "act": 0.1264
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 14861,
+                "pred": 0.1506,
+                "act": 0.1809
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 12552,
+                "pred": 0.2468,
+                "act": 0.2434
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 7215,
+                "pred": 0.345,
+                "act": 0.3246
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 3736,
+                "pred": 0.4439,
+                "act": 0.4117
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 1437,
+                "pred": 0.539,
+                "act": 0.4746
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 392,
+                "pred": 0.6409,
+                "act": 0.6071
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 80,
+                "pred": 0.7335,
+                "act": 0.6625
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 1,
+                "pred": 0.8444,
+                "act": 1
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 5646,
+              "pred": 0.486,
+              "act": 0.445
+            },
+            "tail_p_lt_0p10": {
+              "n": 8148,
+              "pred": 0.065,
+              "act": 0.126
+            }
+          },
+          "share_rows_prediction_changed": 0.994,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.254,
+            "ci95_pct": [
+              -0.384,
+              -0.123
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.19
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.25
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.34
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.22
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.33
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -0.44
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.25
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.24
+              }
+            ]
+          },
+          "class": "CONTEXT ONLY"
+        },
+        "B2": {
+          "desc": "sample-size-aware shrinkage toward as-of position prior",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.2401,
+            "mean_pred": 0.2447,
+            "mean_gap": 0.0046,
+            "Brier": 0.17307,
+            "Brier_const_prior_rate": 0.18247,
+            "Brier_skill_vs_const": 0.0515,
+            "LogLoss": 0.5266,
+            "ECE10": 0.0128,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 2255,
+                "pred": 0.0858,
+                "act": 0.106
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 17850,
+                "pred": 0.1531,
+                "act": 0.1616
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 15276,
+                "pred": 0.2462,
+                "act": 0.2355
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 7912,
+                "pred": 0.3441,
+                "act": 0.3298
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 3683,
+                "pred": 0.4422,
+                "act": 0.4203
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 1148,
+                "pred": 0.5373,
+                "act": 0.4965
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 261,
+                "pred": 0.6391,
+                "act": 0.5785
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 36,
+                "pred": 0.7313,
+                "act": 0.75
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 1,
+                "pred": 0.8006,
+                "act": 0
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 5129,
+              "pred": 0.476,
+              "act": 0.448
+            },
+            "tail_p_lt_0p10": {
+              "n": 2255,
+              "pred": 0.086,
+              "act": 0.106
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": -0.606,
+            "ci95_pct": [
+              -0.7,
+              -0.513
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.69
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.51
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.57
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.55
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.72
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -1.17
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.69
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.52
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        },
+        "B3": {
+          "desc": "EB shrinkage + opponent environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.2401,
+            "mean_pred": 0.2355,
+            "mean_gap": -0.0046,
+            "Brier": 0.17271,
+            "Brier_const_prior_rate": 0.18247,
+            "Brier_skill_vs_const": 0.0535,
+            "LogLoss": 0.5259,
+            "ECE10": 0.0094,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 2998,
+                "pred": 0.0849,
+                "act": 0.1084
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 18681,
+                "pred": 0.1518,
+                "act": 0.1662
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 14912,
+                "pred": 0.2455,
+                "act": 0.2435
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 7363,
+                "pred": 0.344,
+                "act": 0.3401
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 3263,
+                "pred": 0.442,
+                "act": 0.4327
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 934,
+                "pred": 0.5369,
+                "act": 0.5139
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 239,
+                "pred": 0.6362,
+                "act": 0.6151
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 31,
+                "pred": 0.7226,
+                "act": 0.7419
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 1,
+                "pred": 0.8166,
+                "act": 1
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 4468,
+              "pred": 0.474,
+              "act": 0.462
+            },
+            "tail_p_lt_0p10": {
+              "n": 2998,
+              "pred": 0.085,
+              "act": 0.108
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.818,
+            "ci95_pct": [
+              -0.975,
+              -0.66
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.83
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.73
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.87
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.73
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.99
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -1.95
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.94
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.67
+              }
+            ]
+          },
+          "class": "SUPERSEDED BY SIMPLER (B2)"
+        }
+      },
+      "tiebreak": {
+        "B3_vs_B1": {
+          "rel_pct": -0.565,
+          "ci95_pct": [
+            -0.658,
+            -0.473
+          ],
+          "big_clearly_better": true
+        },
+        "B3_vs_B2": {
+          "rel_pct": -0.213,
+          "ci95_pct": [
+            -0.345,
+            -0.08
+          ],
+          "big_clearly_better": false
+        }
+      }
+    },
+    "point": {
+      "family": "Point >=1",
+      "n_eligible_validation_rows": 48422,
+      "frozen_params": {
+        "g": 1,
+        "K": 10
+      },
+      "variants": {
+        "B0": {
+          "desc": "production baseline: shrinkageFive(all prior)",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.3476,
+            "mean_pred": 0.3446,
+            "mean_gap": -0.003,
+            "Brier": 0.20753,
+            "Brier_const_prior_rate": 0.2268,
+            "Brier_skill_vs_const": 0.085,
+            "LogLoss": 0.6069,
+            "ECE10": 0.0247,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 2420,
+                "pred": 0.0696,
+                "act": 0.1347
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 8639,
+                "pred": 0.155,
+                "act": 0.2006
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 10419,
+                "pred": 0.25,
+                "act": 0.2613
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 9791,
+                "pred": 0.3478,
+                "act": 0.3393
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 7486,
+                "pred": 0.4475,
+                "act": 0.4252
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 5367,
+                "pred": 0.5468,
+                "act": 0.5303
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 3178,
+                "pred": 0.6429,
+                "act": 0.5982
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 961,
+                "pred": 0.7373,
+                "act": 0.6972
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 161,
+                "pred": 0.827,
+                "act": 0.795
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 17153,
+              "pred": 0.535,
+              "act": 0.509
+            },
+            "tail_p_lt_0p10": {
+              "n": 2420,
+              "pred": 0.07,
+              "act": 0.135
+            }
+          },
+          "share_rows_prediction_changed": 0,
+          "feature_coverage": 1,
+          "vs_baseline": null,
+          "class": "BASELINE"
+        },
+        "B1": {
+          "desc": "opponent shots-allowed environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.3476,
+            "mean_pred": 0.3329,
+            "mean_gap": -0.0147,
+            "Brier": 0.20709,
+            "Brier_const_prior_rate": 0.2268,
+            "Brier_skill_vs_const": 0.0869,
+            "LogLoss": 0.6062,
+            "ECE10": 0.0214,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 2762,
+                "pred": 0.0698,
+                "act": 0.1401
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 9232,
+                "pred": 0.1541,
+                "act": 0.1976
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 10954,
+                "pred": 0.2501,
+                "act": 0.2756
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 9493,
+                "pred": 0.3479,
+                "act": 0.3453
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 7269,
+                "pred": 0.447,
+                "act": 0.4453
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 5064,
+                "pred": 0.5467,
+                "act": 0.5393
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 2725,
+                "pred": 0.6423,
+                "act": 0.6187
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 780,
+                "pred": 0.7379,
+                "act": 0.7179
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 142,
+                "pred": 0.8256,
+                "act": 0.7676
+              },
+              {
+                "bin": "0.9-1.0",
+                "n": 1,
+                "pred": 0.9035,
+                "act": 1
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 15981,
+              "pred": 0.529,
+              "act": 0.521
+            },
+            "tail_p_lt_0p10": {
+              "n": 2762,
+              "pred": 0.07,
+              "act": 0.14
+            }
+          },
+          "share_rows_prediction_changed": 0.996,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.212,
+            "ci95_pct": [
+              -0.391,
+              -0.034
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.15
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.21
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.3
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.17
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.3
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -0.49
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.19
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.2
+              }
+            ]
+          },
+          "class": "CONTEXT ONLY"
+        },
+        "B2": {
+          "desc": "sample-size-aware shrinkage toward as-of position prior",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.3476,
+            "mean_pred": 0.3511,
+            "mean_gap": 0.0035,
+            "Brier": 0.20687,
+            "Brier_const_prior_rate": 0.2268,
+            "Brier_skill_vs_const": 0.0879,
+            "LogLoss": 0.6019,
+            "ECE10": 0.0125,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 662,
+                "pred": 0.0879,
+                "act": 0.1118
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 7970,
+                "pred": 0.1586,
+                "act": 0.1837
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 12050,
+                "pred": 0.2499,
+                "act": 0.2501
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 10788,
+                "pred": 0.3478,
+                "act": 0.3374
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 7881,
+                "pred": 0.4469,
+                "act": 0.4288
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 5396,
+                "pred": 0.5461,
+                "act": 0.5424
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 2847,
+                "pred": 0.6413,
+                "act": 0.6066
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 728,
+                "pred": 0.7383,
+                "act": 0.7253
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 100,
+                "pred": 0.8226,
+                "act": 0.79
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 16952,
+              "pred": 0.526,
+              "act": 0.51
+            },
+            "tail_p_lt_0p10": {
+              "n": 662,
+              "pred": 0.088,
+              "act": 0.112
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 1,
+          "vs_baseline": {
+            "rel_pct": -0.32,
+            "ci95_pct": [
+              -0.395,
+              -0.246
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.37
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.18
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.35
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.26
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.45
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -0.97
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.37
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.24
+              }
+            ]
+          },
+          "class": "CONTEXT ONLY"
+        },
+        "B3": {
+          "desc": "EB shrinkage + opponent environment",
+          "metrics": {
+            "n": 48422,
+            "base_rate": 0.3476,
+            "mean_pred": 0.339,
+            "mean_gap": -0.0086,
+            "Brier": 0.20642,
+            "Brier_const_prior_rate": 0.2268,
+            "Brier_skill_vs_const": 0.0899,
+            "LogLoss": 0.601,
+            "ECE10": 0.0112,
+            "calibration_by_probability_decile": [
+              {
+                "bin": "0.0-0.1",
+                "n": 879,
+                "pred": 0.0864,
+                "act": 0.1115
+              },
+              {
+                "bin": "0.1-0.2",
+                "n": 8932,
+                "pred": 0.1575,
+                "act": 0.1843
+              },
+              {
+                "bin": "0.2-0.3",
+                "n": 12408,
+                "pred": 0.25,
+                "act": 0.2619
+              },
+              {
+                "bin": "0.3-0.4",
+                "n": 10498,
+                "pred": 0.3473,
+                "act": 0.3437
+              },
+              {
+                "bin": "0.4-0.5",
+                "n": 7627,
+                "pred": 0.4467,
+                "act": 0.4527
+              },
+              {
+                "bin": "0.5-0.6",
+                "n": 5008,
+                "pred": 0.5462,
+                "act": 0.5509
+              },
+              {
+                "bin": "0.6-0.7",
+                "n": 2367,
+                "pred": 0.6406,
+                "act": 0.6333
+              },
+              {
+                "bin": "0.7-0.8",
+                "n": 619,
+                "pred": 0.7379,
+                "act": 0.7334
+              },
+              {
+                "bin": "0.8-0.9",
+                "n": 84,
+                "pred": 0.8231,
+                "act": 0.7738
+              }
+            ],
+            "tail_p_ge_0p40": {
+              "n": 15705,
+              "pred": 0.521,
+              "act": 0.524
+            },
+            "tail_p_lt_0p10": {
+              "n": 879,
+              "pred": 0.086,
+              "act": 0.111
+            }
+          },
+          "share_rows_prediction_changed": 1,
+          "feature_coverage": 0.997,
+          "vs_baseline": {
+            "rel_pct": -0.534,
+            "ci95_pct": [
+              -0.726,
+              -0.342
+            ],
+            "blocks": [
+              {
+                "block": "2024-10..2024-12",
+                "n": 20554,
+                "rel_pct": -0.51
+              },
+              {
+                "block": "2025-01..2025-02",
+                "n": 12028,
+                "rel_pct": -0.41
+              },
+              {
+                "block": "2025-03..2025-06",
+                "n": 15840,
+                "rel_pct": -0.66
+              }
+            ],
+            "positions": [
+              {
+                "pos": "F",
+                "n": 32072,
+                "rel_pct": -0.44
+              },
+              {
+                "pos": "D",
+                "n": 16350,
+                "rel_pct": -0.74
+              }
+            ],
+            "history_strata": [
+              {
+                "stratum": "n<40",
+                "n": 2913,
+                "rel_pct": -1.74
+              },
+              {
+                "stratum": "40-99",
+                "n": 17248,
+                "rel_pct": -0.59
+              },
+              {
+                "stratum": "n>=100",
+                "n": 28261,
+                "rel_pct": -0.4
+              }
+            ]
+          },
+          "class": "HOLDOUT CANDIDATE"
+        }
+      },
+      "tiebreak": {
+        "B3_vs_B1": {
+          "rel_pct": -0.323,
+          "ci95_pct": [
+            -0.395,
+            -0.25
+          ],
+          "big_clearly_better": true
+        },
+        "B3_vs_B2": {
+          "rel_pct": -0.215,
+          "ci95_pct": [
+            -0.397,
+            -0.033
+          ],
+          "big_clearly_better": false
+        }
+      }
+    }
+  },
+  "guard": {
+    "queries": 6,
+    "rowsSeen": 414364,
+    "allowedSeasons": [
+      2024,
+      2025
+    ],
+    "maxDate": "2025-07-31"
+  }
+}

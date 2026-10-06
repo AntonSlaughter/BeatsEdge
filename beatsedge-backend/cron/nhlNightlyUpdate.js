@@ -66,7 +66,7 @@ async function runNhlNightlyUpdate() {
 
   try {
     const materialized = await materializeNhlProjections();
-    console.log(`[nhl-nightly] Projection materialization: ${materialized.rowsWritten} rows across families: ${materialized.families.join(', ')}.`);
+    console.log(`[nhl-nightly] Projection materialization (model ${materialized.modelVersion}): ${materialized.rowsWritten} rows across families: ${materialized.families.join(', ')}; ${materialized.teamContextRows} team opponent-context rows.`);
   } catch (matErr) {
     console.error('[nhl-nightly] Projection materialization FAILED (previous materialized snapshot left untouched):', matErr.message);
   }

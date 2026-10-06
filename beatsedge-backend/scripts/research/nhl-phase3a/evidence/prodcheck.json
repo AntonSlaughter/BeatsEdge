@@ -1,0 +1,56 @@
+{
+  "cutoff": "2025-02-28",
+  "report": {
+    "shots_on_goal": {
+      "players_replay": 871,
+      "players_production": 871,
+      "missing_in_production": 0,
+      "extra_in_production": 0,
+      "max_abs_diff": 0,
+      "players_with_any_diff": 0,
+      "gamesSampled_mismatch": 0,
+      "EXACT_MATCH": true
+    },
+    "goalie_saves": {
+      "players_replay": 85,
+      "players_production": 85,
+      "missing_in_production": 0,
+      "extra_in_production": 0,
+      "max_abs_diff": 0,
+      "players_with_any_diff": 0,
+      "gamesSampled_mismatch": 0,
+      "EXACT_MATCH": true
+    },
+    "goals_at_least_1": {
+      "players_replay": 833,
+      "players_production": 833,
+      "missing_in_production": 0,
+      "extra_in_production": 0,
+      "max_abs_diff": 0,
+      "players_with_any_diff": 0,
+      "gamesSampled_mismatch": 0,
+      "EXACT_MATCH": true
+    },
+    "assists_at_least_1": {
+      "players_replay": 833,
+      "players_production": 833,
+      "missing_in_production": 0,
+      "extra_in_production": 0,
+      "max_abs_diff": 0,
+      "players_with_any_diff": 0,
+      "gamesSampled_mismatch": 0,
+      "EXACT_MATCH": true
+    },
+    "points_at_least_1": {
+      "players_replay": 833,
+      "players_production": 833,
+      "missing_in_production": 0,
+      "extra_in_production": 0,
+      "max_abs_diff": 0,
+      "players_with_any_diff": 0,
+      "gamesSampled_mismatch": 0,
+      "EXACT_MATCH": true
+    }
+  },
+  "allOk": true
+}

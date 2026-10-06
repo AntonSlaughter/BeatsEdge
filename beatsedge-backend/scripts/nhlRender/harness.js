@@ -71,6 +71,25 @@ function projectionsPayload() {
   return { date: '2026-10-05', source: 'render-test fixture', projections: P };
 }
 
+// NHL model v2 payload shape (lib/nhlModel.js): opponent-independent values + baseLambda, model metadata, and the opponent context.
+// kind 'v2' => context present for PHI/BOS/TOR but NOT MTL (so Ceci's opponent has no context => fail-closed fallback);
+// kind 'v2-nocontext' => opponentContext null (a broken/empty context table must not break the board).
+const M = require(path.join(__dirname, '..', '..', 'lib', 'nhlModel'));
+const V2_BASE = { sog: { pesce: 1.16, kulak: 1.07, bouchard: 2.8, ceci: 0.92, nurse: 2.02, empty: 2.0 }, saves: 21.5, point: { pesce: 0.21, kulak: 0.14, bouchard: 0.9, ceci: 0.22, nurse: 0.21 } };
+const V2_CONTEXT = { PHI: { games: 40, allowed: 1.2, offense: 0.95 }, BOS: { games: 40, allowed: 0.9, offense: 1.1 }, TOR: { games: 40, allowed: 1.05, offense: 1.0 } };
+function projectionsPayloadV2(kind) {
+  const ver = M.NHL_MODEL_VERSION;
+  const row = (p, extra) => ({ playerId: p.id, playerName: p.proj, team: p.team, projection: null, probability: null, baseLambda: null, gamesSampled: N_GAMES, restAdjusted: false, modelVersion: ver, ...extra });
+  const P = { shots_on_goal: [], goalie_saves: [], goals_at_least_1: [], assists_at_least_1: [], points_at_least_1: [] };
+  for (const k of ['pesce', 'kulak', 'bouchard', 'ceci', 'nurse', 'empty']) P.shots_on_goal.push(row(PL[k], { projection: V2_BASE.sog[k], baseLambda: V2_BASE.sog[k] }));
+  P.goalie_saves.push(row(PL.goalie, { projection: V2_BASE.saves, baseLambda: V2_BASE.saves }));
+  P.goals_at_least_1.push(row(PL.pesce, { probability: 0.023 }));
+  P.assists_at_least_1.push(row(PL.pesce, { probability: 0.172 }));
+  for (const k of ['pesce', 'kulak', 'bouchard', 'ceci', 'nurse']) P.points_at_least_1.push(row(PL[k], { probability: M.probabilityFromLambda(V2_BASE.point[k]), baseLambda: V2_BASE.point[k] }));
+  return { date: '2026-10-05', source: 'render-test fixture (v2)', model: { version: ver, specSha256: M.NHL_MODEL_SPEC_SHA256, opponentAdjustment: M.opponentAdjustmentMeta() }, projections: P,
+    opponentContext: kind === 'v2-nocontext' ? null : { asOf: '2026-10-04', leagueAvgShotsPerTeamGame: 29.5, leagueTeamGames: 2400, modelVersion: ver, teams: V2_CONTEXT } };
+}
+
 function mockBoard() {
   const ev = 'EV1', byNorm = {};
   const row = (name, home, away, line, extra = {}) => ({ playerRaw: name, homeTeam: home, awayTeam: away, commenceTimeMs: Date.now() + 3 * 3600e3, line, over: -115, under: -105, primary: true, period: 'FULL', projectionType: 'STANDARD', eventId: ev, ...extra });
@@ -118,7 +137,7 @@ async function startHarness(opts = {}) {
   const store = require('../../lib/historicalStore');
   if (store.backend !== 'sqlite') throw new Error('harness safety: historicalStore is not local sqlite (' + store.backend + ') -- refusing to run');
   if (!seeded) { await seed(store); seeded = true; } // one temp DB per process, several page scenarios share it
-  const state = { mode: 'normal', historyRequests: [] };
+  const state = { mode: 'normal', payload: opts.payload || 'legacy', historyRequests: [] };
   const app = express();
   app.use(['/api/parlayapi', '/api/propline'], (req, res) => res.status(503).json({ status: 'unavailable', reason: 'render-test: third-party passthrough disabled' }));
   app.get('/__test/mode/:m', (req, res) => { state.mode = req.params.m; res.json({ mode: state.mode }); });
@@ -129,7 +148,7 @@ async function startHarness(opts = {}) {
     if (state.mode === 'http500') return res.status(500).json({ error: 'simulated server error' });
     next();
   });
-  app.get('/api/nhl/player-projections', (req, res) => res.json(projectionsPayload()));
+  app.get('/api/nhl/player-projections', (req, res) => res.json(state.payload === 'legacy' ? projectionsPayload() : projectionsPayloadV2(state.payload)));
   app.use('/api', require(path.join(ROOT, 'routes', 'api')));
   app.get('/', (req, res) => {
     try { res.set('Content-Type', 'text/html; charset=utf-8').send(patchHtml(fs.readFileSync(path.join(ROOT, 'BeatsEdge.html'), 'utf8'), opts)); }
@@ -147,4 +166,4 @@ async function startHarness(opts = {}) {
 let seeded = false;
 function cleanup() { try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (e) { /* sqlite handles may still be open on Windows; the dir is in the OS temp folder */ } }
 
-module.exports = { startHarness, cleanup, PL, EXPECTED_CARDS, DATA_DIR };
+module.exports = { startHarness, cleanup, PL, EXPECTED_CARDS, DATA_DIR, V2_BASE, V2_CONTEXT };

@@ -6275,6 +6275,22 @@
             );
         }
 
+        // NHL model v2 -- the FROZEN opponent adjustment (lib/nhlModel.js applyOpponent; scripts/test-nhl-model-parity.js extracts
+        // THIS function and fails if it ever disagrees with the server's). It only multiplies the API's materialized baseLambda by
+        // 1 + strength*(ratio - 1), with factor/strength taken from the API's model metadata (no constants here). If the metadata, the
+        // ratio, or baseLambda is missing/non-finite, the UNADJUSTED value is returned (adjusted:false) -- never a guessed factor.
+        // Binary output: P = 1 - exp(-max(0, lambda)).
+        function nhlAdjustForOpponent(row, meta, teamEntry) {
+            const same = { projection: row ? row.projection : null, probability: row ? row.probability : null, adjusted: false };
+            if (!row || !meta || row.baseLambda == null) return same;
+            const ratio = teamEntry ? teamEntry[meta.factor] : null;
+            if (ratio == null || !Number.isFinite(ratio) || !meta.strength) return same;
+            const lam = row.baseLambda * (1 + meta.strength * (ratio - 1));
+            return meta.output === 'probability'
+                ? { projection: null, probability: 1 - Math.exp(-Math.max(0, lam)), adjusted: true }
+                : { projection: lam, probability: null, adjusted: true };
+        }
+
         // The dedicated "Injuries" page — plain-English: who's hurt, how fresh
         // the report is (that's the edge — act before the line moves), and who
         // stands to absorb the vacated playing time.
@@ -16071,12 +16087,16 @@
                 // matchKey (initial.lastname) -> candidate real projections,
                 // grouped by team for the same team-corroboration collision
                 // guard every other sport's roster join already uses.
+                // NHL model v2: opponent-independent values + the API's opponent context. Absent/old-backend/unreadable context
+                // => both stay null and NO opponent factor is applied (the frozen fallback), never a guessed one.
+                const nhlOppMeta = (projRes.model && projRes.model.opponentAdjustment) || null;
+                const nhlOppTeams = (projRes.opponentContext && projRes.opponentContext.teams) || null;
                 const projByMatchKey = {};
                 Object.entries(projRes.projections || {}).forEach(([statKey, rows]) => {
                     (rows || []).forEach(r => {
                         const mk = nhlMatchKey(r.playerName);
                         if (!mk) return;
-                        (projByMatchKey[mk] = projByMatchKey[mk] || []).push({ playerId: r.playerId, team: r.team, statKey, projection: r.projection, probability: r.probability, gamesSampled: r.gamesSampled, restAdjusted: r.restAdjusted });
+                        (projByMatchKey[mk] = projByMatchKey[mk] || []).push({ playerId: r.playerId, team: r.team, statKey, projection: r.projection, probability: r.probability, baseLambda: r.baseLambda == null ? null : r.baseLambda, modelVersion: r.modelVersion || null, gamesSampled: r.gamesSampled, restAdjusted: r.restAdjusted });
                     });
                 });
 
@@ -16157,12 +16177,27 @@
                     const statsByStatKey = {};
                     (resolvedStats || []).forEach(c => { statsByStatKey[c.statKey] = c; });
 
+                    // Team + real opponent are resolved BEFORE the props are built because the v2 model's opponent factor needs them.
+                    const team = (resolvedStats && resolvedStats[0] && resolvedStats[0].team) || null;
+                    // Real opponent, from the real provider row's own
+                    // home/away teams (already captured above) -- whichever
+                    // side isn't this player's own team. Left null (never
+                    // guessed) if the team can't be resolved.
+                    const opponent = team && homeTeam && awayTeam
+                        ? (team === homeTeam ? awayTeam : team === awayTeam ? homeTeam : null)
+                        : null;
+                    const oppEntry = (opponent && nhlOppTeams) ? (nhlOppTeams[opponent] || null) : null;
+
                     const props = [];
                     Object.entries(byStat).forEach(([statKey, byBook]) => {
                         const arr = byBook[wantBook] || Object.values(byBook)[0] || [];
                         const pr = arr.find(e => e.primary) || arr[0];
                         if (!pr) return;
-                        const model = statsByStatKey[statKey];
+                        // `model` is the frozen v2 value for THIS player vs THIS opponent: the materialized value, with the opponent
+                        // factor applied only where the API supplied one (SOG / Saves / Point) and the opponent's context exists.
+                        const baseModel = statsByStatKey[statKey];
+                        const oppAdj = baseModel ? nhlAdjustForOpponent(baseModel, nhlOppMeta && nhlOppMeta[statKey], oppEntry) : null;
+                        const model = baseModel ? { ...baseModel, projection: oppAdj.projection, probability: oppAdj.probability } : baseModel;
                         const isSupported = SUPPORTED_STAT_KEYS.has(statKey) && !!model;
                         const rawMarket = pr.rawMarket || (SUPPORTED_STAT_KEYS.has(statKey) ? null : statKey);
                         props.push({
@@ -16200,17 +16235,13 @@
                             edge: isSupported && model.projection != null ? Math.round((model.projection - pr.line) * 100) / 100 : null,
                             restAdjusted: model ? !!model.restAdjusted : false,
                             gamesSampled: model ? model.gamesSampled : null,
+                            // Provenance (diagnostic, not displayed): which model generated the numbers above and whether the opponent
+                            // factor was actually applied -- so any archived prediction can be traced to its model version.
+                            modelVersion: baseModel ? (baseModel.modelVersion || null) : null,
+                            opponentAdjusted: !!(oppAdj && oppAdj.adjusted),
                         });
                     });
                     if (!props.length) return;
-                    const team = (resolvedStats && resolvedStats[0] && resolvedStats[0].team) || null;
-                    // Real opponent, from the real provider row's own
-                    // home/away teams (already captured above) -- whichever
-                    // side isn't this player's own team. Left null (never
-                    // guessed) if the team can't be resolved.
-                    const opponent = team && homeTeam && awayTeam
-                        ? (team === homeTeam ? awayTeam : team === awayTeam ? homeTeam : null)
-                        : null;
                     built.push({
                         id: `nhl:${mk || playerRaw}`, name: playerRaw, sport: 'nhl', role: 'skill',
                         team, opponent,

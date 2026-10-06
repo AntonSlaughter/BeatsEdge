@@ -292,10 +292,24 @@ const SCHEMA_STATEMENTS = [
     projection REAL, probability REAL,
     games_sampled INTEGER, rest_adjusted INTEGER DEFAULT 0,
     model_version TEXT, latest_game_date TEXT,
+    base_lambda REAL,
     calculated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (player_id, stat_family)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_nhl_proj_family ON nhl_player_projections(stat_family)`,
+  // NHL model v2 (lib/nhlModel.js): `base_lambda` is the lambda the opponent factor multiplies (SOG, Saves, Point only; NULL for
+  // Goal/Assist and for rows written by the v1 model). Databases created before v2 get the column through
+  // nhlProjectionMaterializer.ensureModelColumns() on the WRITE path (ALTER is not repeatable here, and the read path tolerates its absence).
+  // nhl_team_context: one row per team, rebuilt nightly from nhl_player_box -- the opponent shot environment (last-15 shots allowed /
+  // shots for, as ratios to the league average) the frozen model applies once an upcoming opponent is known. Strictly "as of the latest stored game".
+  `CREATE TABLE IF NOT EXISTS nhl_team_context (
+    team TEXT PRIMARY KEY,
+    games INTEGER, latest_game_date TEXT,
+    sa15 REAL, sf15 REAL, league_avg REAL, league_games INTEGER,
+    allowed_ratio REAL, offense_ratio REAL,
+    as_of_date TEXT, model_version TEXT,
+    calculated_at TEXT DEFAULT (datetime('now'))
+  )`,
 
   `CREATE TABLE IF NOT EXISTS defense_by_position (
     sport TEXT NOT NULL, team TEXT NOT NULL, position TEXT NOT NULL, window_type TEXT NOT NULL,

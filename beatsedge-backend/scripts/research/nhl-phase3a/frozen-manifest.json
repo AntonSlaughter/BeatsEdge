@@ -1,0 +1,42 @@
+[
+  {
+    "file": "frozen-config.json",
+    "sha256": "0527985d73ff2b49798be29838b4eeaf29585d1c4f14e3e22f7abad9461b42f5"
+  },
+  {
+    "file": "guard.js",
+    "sha256": "b801aba8c70bd435590a08a1ff51aa3da6f57415e683ff5d115383c59bae497a"
+  },
+  {
+    "file": "lib.js",
+    "sha256": "1c4378549e47cb47d156a243c248fec76b57367251189df6d55b047947e6327c"
+  },
+  {
+    "file": "run.js",
+    "sha256": "bd0a58df33625635863ac1afa51d68b2310c518b2100dc97a928c41037d81325"
+  },
+  {
+    "file": "leakcheck.js",
+    "sha256": "340f4a1983e21c99be27d7f57196e396c18d8bd872ec7982053f2ca9c57bb099"
+  },
+  {
+    "file": "prodcheck.js",
+    "sha256": "b369ca25f6f8f592ebc87c0552409615fac90f28cab562d637dd328a8bf633a6"
+  },
+  {
+    "file": "tuned.json",
+    "sha256": "9a398db93a28e4ca19a0e59ffa7b7323e947649a12f3bea322d6f3c0888cce26"
+  },
+  {
+    "file": "validation.json",
+    "sha256": "c79f9bb24b3bc79f65d70d523fc2c5da93cd218fc20973a8b01dd9760345cec5"
+  },
+  {
+    "file": "leakcheck.json",
+    "sha256": "7667e04a328d68ab5d9a7f827f24e46b136e39c155ac2c487ddb432ad0d53547"
+  },
+  {
+    "file": "prodcheck.json",
+    "sha256": "4405717e802c951c4b7001dae4ef408785541d05e690abd2c68a4193470dbe4f"
+  }
+]

@@ -1,0 +1,52 @@
+{
+  "A_independent_rederivation": {
+    "detail": {
+      "sog": {
+        "sampled": 700,
+        "mismatches": 0
+      },
+      "saves": {
+        "sampled": 700,
+        "mismatches": 0
+      },
+      "goal": {
+        "sampled": 700,
+        "mismatches": 0
+      },
+      "assist": {
+        "sampled": 700,
+        "mismatches": 0
+      },
+      "point": {
+        "sampled": 700,
+        "mismatches": 0
+      }
+    },
+    "checked": 3500,
+    "mismatches": 0
+  },
+  "B_poison": {
+    "dates": [
+      "2025-03-16",
+      "2025-06-06",
+      "2025-01-01",
+      "2025-01-13",
+      "2025-05-17",
+      "2025-04-29",
+      "2025-05-03",
+      "2025-04-16"
+    ],
+    "compared": 3405,
+    "mismatches": 0
+  },
+  "PASS": true,
+  "guard": {
+    "queries": 6,
+    "rowsSeen": 414364,
+    "allowedSeasons": [
+      2024,
+      2025
+    ],
+    "maxDate": "2025-07-31"
+  }
+}

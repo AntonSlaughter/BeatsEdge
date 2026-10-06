@@ -1,13 +1,15 @@
-// NHL unlock project -- the exact validated projection formulas from
-// scripts/research-nhl-baselines.js / research-nhl-distributions.js /
-// research-nhl-features.js, reused verbatim (not retuned) for live
-// integration. Only the two MODEL_CANDIDATE stat families (Shots on
-// Goal, Goalie Saves) and the three BINARY_THRESHOLD_CONDITIONAL
-// families (Goals/Assists/Points, P(stat>=1) at line=0.5 only) are
-// implemented here. Nothing else -- see lib/nhlMarketMapping.js for the
-// full classification, which this module's outputs feed.
+// NHL projection engine.
+//
+// v1 (2026-09-29): shrinkage-5 / Poisson, exact formulas from scripts/research-nhl-*.js.
+// v2 (NHL_MODEL_VERSION, see lib/nhlModel.js): the FROZEN, 2026-confirmed model -- shrinkage-5 lambda0 (UNCHANGED, below) plus
+//   sample-size-aware shrinkage toward as-of league priors (Saves, Goal, Assist, Point) and an opponent shot-environment factor
+//   (SOG, Saves, Point). All v2 arithmetic lives in lib/nhlModel.js as pure functions; this file only loads rows and feeds them in.
+//
+// shrinkageFive / poissonPOver1 / savesProjection below are the production building blocks and are deliberately UNCHANGED:
+// they are the "lambda0" the frozen specification builds on.
 
 const store = require('./historicalStore');
+const M = require('./nhlModel');
 
 function mean(a) { return a.length ? a.reduce((s, x) => s + x, 0) / a.length : null; }
 
@@ -34,12 +36,23 @@ function trailingMean(values, n = 10) {
 function poissonPZero(lambda) { return Math.exp(-lambda); }
 function poissonPOver1(lambda) { return 1 - poissonPZero(lambda); }
 
+// `position` is read for the F/D league prior (v2). Goalies carry a null position.
 async function getPlayerGames(statColumn, extraWhere = '') {
   return store.query(`
-    SELECT player_id, player_name, team, game_date, season, ${statColumn} AS val
+    SELECT player_id, player_name, team, game_date, season, position, ${statColumn} AS val
     FROM nhl_player_box
     WHERE ${statColumn} IS NOT NULL ${extraWhere}
     ORDER BY player_id, game_date ASC
+  `);
+}
+
+// Team-game totals DERIVED FROM PLAYER ROWS (Σ skater shots_on_goal, Σ goalie saves) -- the live nightly sync writes no nhl_team_box,
+// so the opponent shot environment is built from the same table the player model already reads.
+async function getTeamGames() {
+  return store.query(`
+    SELECT game_id, team, opponent, game_date, SUM(shots_on_goal) AS sf, SUM(saves) AS sv
+    FROM nhl_player_box
+    GROUP BY game_id, team, opponent, game_date
   `);
 }
 
@@ -57,96 +70,58 @@ function groupByPlayer(rows) {
 // CORRECTED during integration: research-nhl-features.js's original
 // rest/back-to-back test was run on data polluted by goalies dressed but
 // never entering the game (saves=0/shots_against=0 rows for backups who
-// sat the whole game -- found via a live sanity-check on a suspiciously
-// low real projection, e.g. a real player showing a 3.8-save trailing
-// average despite games with 20-40 real saves in the same window). With
-// that filtered out (shots_against > 0, see getPlayerGames callers
-// below), the rest/back-to-back improvement all but disappears (real
-// re-run: 6.1112 vs 6.1211 baseline MAE, ~0.16% -- not a real, validated
-// signal, unlike the originally-reported 6.6%) while shrinkage-5 (the
-// SAME formula already validated for Shots on Goal) ties or slightly
-// beats plain trailing-10 on the corrected data. The rest/back-to-back
-// adjustment is therefore DROPPED from the live projection -- this is a
-// data-bug correction, not a retune of a fairly-validated result.
+// sat the whole game). With that filtered out (shots_against > 0), the
+// rest/back-to-back improvement all but disappears, so it is DROPPED;
+// shrinkage-5 is the Saves lambda0. `restAdjusted` is vestigial (always false).
 function savesProjection(games) {
   return { projection: shrinkageFive(games.map(g => g.val)), restAdjusted: false };
 }
 
-async function computeShotsOnGoalProjections(minPriorGames = 10) {
-  // No season whitelist here (unlike the research scripts' fixed 2024/
-  //2025/2026 TRAIN/VALIDATION/HOLDOUT split, which must stay fixed for
-  // reproducible backtesting): this is LIVE production, meant to use a
-  // player's most recent real games regardless of season, including the
-  // current in-progress season. A hardcoded season list would silently
-  // exclude every future season's real games the moment it began (caught
-  // live via scripts/test-nhl-projection-materializer.js: a real synced
-  // 2026-27-season game, season=2027 per api-web.nhle.com's own real
-  // ending-year field, was invisible to a `season IN (2024,2025,2026)`
-  // filter). Shrinkage-5's own L5-vs-season-mean weighting already does
-  // the real recency-handling; no season filter is needed for that.
-  const rows = await getPlayerGames('shots_on_goal', '');
-  const byPlayer = groupByPlayer(rows);
-  const out = [];
-  for (const [, rec] of byPlayer) {
-    if (rec.games.length < minPriorGames) continue;
-    const projection = shrinkageFive(rec.games.map(g => g.val));
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'shots_on_goal', projection, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
-  }
-  return out;
+const SKATER_SOURCES = { shots_on_goal: 'shots_on_goal', goals_at_least_1: 'goals', assists_at_least_1: 'assists', points_at_least_1: 'points' };
+
+// PURE (no DB): the v2 model from in-memory rows. Used by the nightly materializer (all stored rows, "as of now") and by the parity test
+// (same function, `asOfExclusive` = a historical target date => uses ONLY rows dated strictly before it).
+//   data = { skater: { shots_on_goal: rows, goals_at_least_1: rows, ... }, goalie: rows, teamGames: rows }
+//   rows = getPlayerGames() shape: {player_id, player_name, team, game_date, season, position, val}
+// Returns { projections, opponentContext }. Per-player rows are opponent-INDEPENDENT; opponentContext.teams[abbr] holds the factors
+// that M.applyOpponent() multiplies in once the upcoming opponent is known.
+function computeModelFromRows(data, { asOfExclusive } = {}) {
+  const cut = (rows) => asOfExclusive ? rows.filter(r => r.game_date < asOfExclusive) : rows;
+  const projections = {};
+  const emit = (family, rowsIn, kind) => {
+    const rows = cut(rowsIn); const spec = M.FAMILY_SPEC[family];
+    const prior = spec.eb ? M.buildPrior(rows, kind) : null;
+    const out = [];
+    for (const [, rec] of groupByPlayer(rows)) {
+      const n = rec.games.length; if (n < spec.minGames) continue;
+      const vals = rec.games.map(g => g.val); const last = rec.games[n - 1];
+      const lambda0 = family === 'goalie_saves' ? savesProjection(rec.games).projection : shrinkageFive(vals);
+      const mu = prior ? (kind === 'goalie' ? prior.ALL : prior[M.positionGroup(last.position)]) : null;
+      const o = M.familyOutput(family, { lambda0, n, mu });
+      out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: family, projection: o.projection, probability: o.probability, baseLambda: o.baseLambda,
+        restAdjusted: false, gamesSampled: n, latestGameDate: last.game_date, modelVersion: M.NHL_MODEL_VERSION });
+    }
+    projections[family] = out;
+  };
+  emit('shots_on_goal', data.skater.shots_on_goal, 'position');
+  emit('goalie_saves', data.goalie, 'goalie');
+  for (const f of ['goals_at_least_1', 'assists_at_least_1', 'points_at_least_1']) emit(f, data.skater[f], 'position');
+  return { projections, opponentContext: M.buildOpponentContext(data.teamGames, { asOfExclusive }) };
 }
 
-// STALE COMMENT REMOVED (2026-09-29): this function used to take an
-// isUpcomingB2BByTeam schedule-lookup parameter for a rest/back-to-back
-// adjustment. That adjustment is dropped -- see savesProjection's own
-// comment for the corrected finding. `restAdjusted` is now always false;
-// kept on the output shape only so existing callers don't need a shape
-// change, not because a rest adjustment is still applied.
-async function computeGoalieSavesProjections(minPriorGames = 8) {
-  // shots_against > 0 excludes goalies dressed but never actually
-  // entering the game (real data: saves=0/shots_against=0/goals_against=0
-  // rows for backups who sat the whole game) -- same real convention
-  // lib/nhlEngine.js already established for the OTHER NHL data source.
-  // No season whitelist -- see computeShotsOnGoalProjections' comment above.
-  const rows = await getPlayerGames('saves', 'AND shots_against > 0');
-  const byPlayer = groupByPlayer(rows);
-  const out = [];
-  for (const [, rec] of byPlayer) {
-    if (rec.games.length < minPriorGames) continue;
-    const { projection, restAdjusted } = savesProjection(rec.games);
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: 'goalie_saves', projection, restAdjusted, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
-  }
-  return out;
-}
-
-async function computeBinaryThresholdProjections(statColumn, statKeyOut, minPriorGames = 15) {
-  // No season whitelist -- see computeShotsOnGoalProjections' comment above.
-  const rows = await getPlayerGames(statColumn, '');
-  const byPlayer = groupByPlayer(rows);
-  const out = [];
-  for (const [, rec] of byPlayer) {
-    if (rec.games.length < minPriorGames) continue;
-    const lambda = shrinkageFive(rec.games.map(g => g.val));
-    const pOver1 = poissonPOver1(lambda);
-    out.push({ playerId: rec.player_id, playerName: rec.player_name, team: rec.team, statKey: statKeyOut, probability: pOver1, gamesSampled: rec.games.length, latestGameDate: rec.games[rec.games.length - 1].game_date });
-  }
-  return out;
-}
-
-// Bulk: everything the live pipeline needs in one call, keyed by
-// normalized player name (nflNormName-equivalent normalization is done
-// by the CALLER/frontend -- this returns raw player_name so the caller
-// controls its own normalization, consistent with how every other
-// sport's roster join already works in BeatsEdge.html).
-async function computeAllProjections() {
-  const [sog, saves, goals, assists, points] = await Promise.all([
-    computeShotsOnGoalProjections(),
-    computeGoalieSavesProjections(),
-    computeBinaryThresholdProjections('goals', 'goals_at_least_1'),
-    computeBinaryThresholdProjections('assists', 'assists_at_least_1'),
-    computeBinaryThresholdProjections('points', 'points_at_least_1'),
+// Live: load once, compute everything (projections + opponent context).
+async function computeAllModelOutputs() {
+  const [sog, saves, goals, assists, points, teamGames] = await Promise.all([
+    getPlayerGames('shots_on_goal'),
+    getPlayerGames('saves', 'AND shots_against > 0'),   // excludes goalies dressed but never entering the game
+    getPlayerGames('goals'), getPlayerGames('assists'), getPlayerGames('points'),
+    getTeamGames(),
   ]);
-  return { shots_on_goal: sog, goalie_saves: saves, goals_at_least_1: goals, assists_at_least_1: assists, points_at_least_1: points };
+  return computeModelFromRows({ skater: { shots_on_goal: sog, goals_at_least_1: goals, assists_at_least_1: assists, points_at_least_1: points }, goalie: saves, teamGames });
 }
+
+// Backwards-compatible entry point: per-family player rows (v2 opponent-independent values; see lib/nhlModel.js).
+async function computeAllProjections() { return (await computeAllModelOutputs()).projections; }
 
 // Real, chronological, full per-game history for ONE resolved player --
 // powers the frontend's historical detail modal (L5/L10/L15/L20/Season/
@@ -170,6 +145,5 @@ async function getPlayerGameHistory(playerId) {
 
 module.exports = {
   shrinkageFive, trailingMean, poissonPOver1, savesProjection,
-  computeShotsOnGoalProjections, computeGoalieSavesProjections, computeBinaryThresholdProjections,
-  computeAllProjections, getPlayerGameHistory,
+  computeModelFromRows, computeAllModelOutputs, computeAllProjections, getPlayerGameHistory,
 };

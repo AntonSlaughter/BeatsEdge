@@ -206,6 +206,42 @@ async function scenarioErrors(browser) {
   } finally { await page.close(); await harness.close(); }
 }
 
+// NHL model v2 (lib/nhlModel.js) rendered end-to-end: the API payload carries opponent-independent values + baseLambda + the opponent context,
+// the board applies the frozen factor for the real opponent, and the existing card/modal show the new numbers. Expected values are computed
+// with the SERVER's own applyOpponent (the parity test separately proves the frontend adjuster == server).
+async function scenarioV2(browser, kind) {
+  const MODEL = require('../../lib/nhlModel');
+  const harness = await H.startHarness({ payload: kind }); const { PL, EXPECTED_CARDS } = harness; const { V2_BASE, V2_CONTEXT } = H; const page = await openApp(browser, harness);
+  const r2 = (x) => Math.round(x * 100) / 100, signed = (x) => (x >= 0 ? '+' : '') + x;
+  const withCtx = kind === 'v2'; const ctxOf = (opp) => (withCtx ? V2_CONTEXT[opp] : undefined);
+  try {
+    await goNhlBrowse(page, EXPECTED_CARDS);
+    const txt = async (name, re) => await page.eval(`(__t.pill(${JSON.stringify(name)}, ${re}) || {innerText: ''}).innerText`);
+    // SOG (Pesce vs PHI): projection = lambda0 * allowed-factor ; Edge = projection - 1.5
+    const sog = MODEL.applyOpponent('shots_on_goal', V2_BASE.sog.pesce, ctxOf('PHI')).projection; const sogEdge = r2(r2(sog) === sog ? sog - 1.5 : sog - 1.5);
+    const t1 = await txt('Brett Pesce', '/SHOTS ON GOAL/i');
+    check(`V1[${kind}]: SOG pill shows the model projection ${r2(sog)} and Edge ${signed(Math.round((sog - 1.5) * 100) / 100)} (projection - provider line 1.5)`, t1.includes(`Model ${r2(sog)}`) && t1.includes(signed(Math.round((sog - 1.5) * 100) / 100)), t1);
+    // Saves (Bobrovsky TOR vs BOS): V5 offense factor at half strength
+    const sv = MODEL.applyOpponent('goalie_saves', V2_BASE.saves, ctxOf('BOS')).projection; const t2 = await txt('Sergei Bobrovsky', '/GOALIE SAVES/i');
+    check(`V2[${kind}]: Saves pill shows ${r2(sv)} and Edge ${signed(Math.round((sv - 24.5) * 100) / 100)} (projection - provider line 24.5)`, t2.includes(`Model ${r2(sv)}`) && t2.includes(signed(Math.round((sv - 24.5) * 100) / 100)), t2);
+    // Goal / Assist: probability only, never opponent-adjusted
+    const tg = await txt('Brett Pesce', '/ANYTIME GOAL/i'), ta = await txt('Brett Pesce', '/ASSIST/i');
+    check(`V3[${kind}]: Goal and Assist show their materialized probability (2.3% / 17.2%), unaffected by the opponent`, /Model Probability 2\.3%/.test(tg) && /Model Probability 17\.2%/.test(ta), { tg, ta });
+    // Point (Pesce vs PHI): P = 1 - exp(-lambda_eb * allowed-factor)
+    const pt = MODEL.applyOpponent('points_at_least_1', V2_BASE.point.pesce, ctxOf('PHI')).probability; const tp = await txt('Brett Pesce', '/POINT/i');
+    check(`V4[${kind}]: Point pill shows Model Probability ${(pt * 100).toFixed(1)}%`, tp.includes(`Model Probability ${(pt * 100).toFixed(1)}%`), tp);
+    // fail-closed: Ceci's opponent (MTL) has NO context entry => unadjusted values, board intact
+    const ceci = await txt('Cody Ceci', '/SHOTS ON GOAL/i'), ceciP = await txt('Cody Ceci', '/POINT/i');
+    check(`V5[${kind}]: a player whose opponent has no context (MTL) falls back to the unadjusted frozen value (SOG ${r2(V2_BASE.sog.ceci)}, Point ${(MODEL.probabilityFromLambda(V2_BASE.point.ceci) * 100).toFixed(1)}%) and still renders`, ceci.includes(`Model ${r2(V2_BASE.sog.ceci)}`) && ceciP.includes(`Model Probability ${(MODEL.probabilityFromLambda(V2_BASE.point.ceci) * 100).toFixed(1)}%`), { ceci, ceciP });
+    // detail modal shows the same adjusted number and edge; the product boundaries hold
+    await openPill(page, 'Brett Pesce', '/SHOTS ON GOAL/i'); await page.waitFor('__t.modal()', 10000, 'modal'); await page.waitFor("__t.hist() === 'loaded'", 20000, 'history'); await sleep(500);
+    const mt = await page.eval('__t.modalText()');
+    check(`V6[${kind}]: SOG detail modal shows the same projection (${r2(sog)}) and Edge, no grade/Prime/confluence, no version or validation claims`, mt.includes(String(r2(sog))) && mt.includes(signed(Math.round((sog - 1.5) * 100) / 100)) && (await page.eval('__t.gradeDom()')) === 0 && !/2026\.10|v2|validated|backtest|\d+(\.\d+)?%\s*(more )?(accurate|better)/i.test(mt + (await page.eval('document.querySelector(".players-grid").innerText'))), mt.slice(0, 200));
+    check(`V7[${kind}]: ${withCtx ? 'with context the unadjusted SOG value would DIFFER from the shown one (the factor really applied)' : 'with a null context every card shows the unadjusted value'}`, withCtx ? r2(sog) !== r2(V2_BASE.sog.pesce) : t1.includes(`Model ${r2(V2_BASE.sog.pesce)}`), { sog, base: V2_BASE.sog.pesce });
+    check(`V8[${kind}]: all ${EXPECTED_CARDS} cards render, no fatal errors`, (await page.eval('__t.cards()')) === EXPECTED_CARDS && fatalOf(page).length === 0, fatalOf(page));
+  } finally { await page.close(); await harness.close(); }
+}
+
 async function scenarioContaminated(browser) {
   const harness = await H.startHarness({ injectContaminatedStats: true }); const { PL, EXPECTED_CARDS } = harness; const page = await openApp(browser, harness);
   try {
@@ -234,7 +270,7 @@ async function scenarioNegativeControl(browser) {
   catch (e) { console.log(`SKIPPED (environment): ${e.message}. This is NOT a pass.`); process.exit(3); }
   console.log(`browser: ${browser.exe}`);
   try {
-    for (const [name, fn] of [['normal', scenarioNormal], ['empty', scenarioEmpty], ['errors', scenarioErrors], ['contaminated', scenarioContaminated], ['negative-control', scenarioNegativeControl]]) {
+    for (const [name, fn] of [['normal', scenarioNormal], ['empty', scenarioEmpty], ['errors', scenarioErrors], ['v2-with-context', (b) => scenarioV2(b, 'v2')], ['v2-null-context', (b) => scenarioV2(b, 'v2-nocontext')], ['contaminated', scenarioContaminated], ['negative-control', scenarioNegativeControl]]) {
       console.log(`\n--- scenario: ${name} ---`);
       try { await fn(browser); }
       catch (e) { if (e.code === 'NO_NETWORK') { console.log(`SKIPPED (environment): ${e.message}. This is NOT a pass.`); await browser.close(); H.cleanup(); process.exit(3); } failures++; console.log(`FAIL  scenario "${name}" threw: ${e.message}`); }

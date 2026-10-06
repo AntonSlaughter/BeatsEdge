@@ -675,7 +675,7 @@ router.get('/nhl/team-shooting/:team', async (req, res) => {
 router.get('/nhl/player-projections', async (req, res) => {
   try {
     const date = req.query.date || new Date().toISOString().slice(0, 10);
-    const { getMaterializedProjections } = require('../lib/nhlProjectionMaterializer');
+    const { getMaterializedProjections, getOpponentContext, modelMetadata } = require('../lib/nhlProjectionMaterializer');
     const projections = await getMaterializedProjections();
     const totalRows = Object.values(projections).reduce((s, arr) => s + arr.length, 0);
     if (totalRows === 0) {
@@ -684,7 +684,12 @@ router.get('/nhl/player-projections', async (req, res) => {
         projections: {},
       });
     }
-    res.json({ date, source: 'BeatsEdge computed (materialized from real fastRhockey-nhl-data)', projections });
+    // NHL model v2 (lib/nhlModel.js): per-player values are opponent-INDEPENDENT; `opponentContext` (one tiny materialized table, never
+    // computed here) carries each team's shot-environment ratios, and `model.opponentAdjustment` tells the client which factor/strength
+    // to apply per family once the upcoming opponent is known. A missing context (null) means clients apply NO opponent factor.
+    // Each row's `modelVersion` records which model generated it.
+    const opponentContext = await getOpponentContext();
+    res.json({ date, source: 'BeatsEdge computed (materialized from real fastRhockey-nhl-data)', model: modelMetadata(), projections, opponentContext });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

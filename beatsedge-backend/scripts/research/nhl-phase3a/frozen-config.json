@@ -1,0 +1,122 @@
+{
+  "spec_version": "NHL-FROZEN-2026-10-05",
+  "frozen_before": "any access to the 2026 holdout (season=2026, 2025-10-07..2026-06-14)",
+  "production_reference_commit": "b67957a",
+  "split": {
+    "TRAIN": 2024,
+    "VALIDATION": 2025,
+    "HOLDOUT": 2026,
+    "holdout_accessed_in_phase_3a": false
+  },
+  "tuned_on": "TRAIN (2024) only; tuned.json sha256 = 9a398db93a28e4ca19a0e59ffa7b7323e947649a12f3bea322d6f3c0888cce26",
+  "common_definitions": {
+    "history": "All stored nhl_player_box rows for the player with game_date STRICTLY BEFORE the target game date, all seasons, ordered by game_date ASC; stat value non-null (goalies: saves non-null AND shots_against > 0). n = number of such rows.",
+    "base_lambda": "lambda0 = shrinkageFive(values, k=8) = (n5*mean(last5) + 8*mean(all prior)) / (n5 + 8), n5 = min(5, n)  [lib/nhlProjectionEngine.js, unchanged]",
+    "team_game_table": "Per (game_id, team): sf = SUM(skater shots_on_goal), sv = SUM(goalie saves); sa = the OTHER team's sf in the same game; only games with exactly two team rows. Derived from nhl_player_box ONLY (no nhl_team_box).",
+    "league_avg": "L(D) = mean(sf) over ALL team-games dated strictly before D; unavailable (null) if fewer than 200 team-games.",
+    "opponent_context": "For opponent team O at date D: O's team-games dated strictly before D; unavailable if fewer than 10. sa15 = mean(sa) of the last <=15 of them; sf15 = mean(sf) of the last <=15 of them.",
+    "r_allowed": "r_allowed = sa15(O) / L(D)  (opponent shots-allowed environment); null if either input unavailable",
+    "r_offense": "r_offense = sf15(O) / L(D)  (opponent shots-for environment); null if either input unavailable",
+    "position_group": "'D' if nhl_player_box.position == 'D', else 'F' (C, L, R)",
+    "mu_pos": "mean of the SAME stat over ALL skater player-games (any player, any season) dated strictly before D within the target player's position group; null if fewer than 2000 such rows",
+    "mu_goalie": "mean saves over ALL goalie appearances (saves non-null, shots_against > 0) dated strictly before D; null if fewer than 200 such rows",
+    "eb": "eb(lambda, n, mu, K) = (n*lambda + K*mu) / (n + K); if mu is null or K == 0 returns lambda unchanged",
+    "opp": "opp(lambda, r, g) = lambda * (1 + g*(r - 1)); if r is null or g == 0 returns lambda unchanged",
+    "probability_transform": "P(stat >= 1) = 1 - exp(-max(0, lambda))  (unchanged Poisson transform)",
+    "edge": "Edge = projection - providerLine for SOG and Saves only, exactly as in production; no edge for binary families (unchanged)"
+  },
+  "minimum_history_games": {
+    "shots_on_goal": 10,
+    "goalie_saves": 8,
+    "goals_at_least_1": 15,
+    "assists_at_least_1": 15,
+    "points_at_least_1": 15,
+    "note": "unchanged production gates; denominators identical to production"
+  },
+  "fallback_behavior": "If ANY candidate input is unavailable for a game (opponent <10 prior games, league <200 team-games, prior pool too small), that input's adjustment is skipped and the production value for that component is used; no game is dropped. If all adjustments are skipped the output equals production exactly.",
+  "candidates": {
+    "shots_on_goal": {
+      "id": "S1",
+      "formula": "projection = opp(lambda0, r_allowed, g)",
+      "parameters": {
+        "g": 1
+      },
+      "window": "opponent last <=15 team-games, >=10 required",
+      "train_selection": "g in {0,0.5,1.0}; best TRAIN MAE"
+    },
+    "goalie_saves": {
+      "id": "V5",
+      "formula": "lambda1 = eb(lambda0, n, mu_goalie, K1);  projection = opp(lambda1, r_offense, g3)",
+      "parameters": {
+        "K1": 40,
+        "g3": 0.5
+      },
+      "window": "opponent last <=15 team-games, >=10 required",
+      "train_selection": "K1 in {0,10,20,40,80,160,320}; g3 in {0,0.5,1.0}; structure best-of(V2,V3,V4) = V3 by TRAIN MAE"
+    },
+    "goals_at_least_1": {
+      "id": "B2",
+      "formula": "lambda = eb(lambda0, n, mu_pos, K);  P = 1 - exp(-lambda)",
+      "parameters": {
+        "K": 40
+      },
+      "train_selection": "K in {0,10,20,40,80,160,320}; best TRAIN Brier"
+    },
+    "assists_at_least_1": {
+      "id": "B2",
+      "formula": "lambda = eb(lambda0, n, mu_pos, K);  P = 1 - exp(-lambda)",
+      "parameters": {
+        "K": 20
+      },
+      "train_selection": "same grid; best TRAIN Brier"
+    },
+    "points_at_least_1": {
+      "id": "B3",
+      "formula": "lambda = opp(eb(lambda0, n, mu_pos, K), r_allowed, g);  P = 1 - exp(-lambda)",
+      "parameters": {
+        "K": 10,
+        "g": 1
+      },
+      "window": "opponent last <=15 team-games, >=10 required",
+      "train_selection": "K grid as above; g in {0,0.5,1.0}; best TRAIN Brier",
+      "note": "marginal: passes the 0.5% bar by 0.034 pt; the simpler eb-only variant (B2) did NOT pass (-0.32%)"
+    }
+  },
+  "not_promoted": {
+    "shots_on_goal": [
+      "S2 EB position prior (TRAIN chose K=0 -> identical to production)",
+      "S3 (identical to S1)"
+    ],
+    "goalie_saves": [
+      "V1 (component of V5)",
+      "V2 pooling (context only)",
+      "V3 (component of V5)",
+      "V4 (not better than V3)"
+    ],
+    "goals_at_least_1": [
+      "B1 opp env alone (context)",
+      "B3 (not better than B2)"
+    ],
+    "assists_at_least_1": [
+      "B1 (context)",
+      "B3 (increment <0.25%)"
+    ],
+    "points_at_least_1": [
+      "B1 (context)",
+      "B2 (context, -0.32%)"
+    ]
+  },
+  "holdout_protocol_PREREGISTERED": {
+    "run_once": true,
+    "retuning_after_opening": "FORBIDDEN -- every parameter above is final; a failing family stays on production and is not re-tuned or re-specified",
+    "data": "season=2026 rows only for outcomes (history for features includes all earlier stored games, strictly as-of); same eligibility gates and denominators as production",
+    "metric": {
+      "shots_on_goal": "MAE",
+      "goalie_saves": "MAE",
+      "binary": "Brier"
+    },
+    "inference": "paired per-row loss difference vs production, SE clustered by game date; Bonferroni across the 5 families -> two-sided 99% CI (z=2.576)",
+    "pass_rule": "PASS iff 99% CI upper bound < 0 AND relative improvement <= -0.25% (half the promotion bar) AND (binary) ECE not worse by more than 0.005 AND (continuous) |bias| not worse by more than 0.05*mean(actual)",
+    "consistency_reported_not_gated": "time blocks, F/D, history strata"
+  }
+}
