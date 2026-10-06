@@ -7,7 +7,7 @@
 //   3. missing history still fails closed for NBA;
 //   4. LIVE = BACKTEST: one model implementation, inputs built by the live builders, and a live-shaped player (with every defense input the
 //      live path supplies) scores bit-identically to the historical-shaped player (none of them);
-//   5. WNBA is intentionally UNCHANGED (needs its own validation) -- pinned so a change there is deliberate;
+//   5. WNBA: only the 2026-10-06 integrity changes (see scripts/test-wnba-integrity.js); its weights/cap/calibration are still unvalidated -- pinned so a change there is deliberate;
 //   6. model-version / trace metadata (defense feature = NONE) is present and honest about the calibration in force.
 //
 //   node scripts/test-nba-defense-removed-and-parity.js
@@ -89,7 +89,7 @@ console.log('\n# 2. matchup defense stays available as presentation-only context
   check('similar-ranked-defense split FIRES on the crafted fixture and appears only as context for NBA', (simE.context || []).some(x => x.key === 'simdef' && x.contextOnly) && !simE.factors.some(f => f.key === 'simdef'));
   const wSim = synthPlayer(31, 60); wSim.sport = 'wnba'; wSim.gameLogByKey.points.forEach(g => { g.points = (g.oppRank != null && g.oppRank <= 9) ? 34 : 8; });
   const wE = m.calculateEdgeScore(wSim, prop('points', 20.5, 'over'));
-  check('WNBA: the same split is still a MODEL factor (unchanged; REQUIRES SEPARATE VALIDATION)', wE.factors.some(f => f.key === 'simdef') && !(wE.context || []).some(x => x.key === 'simdef'));
+  check('WNBA (2026-10-06 integrity phase): the same split is now context-only too -- placebo-equivalent, not a defense signal (see scripts/test-wnba-integrity.js)', !wE.factors.some(f => f.key === 'simdef') && (wE.context || []).some(x => x.key === 'simdef' && x.contextOnly));
   const ui = html.indexOf('const facBy = (k) => (edge.factors || []).find(f => f.key === k) || (edge.context || []).find(f => f.key === k);');
   check('UI: research modal reads context items (matchup section keeps its information)', ui > -1);
   check('UI: context rows are rendered with a "context only" label', /whiteSpace: 'nowrap' \}\}>context only<\/span>/.test(html));
@@ -154,15 +154,15 @@ console.log('\n# 4. LIVE = BACKTEST');
   check('same inputs twice => identical output (deterministic, no hidden state)', sig(m.calculateEdgeScore(p1, pr1)) === sig(m.calculateEdgeScore(p2, Object.assign({}, pr1))));
 }
 
-console.log('\n# 5. WNBA intentionally UNCHANGED -- REQUIRES SEPARATE VALIDATION');
+console.log('\n# 5. WNBA: integrity changes only -- weights/cap/calibration REQUIRE SEPARATE VALIDATION');
 {
   const wp = (rk) => { const p = synthPlayer(88, rk); p.sport = 'wnba'; return p; };
   const k = 'rebounds', line = 5.5;
   const a = m.calculateEdgeScore(wp(150), prop(k, line, 'over')), b = m.calculateEdgeScore(wp(0), prop(k, line, 'over'));
   check('WNBA: the generic points-rank nudge path is still present (dormant in production because wnbaDvpFor() returns null) -- pinned, not endorsed', a.projection !== b.projection);
   check('WNBA: wnbaDvpFor still returns null in the app (so the nudge is not live today)', /const wnbaDvpFor = \(\) => null;/.test(html));
-  check('WNBA: `simdef` (opponent-rank-keyed) is still a MODEL factor when it fires -- the live shared-path finding', /\(sport === 'nba' \? contextFactors : factors\)\.push\(\{\s*\n\s*key: 'simdef'/.test(html));
-  check('WNBA: modelMeta is not stamped (NBA model version only)', a.modelMeta === null);
+  check('WNBA: `simdef` is context-only for NBA and WNBA (WNBA changed in the 2026-10-06 integrity phase)', /\(sport === 'nba' \|\| sport === 'wnba'\) \? contextFactors : factors\)\.push\(\{\s*\n\s*key: 'simdef'/.test(html));
+  check('WNBA: modelMeta carries the frozen WNBA BETA spec (never the NBA model version)', a.modelMeta && a.modelMeta.modelVersion !== 'nba-edge-2026.10-nodef-v1' && a.modelMeta.sport === 'wnba' && a.modelMeta.modelState === 'BETA' && a.modelMeta.modelVersion === 'wnba-edge-2026.10-nodef-v1');
 }
 
 console.log('\n# 6. model version / trace metadata');

@@ -24,7 +24,7 @@ const EXPORTS = [
   'MODEL_STATE_INSUFFICIENT', 'SMART_PARLAY_MIN_HIT_RATE', 'isModelSupportedProp', 'btWindowsAsOf', 'GRADE_RANK', 'gradeRankOf',
   'nhlEntryEventKey', 'nhlAmericanProb', 'nhlPickPlayerEvent', 'nhlSelectMainLine', 'nhlResolveBookLine', 'DFS_PLATFORMS', 'ALL_BOOKS',
   'STAT_TO_ALLOWED_KEY_BY_SPORT', 'bumpEdgeCache', 'nbaDvpFor',
-  'resolveFinalGrade', 'wildGapExceeds', 'NBA_GRADE_CONFIG', 'nbaPositionWord', 'GRADE_CUTOFFS_PEEK',
+  'resolveFinalGrade', 'wildGapExceeds', 'NBA_GRADE_CONFIG', 'WNBA_GRADE_CONFIG', 'wnbaModelMeta', 'nbaPositionWord', 'GRADE_CUTOFFS_PEEK',
   'btFileProb', 'deriveProbCalib', 'emptyBacktestAcc', 'applyProbCalib', 'btProbBucket', 'BT_PROB_BUCKETS',
 ];
 
@@ -49,7 +49,8 @@ function liveNbaSnippet(html) {
   if (a < 0 || b < 0) throw new Error('NBA_PROP_DEFS block not found');
   return ['const round1 = (n) => Math.round(n * 10) / 10;', html.slice(a, b + bMark.length),
     sliceArrowFn(html, 'const nbaMinutesTrend = (glRows) => {'), sliceArrowFn(html, 'const nbaProjMinutes = (glRows) => {'),
-    sliceArrowFn(html, 'const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr, seasonYear) => {')].join('\n');
+    sliceArrowFn(html, 'const nbaComputeWindows = (glRows, lineFor, oppAbbr, oppRankByAbbr, seasonYear) => {'),
+    sliceArrowFn(html, 'const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, gate')].join('\n');   // the in-app NBA/WNBA backtest scorer
 }
 
 function readRegion(htmlPath) {
@@ -71,7 +72,7 @@ function loadModel(opts) {
   let extra = [];
   if (opts.liveNba) {
     src += '\n' + liveNbaSnippet(fs.readFileSync(opts.htmlPath || HTML_PATH, 'utf8'));
-    extra = ['nbaComputeWindows', 'nbaMinutesTrend', 'nbaProjMinutes', 'nbaAllKeys', 'NBA_PROP_DEFS', 'NBA_3PM'];
+    extra = ['nbaComputeWindows', 'nbaMinutesTrend', 'nbaProjMinutes', 'nbaAllKeys', 'NBA_PROP_DEFS', 'NBA_3PM', 'nbaBacktestSeries'];
   }
   const exportsList = (opts.extraExports || []).concat(extra, EXPORTS, ['FAMILY_CALIB', 'NBA_MODEL_VERSION', 'NBA_FEATURE_SET', 'NBA_CALIBRATION_ID', 'nbaModelMeta']);
   // Export only names that actually exist in the region (typeof is safe for undeclared identifiers).
@@ -83,6 +84,7 @@ function loadModel(opts) {
     Date, Math, JSON, Number, String, Array, Object, Map, Set, WeakMap, Promise, RegExp, Error, parseFloat, parseInt, isFinite, isNaN, Infinity, NaN,
     setTimeout, clearTimeout,
   };
+  if (opts.sandboxExtras) Object.assign(sandbox, opts.sandboxExtras);
   sandbox.window.localStorage = sandbox.localStorage;
   const ctx = vm.createContext(sandbox);
   const fn = vm.runInContext(`(function(){\n${body}\n})`, ctx, { filename: 'BeatsEdge.html#region' });

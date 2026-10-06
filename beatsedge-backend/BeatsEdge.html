@@ -3347,6 +3347,41 @@
                 modelState: 'BETA',   // declared: new version, spec change => starts at BETA (model-validation); UI gating not implemented
             };
         }
+        // ── WNBA official calibration/grade configuration (FROZEN BETA, 2026-10-06; spec: docs/WNBA_MODEL_FREEZE_BETA_2026-10-06.md) ──
+        // Same integrity structure as NBA: WNBA customer-facing probability and grade read ONLY this config, never browser localStorage
+        // (GRADE_CUTOFFS.wnba / PROB_CALIB.wnba are developer diagnostics that cannot alter output). Thresholds and the probability curve are
+        // the pre-existing defaults, unchanged; the wild-gap rule is the accepted Cap C. Any change here is a NEW model version.
+        const WNBA_MODEL_VERSION = 'wnba-edge-2026.10-nodef-v1';
+        const WNBA_FEATURE_SET = 'nba-window-blend-v1';
+        const WNBA_GRADE_CONFIG = Object.freeze({
+            id: 'wnba-defaults-2026-10-06',
+            gradeCutoffs: null,        // null => built-in default thresholds (A >= .86 & conf >= 80, B >= .68 & conf >= 50, C >= .46) -- unchanged
+            // ACCEPTED CALIBRATION EXCEPTION: identity curve. Pooled walk-forward slope is 1.38 (UNDER-confident), above the normal BETA gate
+            // [0.7, 1.3]. The only better global candidate (2-parameter logistic) worsened STL, TOV and BLK+STL, so it was not adopted;
+            // family-aware calibration is deferred until stronger / real-line evidence exists.
+            probCalib: null,
+            // ACCEPTED 2026-10-06 (explicit decision after the predeclared WNBA cap comparison): Cap C, threshold 0.50 unchanged, no family values.
+            // Rejected: the original |edge|/line (capped 16.8% of sides, BLK ordering broken B<C in 6/6 seasons). Synthetic pseudo-line only.
+            wildGapRule: 'floored',
+            wildGapRuleSpec: 'abs(edge) / max(line, predictiveSpreadSD) > 0.50',
+            predictiveSpreadSource: 'projStdDev(projection, statKey, windows): as-of projection + the player\'s own prior-game windows (recent.range); never the current game; missing/invalid => fails closed to the original abs(edge)/line rule',
+            // predictiveSpreadSD is a conservative scale / floor, NOT a precise WNBA per-player SD: its constants are NBA-derived, it runs ~25-50% wider
+            // than observed WNBA error, and the engine's 1.0 floor binds ~79% of BLK, ~44% of STL and 3PM, ~20% of TOV observations.
+            predictiveSpreadCaveat: 'conservative scale/floor, not a precise per-player SD; the 1.0 floor dominates BLK/STL/3PM'
+        });
+        function wnbaModelMeta() {
+            return {
+                modelVersion: WNBA_MODEL_VERSION, sport: 'wnba', league: 'WNBA',
+                featureSet: WNBA_FEATURE_SET, defenseFeature: 'NONE',
+                calibrationId: WNBA_GRADE_CONFIG.id, wildGapRule: WNBA_GRADE_CONFIG.wildGapRule,
+                wildGapRuleSpec: WNBA_GRADE_CONFIG.wildGapRuleSpec,
+                predictiveSpreadSource: WNBA_GRADE_CONFIG.predictiveSpreadSource,
+                predictiveSpreadCaveat: WNBA_GRADE_CONFIG.predictiveSpreadCaveat,
+                calibrationException: 'pooled slope 1.38 (under-confident) exceeds the BETA gate [0.7,1.3]; accepted, documented',
+                realLineValidation: 'PENDING',
+                modelState: 'BETA'   // declared (UI gating by state is not implemented; grades are shown)
+            };
+        }
         // Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
         function nbaPositionWord(pos) {
             const p = String(pos || '').toUpperCase();
@@ -3788,12 +3823,14 @@
                             // NBA: this history split is keyed on the opponent's points-allowed rank, i.e. it is
                             // an opponent-defense input. It was never validated and has no historical analogue
                             // in the walk-forward harness (live != backtest), so for NBA it is CONTEXT ONLY.
-                            // WNBA keeps the existing behavior (separate validation required).
-                            (sport === 'nba' ? contextFactors : factors).push({
+                            // WNBA (2026-10-06 diagnostic): same treatment -- the WNBA gain over a no-defense baseline was reproduced by
+                            // randomized team ranks (placebo), BLK identical under placebo, TOV worse, and the "similar defense" subset averaged
+                            // ~79% of the player's history in a 12-team league. Context only; no replacement feature in this phase.
+                            ((sport === 'nba' || sport === 'wnba') ? contextFactors : factors).push({
                                 key: 'simdef',
                                 name: `vs ${tier} defenses`,
                                 supports: direction === 'over' ? simA > line : simA < line,
-                                ...(sport === 'nba' ? { contextOnly: true, label: 'Context only — not in the projection, probability or grade' } : {}),
+                                ...((sport === 'nba' || sport === 'wnba') ? { contextOnly: true, label: 'Context only — not in the projection, probability or grade' } : {}),
                                 detail: `${r1(simA)} avg vs similarly-ranked D (${sim.length}g, rank ${player.oppRank}±6)`
                             });
                         }
@@ -4031,7 +4068,7 @@
             let grade;
             // NBA customer-facing grades come ONLY from the versioned NBA_GRADE_CONFIG -- never from a
             // browser's localStorage-derived GRADE_CUTOFFS (2026-10-06). Other sports unchanged.
-            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
+            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
             if (cut) {
                 // Cutoffs derived from THIS sport's backtest so the letters are
                 // anchored to real outcomes.
@@ -4056,10 +4093,10 @@
             // usually a hot/cold streak about to mean-revert) — its moderate
             // calls calibrate best. So an oversized gap can't be a top grade.
             const _football = sport === 'nfl' || sport === 'ncaaf';
-            // Wild-gap cap. Every sport but NBA keeps the original relative rule (|edge|/line > 0.5). NBA uses the rule
-            // fixed in NBA_GRADE_CONFIG.wildGapRule (validated; see model-validation) because dividing by a tiny line
+            // Wild-gap cap. Every sport but NBA and WNBA keeps the original relative rule (|edge|/line > 0.5). NBA / WNBA use the rule
+            // fixed in NBA_GRADE_CONFIG / WNBA_GRADE_CONFIG .wildGapRule (validated; see model-validation) because dividing by a tiny line
             // (BLK 0.5, 3PM 1.5) capped ~41% / ~29% of sides regardless of how large the edge is in that stat's own units.
-            const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : 'relative';
+            const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : sport === 'wnba' ? WNBA_GRADE_CONFIG.wildGapRule : 'relative';
             // predictive spread: the same SD the probability layer uses; built only from as-of windows + the as-of projection.
             const predictiveSpreadSD = projStdDev(projection, prop.statKey, s);
             const wildGap = wildGapExceeds(_gapRule, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
@@ -4370,7 +4407,7 @@
             // every other sport keeps its previous behavior (the post-rules are skipped in backtest mode).
             const _fg = resolveFinalGrade({
                 rawGrade, prime: primeCorner, modelProbSport, impliedProb, hasRealPrice,
-                liveRules: sport === 'nba' ? true : prop.lineSource !== 'backtest'
+                liveRules: (sport === 'nba' || sport === 'wnba') ? true : prop.lineSource !== 'backtest'   // NBA + WNBA: one pipeline, live == historical
             });
             grade = _fg.finalGrade;
             if (_fg.reasons.indexOf('PRIME_PROMOTION') >= 0) gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
@@ -4403,7 +4440,7 @@
                 // Presentation-only items that are NOT model inputs (NBA opponent-defense context).
                 context: contextFactors,
                 // Trace metadata (NBA only): which model produced this, with defense explicitly NONE.
-                modelMeta: sport === 'nba' ? nbaModelMeta() : null,
+                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : null,
                 greenCount,
                 totalFactors,
                 confidence,
@@ -4670,8 +4707,12 @@
                     // Provider-only market (no BeatsEdge formula) -- real prop,
                     // stays visible in Browse/Search, never ranked here.
                     if (!isModelSupportedProp(prop)) return;
+                    // Defense in depth (2026-10-06): the +EV list must not depend on an upstream builder having already filtered the
+                    // prop. A prop in the INSUFFICIENT_DATA state, or whose edge is insufficient-data, can never be listed.
+                    if (prop.modelState === MODEL_STATE_INSUFFICIENT) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
+                    if (!edge || edge.insufficientData) return;
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
                 });
             });
@@ -5758,7 +5799,7 @@
         // re-clamped 1-99%.
         function applyProbCalib(p01, sport) {
             // NBA: official probability calibration comes ONLY from NBA_GRADE_CONFIG (versioned), never from browser localStorage.
-            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
+            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
             if (!Array.isArray(cal) || cal.length < 2) return p01;
             const x = p01 * 100;
             if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
@@ -13878,7 +13919,10 @@
 
             // ESPN gamelog -> array of { date, dateShort, opponent, vsLabel, row }
             // where `row` is names[] zipped onto the per-game stats[].
-            const nflParseGamelog = (gl) => {
+            // opts.nonNumericAsMissing (WNBA call sites only): a non-numeric cell ("--", "", "N/A") is a MISSING observation -- the
+            // field is left undefined so every `has()` check excludes that game -- instead of being stored as an observed 0.
+            // An actual recorded "0" is still the number 0. Other sports keep their previous behavior (default off).
+            const nflParseGamelog = (gl, opts) => {
                 const names = gl.names || (gl.labels || []).map(x => x);
                 const evMeta = gl.events || {};
                 const out = [];
@@ -13921,6 +13965,7 @@
                                     return;
                                 }
                                 const num = parseFloat(v);
+                                if (!Number.isFinite(num) && opts && opts.nonNumericAsMissing) return;   // missing observation, NOT an observed zero
                                 row[name] = Number.isFinite(num) ? num : 0;
                             });
                             const iso = (meta.gameDate || meta.date || '').slice(0, 10);
@@ -16019,7 +16064,7 @@
                 const years = [WNBA_YR_PREV, WNBA_YR_CUR];
                 const gls = await Promise.all(years.map(y =>
                     nflFetch(`${WNBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
-                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl, { nonNumericAsMissing: true }).map(r => ({ ...r, season: years[i] }))); });
                 return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
             };
             const wnbaGamelogs = async (ids) => {
@@ -16729,7 +16774,7 @@
                     await Promise.all(grp.map(async id => {
                         const rows = [];
                         for (const yr of years) {
-                            try { const gl = await nflFetch(`${WNBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${yr}`); if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl)); }
+                            try { const gl = await nflFetch(`${WNBA_ESPN_COMMON}/athletes/${id}/gamelog?season=${yr}`); if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl, { nonNumericAsMissing: true })); }
                             catch (e) { /* skip year */ }
                         }
                         rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -17086,7 +17131,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
             // model (there they're best-available info, not leakage); they're
             // just out of the backtest until we have dated DvP snapshots
             // (archiveDvpSnapshot, seeded now, usable in a few weeks).
-            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, gate) => {
+            // `sportKey` (default 'nba'): the WNBA backtest passes 'wnba' so it scores through the SAME sport-keyed model the live WNBA
+            // path uses (it used to hard-code 'nba'). `liveRows` (WNBA only): the player's parsed ESPN gamelog rows; when given, the
+            // windows and per-game log are built by the LIVE builder nbaComputeWindows from strictly earlier rows -- the exact
+            // live-shaped inputs -- instead of btWindowsAsOf.
+            const nbaBacktestSeries = (vals, mins, opps, tss, homes, group, statKey, acc, gate, sportKey, liveRows) => {
                 const MIN = 14;
                 // gate = { minTs, maxTs } — only SCORE predictions whose game date
                 // falls in the window. The trailing windows still use every prior
@@ -17100,7 +17149,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     const gTs = tss[i] || 0;
                     if (maxTs && gTs && gTs >= maxTs) continue;
                     if (minTs && (!gTs || gTs < minTs)) continue;
-                    const hv = vals.slice(0, i), hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                    let hv = vals.slice(0, i); const hm = mins.slice(0, i), ho = opps.slice(0, i), ht = tss.slice(0, i), hh = homes.slice(0, i);
+                    if (liveRows) {
+                        // A game where this stat was not RECORDED is a missing observation: never a target, never an observed 0 in history.
+                        const _def = NBA_PROP_DEFS[statKey];
+                        if (!_def.has(liveRows[i].row)) continue;
+                        hv = liveRows.slice(0, i).filter(g => _def.has(g.row)).map(g => _def.get(g.row) || 0);
+                        if (!hv.length) continue;
+                    }
                     const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
                     if (seasonAvg <= 0) continue;
                     let line = null, bestGap = 99;
@@ -17112,21 +17168,29 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     if (line == null || line <= 0) continue;
                     const actual = vals[i], tonightOpp = opps[i];
                     if (actual === line) continue;
-                    const w = btWindowsAsOf(hv, ho, tonightOpp, line);
+                    let w, glHist;
+                    if (liveRows) {
+                        // LIVE-SHAPED inputs (WNBA): same builder, same windows, same per-game log the production path feeds the model.
+                        const built = nbaComputeWindows(liveRows.slice(0, i), { [statKey]: line }, tonightOpp, null, liveRows[i] && liveRows[i].season);
+                        w = built.statsByKey[statKey]; glHist = built.gameLogByKey[statKey];
+                        if (!w) continue;
+                    } else {
+                    w = btWindowsAsOf(hv, ho, tonightOpp, line);
                     w.last5.minAvg = mMean(hm.slice(-5)); w.last10.minAvg = mMean(hm.slice(-10));
                     w.last20.minAvg = mMean(hm.slice(-20)); w.season.minAvg = mMean(hm);
                     w.vsOpp.minAvg = w.season.minAvg; w.recent.minAvg = w.last5.minAvg;
-                    const glHist = hv.map((v, j) => ({
+                    glHist = hv.map((v, j) => ({
                         points: v, line, opponent: ho[j],
                         vsLabel: (hh[j] ? 'vs ' : '@ ') + ho[j],
                         dow: Number.isFinite(ht[j]) && ht[j] > 0 ? new Date(ht[j]).getDay() : null,
                         oppRank: null,  // leak-safe: no as-of opponent-strength snapshot exists
                         rest: j > 0 && Number.isFinite(ht[j]) && Number.isFinite(ht[j - 1]) && ht[j - 1] > 0 ? Math.round((ht[j] - ht[j - 1]) / 864e5) : null
                     }));
+                    }
                     const tRest = Number.isFinite(tss[i]) && Number.isFinite(tss[i - 1]) && tss[i - 1] > 0 ? Math.round((tss[i] - tss[i - 1]) / 864e5) : null;
                     const projMin = nbaProjMinutes(hm.map(m => ({ row: { minutes: m } })));
                     const fake = {
-                        sport: 'nba', position: group, opponent: tonightOpp,
+                        sport: sportKey || 'nba', position: group, opponent: tonightOpp,
                         statsByKey: { [statKey]: w }, gameLogByKey: { [statKey]: glHist },
                         opponentDefense: null,  // leak-safe — see note above (DvP is a current-season-only snapshot)
                         oppRank: null,          // leak-safe — team-defense rank is a full-season aggregate
@@ -17385,7 +17449,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 nbaAllKeys.forEach(k => {
                                     const vals = rows.map(r => NBA_PROP_DEFS[k].get(r.row) || 0);
                                     if (vals.every(v => v === 0)) return;
-                                    nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc, gate);
+                                    // WNBA: score through the WNBA-keyed model with live-shaped inputs (same builder as production)
+                                    nbaBacktestSeries(vals, mins, opps, tss, homes, group, k, acc, gate, 'wnba', rows);
                                     evaluated++;
                                 });
                             });
@@ -17417,11 +17482,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
                             // NBA: diagnostic only -- NBA customer-facing grades come from NBA_GRADE_CONFIG, so nothing is persisted for NBA.
-                            if (selectedSport !== 'nba') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA: diagnostic only, never persisted
                         }
                         if (probCal) {
                             PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
-                            if (selectedSport !== 'nba') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
