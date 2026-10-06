@@ -30,7 +30,11 @@ if (process.argv[2] === 'child') {
     phase = 'api-before-materialize'; const r0 = await get(); out.apiBefore = { status: r0.status, hasModel: !!r0.body.model, opponentContext: r0.body.opponentContext, rows: Object.values(r0.body.projections || {}).reduce((s, a) => s + a.length, 0), versions: [...new Set(Object.values(r0.body.projections || {}).flat().map(x => x.modelVersion))] };
     const t0 = Date.now(); out.materialized = await mat.materializeNhlProjections(); out.materializeMs = Date.now() - t0;
     out.colsAfter = (await store.query('PRAGMA table_info(nhl_player_projections)')).map(c => c.name);
-    out.direct = await eng.computeAllModelOutputs();                              // the SQL path, recomputed
+    // the SQL path, recomputed -- with the workload recorded: the nightly refresh must read sequentially in small responses (a 512 MiB / ~0.1 vCPU instance)
+    const q0 = store.query; let infl = 0, peak = 0, maxRows = 0, totalRows = 0, nq = 0;
+    store.query = async (...a) => { infl++; peak = Math.max(peak, infl); try { const r = await q0.apply(store, a); nq++; maxRows = Math.max(maxRows, r.length); totalRows += r.length; return r; } finally { infl--; } };
+    out.direct = await eng.computeAllModelOutputs(); store.query = q0;
+    out.workload = { queries: nq, peakConcurrent: peak, maxRowsPerQuery: maxRows, totalRowsLoaded: totalRows, boxRows: (await store.queryOne('SELECT COUNT(*) AS c FROM nhl_player_box')).c };
     out.tables = { player: await store.queryOne('SELECT COUNT(*) c FROM nhl_player_projections'), team: await store.queryOne('SELECT COUNT(*) c FROM nhl_team_context') };
     await mat.materializeNhlProjections(); out.tablesAfterRerun = { player: await store.queryOne('SELECT COUNT(*) c FROM nhl_player_projections'), team: await store.queryOne('SELECT COUNT(*) c FROM nhl_team_context') };
     phase = 'api-after-materialize'; const timings = []; let last; for (let i = 0; i < 7; i++) { last = await get(); timings.push(last.ms); }
@@ -170,10 +174,33 @@ if (process.argv[2] === 'child') {
       check(`D7[${CUT}]: API metadata -- model version, spec hash, opponentAdjustment, per-row modelVersion, context teams`, api.model.version === '2026.10-v2' && api.model.specSha256 === M.NHL_MODEL_SPEC_SHA256 && JSON.stringify(api.model.opponentAdjustment) === JSON.stringify(M.opponentAdjustmentMeta()) && Object.values(api.projections).flat().every(x => x.modelVersion === '2026.10-v2') && Object.keys(api.opponentContext.teams).length === Object.keys(pure.opponentContext.teams).length);
       const med = [...o.apiTimingsMs].sort((a, b) => a - b)[3];
       check(`D8[${CUT}]: API stays fast -- median ${med.toFixed(1)} ms, max ${Math.max(...o.apiTimingsMs).toFixed(1)} ms, ${(o.apiAfter.bytes / 1024).toFixed(0)} KB (reads two materialized tables; never calls the engine); materialization ${o.materializeMs} ms off the request path`, med < 500 && Math.max(...o.apiTimingsMs) < 2000);
+      const wl = o.workload;
+      check(`D10[${CUT}]: bounded-memory nightly workload (largest single response is the ~9k-row goalie query, vs 152k per response before) -- ${wl.queries} queries, peak concurrency ${wl.peakConcurrent}, <= ${wl.maxRowsPerQuery} rows per response, ${wl.totalRowsLoaded} rows loaded in total for a ${wl.boxRows}-row table (the old code loaded ~3.7x the table, six queries at once)`, wl.peakConcurrent === 1 && wl.maxRowsPerQuery <= 12000 && wl.totalRowsLoaded <= wl.boxRows * 1.35 && wl.queries >= 5, wl);
       check(`D9[${CUT}]: an emptied/broken context table does not break the route: 200, opponentContext null, all player rows still served`, o.apiNoContext.status === 200 && o.apiNoContext.opponentContext === null && o.apiNoContext.rows === o.tables.player.c);
     }
   }
   } // end if (haveData): sections B-D
+
+  // ───────── F. bounded-memory plumbing (no database needed): chunked prior == one-shot prior, and reads retry transient errors ─────────
+  {
+    let s2 = 99; const r = () => { s2 = (s2 * 1664525 + 1013904223) % 4294967296; return s2 / 4294967296; };
+    const mk = (n, kind) => Array.from({ length: n }, () => ({ position: ['C', 'L', 'R', 'D', null][Math.floor(r() * 5)], val: Math.floor(r() * 9) / (1 + Math.floor(r() * 7)) + r() }));
+    let ok = true;
+    for (const kind of ['position', 'goalie']) for (const n of [150, 2100, 9000]) {
+      const rows = mk(n, kind); const oneShot = M.buildPrior(rows, kind); const acc = M.newPriorAccumulator(kind);
+      for (let i = 0; i < rows.length;) { const step = 1 + Math.floor(r() * 400); M.accumulatePrior(acc, rows.slice(i, i + step), kind); i += step; }        // arbitrary chunking, same global order
+      const chunked = M.priorFromAccumulator(acc, kind); if (JSON.stringify(oneShot) !== JSON.stringify(chunked)) ok = false;                                // bit-identical (JSON of doubles is exact)
+    }
+    check('F1: league prior accumulated in arbitrary chunks (same order) is BIT-IDENTICAL to the one-shot prior (position and goalie pools, incl. pools under/over the minimum)', ok);
+    const store = require('../lib/historicalStore'); const realQ = store.query; let calls = 0;
+    try {
+      store.query = async () => { calls++; if (calls < 3) throw new TypeError('terminated'); return [{ ok: 1 }]; };
+      const res = await eng._readQuery('SELECT 1'); check('F2: a read that fails twice with a transient error ("terminated") succeeds on the third attempt', calls === 3 && res[0].ok === 1, { calls });
+      calls = 0; store.query = async () => { calls++; throw new TypeError('terminated'); };
+      let thrown = null; try { await eng._readQuery('SELECT 1'); } catch (e) { thrown = e; }
+      check('F3: after 3 failed attempts the ORIGINAL error is rethrown (the materializer still fails safe, previous snapshot untouched)', calls === 3 && thrown && thrown.message === 'terminated', { calls, msg: thrown && thrown.message });
+    } finally { store.query = realQ; }
+  }
 
   // ───────── E. the route never reaches the engine; frontend adjuster == server applyOpponent ─────────
   {

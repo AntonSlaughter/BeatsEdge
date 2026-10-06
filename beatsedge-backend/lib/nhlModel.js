@@ -42,13 +42,20 @@ function positionGroup(position) { return position === 'D' ? 'D' : 'F'; }
 
 // As-of league prior: mean of the stat over ALL player-games in the pool. rows: [{position, val}] (already restricted to
 // games strictly before the as-of date by the caller). Returns {F, D} (position) or {ALL} (goalie); null when the pool is too small.
-function buildPrior(rows, kind) {
-  const min = PRIOR_MIN_ROWS[kind === 'goalie' ? 'goalie' : 'position'];
-  if (kind === 'goalie') return { ALL: rows.length >= min ? mean(rows.map(r => r.val)) : null };
-  const acc = { F: { s: 0, n: 0 }, D: { s: 0, n: 0 } };
+// The prior is a running sum + count per pool, so it can be accumulated chunk by chunk (live materializer, bounded memory) with a result that is
+// BIT-IDENTICAL to the one-shot form as long as rows are added in the same order (0 + v1 + v2 + ... in sequence either way).
+function newPriorAccumulator(kind) { return kind === 'goalie' ? { ALL: { s: 0, n: 0 } } : { F: { s: 0, n: 0 }, D: { s: 0, n: 0 } }; }
+function accumulatePrior(acc, rows, kind) {
+  if (kind === 'goalie') { for (const r of rows) { acc.ALL.s += r.val; acc.ALL.n++; } return acc; }
   for (const r of rows) { const a = acc[positionGroup(r.position)]; a.s += r.val; a.n++; }
+  return acc;
+}
+function priorFromAccumulator(acc, kind) {
+  const min = PRIOR_MIN_ROWS[kind === 'goalie' ? 'goalie' : 'position'];
+  if (kind === 'goalie') return { ALL: acc.ALL.n >= min ? acc.ALL.s / acc.ALL.n : null };
   return { F: acc.F.n >= min ? acc.F.s / acc.F.n : null, D: acc.D.n >= min ? acc.D.s / acc.D.n : null };
 }
+function buildPrior(rows, kind) { return priorFromAccumulator(accumulatePrior(newPriorAccumulator(kind), rows, kind), kind); }
 
 // Per-player, opponent-INDEPENDENT output for one family, from lambda0 (= production shrinkageFive) and the player's prior-game count n.
 //   projection / probability : the value to show when NO opponent adjustment is available (the frozen fallback)
@@ -104,4 +111,4 @@ function opponentAdjustmentMeta() {
   return o;
 }
 
-module.exports = { NHL_MODEL_VERSION, NHL_MODEL_SPEC_SHA256, FAMILY_SPEC, PRIOR_MIN_ROWS, TEAM_CONTEXT, BINARY_FAMILIES, eb, opp, probabilityFromLambda, positionGroup, buildPrior, familyOutput, buildOpponentContext, applyOpponent, opponentAdjustmentMeta };
+module.exports = { NHL_MODEL_VERSION, NHL_MODEL_SPEC_SHA256, FAMILY_SPEC, PRIOR_MIN_ROWS, TEAM_CONTEXT, BINARY_FAMILIES, eb, opp, probabilityFromLambda, positionGroup, buildPrior, newPriorAccumulator, accumulatePrior, priorFromAccumulator, familyOutput, buildOpponentContext, applyOpponent, opponentAdjustmentMeta };
