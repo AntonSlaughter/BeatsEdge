@@ -3203,6 +3203,156 @@
         }
         const mlbSplitN = (st) => (st ? (st.plateAppearances || st.atBats || 0) : 0);
 
+        // ══════════════════════════════════════════════════════════════════
+        // FAIL-CLOSED MODEL-HISTORY GATE + SMART PARLAY EVIDENCE GATE
+        // (model-integrity containment, 2026-10-06).
+        //
+        // Root cause being closed: a prop with a REAL provider line but NO game
+        // history used to be given a SEEDED window (nflSeedWindows(perGame=0))
+        // — season avg 0, 0 games, a synthetic `estHitRate` — and was then
+        // graded as if "average = 0" were evidence: projection 0, a ~76%
+        // UNDER probability, confidence 100, a grade, edge, hit rate (and, via
+        // that synthetic hit rate, even Smart Parlay eligibility). Missing is
+        // UNKNOWN, not zero. A prop with no real history now gets an explicit
+        // INSUFFICIENT_DATA state: the real line still displays, every model
+        // field is withheld. `MODEL_MIN_REAL_GAMES` is deliberately the
+        // smallest policy ("any real game at all"); the per-market minimum
+        // sample is a model-validation policy decision, not made here, and the
+        // existing `thinData` cap (<3 games, <4 football) still applies above it.
+        // ══════════════════════════════════════════════════════════════════
+        const MODEL_MIN_REAL_GAMES = 1;
+        const MODEL_STATE_INSUFFICIENT = 'INSUFFICIENT_DATA';
+        const SMART_PARLAY_MIN_HIT_RATE = 80;
+        // True only when a stat window carries real, finite season history.
+        // Seeded windows (games: 0), empty real windows (avg: null) and `{}` all fail.
+        function hasRealModelHistory(w) {
+            return !!(w && w.season
+                && Number.isFinite(w.season.games) && w.season.games >= MODEL_MIN_REAL_GAMES
+                && Number.isFinite(w.season.avg));
+        }
+        // One centralized post-pass for the three prop builders (NFL/CFB, NBA/WNBA,
+        // MLB): any prop whose stat window has no real history is re-labelled as
+        // a provider-only prop in the INSUFFICIENT_DATA state. It reuses the
+        // existing `modelSupported:false` plumbing (never graded, never ranked,
+        // never archived, never +EV, never reaches Smart Parlay) — the real line
+        // is untouched — and its synthetic `hitRate` placeholder is dropped.
+        function applyHistoryGate(props, statsByKey) {
+            (props || []).forEach(pr => {
+                if (!pr || pr.modelSupported === false) return;
+                if (hasRealModelHistory(statsByKey && statsByKey[pr.statKey])) return;
+                pr.modelSupported = false;
+                pr.modelState = MODEL_STATE_INSUFFICIENT;
+                pr.modelStateReason = 'No game history for this stat — model fields withheld (missing is unknown, not zero).';
+                pr.hitRate = null;
+            });
+            return props;
+        }
+        // Result shape for a (player, prop) the engine must NOT score. Same keys
+        // callers read, every model field null/unavailable — never 0, never 'D'.
+        function insufficientDataEdge() {
+            return {
+                modelState: MODEL_STATE_INSUFFICIENT, insufficientData: true,
+                factors: [], context: [], modelMeta: null, greenCount: 0, totalFactors: 0, confidence: null,
+                projection: null, thinData: true, edge: null, edgeSignalPct: null,
+                prime: false, matchupLabel: null, grade: null, rawGrade: null, finalGrade: null, gradeAdjustmentReason: null, gradeScore: null,
+                modelProb: null, modelProbPct: null, rawModelProbPct: null,
+                preFloorProbPct: null, preFloorRaw: null, sportCalibProbPct: null,
+                familyAdjPts: null, statFamily: null, familyCalibActive: false,
+                impliedProb: null, impliedProbPct: null, hasRealPrice: false,
+                vigPct: null, edgePct: null, hitRates: null, hitRatesSource: null,
+                probSteps: [], volatilityContext: null,
+            };
+        }
+        // Smart Parlay evidence: ONLY a hit rate computed from the player's real
+        // game log against THIS prop's exact line (edge.hitRatesSource ===
+        // 'game_log'). A seeded `estHitRate` placeholder, a window rate set
+        // against some other line, an insufficient-data prop, or a provider-only
+        // prop yields null — and null is NOT eligible. Never a substitute rate.
+        function smartParlayHitRate(edge, prop) {
+            if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_INSUFFICIENT) return null;
+            if (prop && (prop.modelSupported === false || prop.modelState === MODEL_STATE_INSUFFICIENT)) return null;
+            if (edge.hitRatesSource !== 'game_log') return null;
+            const h = edge.hitRates || {};
+            if (h.season && Number.isFinite(h.season.pick)) return h.season.pick;
+            if (h.last10 && Number.isFinite(h.last10.pick)) return h.last10.pick;
+            return null;
+        }
+        function smartParlayEligibility(edge, prop) {
+            const hitRate = smartParlayHitRate(edge, prop);
+            return { hitRate, eligible: hitRate != null && hitRate >= SMART_PARLAY_MIN_HIT_RATE };
+        }
+
+        // ── NBA model version / trace metadata (PREPARED 2026-10-06; not deployed, archives not migrated) ──
+        // Carried on every NBA edge result as `modelMeta` and copied into the archived row's
+        // `dataQuality` JSON (no schema change). `calibrationId` reports the calibration that is
+        // ACTUALLY in force: the documented defaults, or BROWSER-LOCAL when this browser holds
+        // backtest-derived GRADE_CUTOFFS/PROB_CALIB for NBA (the unresolved localStorage issue).
+        const NBA_MODEL_VERSION = 'nba-edge-2026.10-nodef-v1';
+        const NBA_FEATURE_SET = 'nba-window-blend-v1';
+        // THE official, versioned, deterministic NBA calibration/grade configuration. NBA customer-facing probability and
+        // grade read ONLY this -- never browser localStorage (GRADE_CUTOFFS / PROB_CALIB stay developer diagnostics and
+        // cannot alter NBA output). Validated: calibration candidate A (identity curve + shipped Prime family layer) beat
+        // the walk-forward recalibration; thresholds unchanged. Changing any value here is a new calibrationId.
+        const NBA_GRADE_CONFIG = Object.freeze({
+            id: 'nba-defaults-2026-10-06',
+            gradeCutoffs: null,        // null => built-in default thresholds: A >= .86 & conf >= 80, B >= .68 & conf >= 50, C >= .46
+            probCalib: null,           // null => identity probability curve
+            // ACCEPTED 2026-10-06 (decision after the predeclared A/B/C/D cap comparison): 'floored' = |edge| / max(line, predictiveSpreadSD) > 0.50.
+            // Rejected for NBA: the original |edge|/line > 0.50, which over-penalizes low-line stats (BLK 0.5, 3PM 1.5) and broke BLK grade
+            // ordering. Threshold 0.50 is unchanged. Validated on a synthetic pseudo-line only -- NOT protection against stale/bad market
+            // lines; must be revalidated on genuine NBA lines once they accumulate (REAL-LINE STATUS: DATA GAP). Model state stays BETA.
+            wildGapRule: 'floored',
+            wildGapRuleSpec: 'abs(edge) / max(line, predictiveSpreadSD) > 0.50',
+            predictiveSpreadSource: 'projStdDev(projection, statKey, windows): as-of projection + the player\'s own prior-game windows (recent.range); never the current game'
+        });
+        const NBA_CALIBRATION_ID = NBA_GRADE_CONFIG.id;
+        // Wild-gap cap rules (predeclared candidates): 'relative' = original; 'none' = control only; 'sigma' = gap beyond 1.0 predictive SD
+        // of the stat; 'floored' = relative gap with the denominator floored at the stat's own spread: |edge| / max(line, SD) > 0.5.
+        function wildGapExceeds(rule, absEdge, line, sd, usingRealLine) {
+            if (!usingRealLine || !(line > 0)) return false;
+            if (rule === 'none') return false;
+            if (rule === 'sigma') return sd > 0 && absEdge > 1.0 * sd;
+            if (rule === 'floored') {
+                // FAIL CLOSED: if no trustworthy predictive spread exists (missing / non-finite / non-positive), do NOT invent one --
+                // fall back to the existing conservative behavior (the original |edge|/line rule).
+                if (!(typeof sd === 'number' && Number.isFinite(sd) && sd > 0)) return absEdge / line > 0.5;
+                return absEdge / Math.max(line, sd) > 0.5;
+            }
+            return absEdge / line > 0.5;      // 'relative' (original)
+        }
+        // THE one grade function. rawGrade -> displayed grade, with an explicit reason for every promotion/demotion.
+        // Rules and thresholds are the pre-existing ones, unchanged:
+        //  1 Prime promotion (C/D -> A) · 2 real-price cap (A/B -> C when the model does not beat the de-vigged price)
+        //  3 prob < 50% (A/B -> C) · 4 prob < 44% (-> D) · 5 D with prob >= 58% (-> C)
+        function resolveFinalGrade(i) {
+            let g = i.rawGrade; const reasons = [];
+            if (i.liveRules && i.prime && (g === 'C' || g === 'D')) { g = 'A'; reasons.push('PRIME_PROMOTION'); }
+            if (i.hasRealPrice && (g === 'A' || g === 'B') && i.modelProbSport <= i.impliedProb) { g = 'C'; reasons.push('PRICE_CAP'); }
+            if (i.liveRules) {
+                if ((g === 'A' || g === 'B') && i.modelProbSport < 0.50) { g = 'C'; reasons.push('PROB_BELOW_50_AB_TO_C'); }
+                if (g !== 'D' && i.modelProbSport < 0.44) { g = 'D'; reasons.push('PROB_BELOW_44_TO_D'); }
+                if (g === 'D' && i.modelProbSport >= 0.58) { g = 'C'; reasons.push('PROB_AT_LEAST_58_D_TO_C'); }
+            }
+            return { finalGrade: g, reasons };
+        }
+        function nbaModelMeta() {
+            return {
+                modelVersion: NBA_MODEL_VERSION, sport: 'nba', league: 'NBA',
+                featureSet: NBA_FEATURE_SET,
+                defenseFeature: 'NONE',
+                calibrationId: NBA_GRADE_CONFIG.id,
+                wildGapRule: NBA_GRADE_CONFIG.wildGapRule,
+                wildGapRuleSpec: NBA_GRADE_CONFIG.wildGapRuleSpec,
+                predictiveSpreadSource: NBA_GRADE_CONFIG.predictiveSpreadSource,
+                modelState: 'BETA',   // declared: new version, spec change => starts at BETA (model-validation); UI gating not implemented
+            };
+        }
+        // Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
+        function nbaPositionWord(pos) {
+            const p = String(pos || '').toUpperCase();
+            return /^(PG|SG|G)$/.test(p) ? 'guards' : /^(SF|PF|F)$/.test(p) ? 'forwards' : p === 'C' ? 'centers' : 'this position group';
+        }
+
         // Per-(player, prop) result cache. React reuses the same player/prop
         // objects between renders until the underlying data changes (new slate,
         // detail load, book switch all create fresh objects), so identity keys
@@ -3302,6 +3452,11 @@
                 : null;
 
             const factors = [];
+            // CONTEXT-ONLY items (NBA opponent-defense information). Truthful and shown to the
+            // user, but NOT a model input: never in `factors`, never in confidence, the
+            // probability, the projection, the grade or Prime. See the 2026-10-06 NBA
+            // defense-removal note in the projection block below.
+            const contextFactors = [];
 
             // Per-prop stat windows when available (MLB multi-prop); otherwise
             // the single `player.stats` block (NBA/NFL, and MLB fallback).
@@ -3376,6 +3531,14 @@
                     volatilityContext: null,
                 };
             }
+
+            // FAIL CLOSED on missing/empty/zero-length history (containment
+            // 2026-10-06): no real game for this stat means the engine has
+            // nothing to project from. Previously `s` was a SEEDED zero window,
+            // `{}` (a TypeError), or an empty real window (avg: null → silently
+            // 0 in the arithmetic below) and the result was a fabricated
+            // projection/probability/grade/confidence. See hasRealModelHistory.
+            if (!hasRealModelHistory(s)) return insufficientDataEdge();
 
             // Factor 1: Recent Form (Last 5)
             const recentAvg = s.last5.avg;
@@ -3527,12 +3690,18 @@
                     const rk = posDefense[_dvpF[1]], val = posDefense[_dvpF[0]];
                     const tough = rk <= 50, soft = rk >= 101;
                     if (tough || soft) {
-                        const grpWord = player.position === 'G' ? 'guards' : player.position === 'F' ? 'forwards' : 'centers';
-                        factors.push({
+                        const grpWord = nbaPositionWord(player.position);
+                        // NBA defense REMOVED from the model (2026-10-06, model-validation): the
+                        // walk-forward comparison against the otherwise-identical no-defense model
+                        // rejected both the generic points-rank nudge and this stat-specific
+                        // treatment. The information stays visible as CONTEXT ONLY.
+                        contextFactors.push({
                             key: 'defense',
                             name: `${player.opponent} vs ${grpWord}`,
                             supports: direction === 'over' ? soft : tough,
-                            detail: `allows ${val} ${_dvpF[2]}/48 — #${rk} of 150 (${soft ? 'bottom 50, one of the softest' : 'top 50, one of the toughest'})${posDefense.sub ? ` · ${posDefense.sub}` : ''}`
+                            contextOnly: true,
+                            label: 'Context only — not in the projection, probability or grade',
+                            detail: `allows ${val} ${_dvpF[2]}/48 — #${rk} of 150 (${soft ? 'bottom 50, among the softest' : 'top 50, among the toughest'})`
                         });
                     }
                 }
@@ -3616,10 +3785,15 @@
                         const simA = avg(sim), allA = avg(glRows.map(g => g.points));
                         const tier = player.oppRank <= 10 ? 'stingy' : player.oppRank >= 20 ? 'leaky' : 'mid-pack';
                         if (allA && Math.abs(simA - allA) / allA >= 0.06) {
-                            factors.push({
+                            // NBA: this history split is keyed on the opponent's points-allowed rank, i.e. it is
+                            // an opponent-defense input. It was never validated and has no historical analogue
+                            // in the walk-forward harness (live != backtest), so for NBA it is CONTEXT ONLY.
+                            // WNBA keeps the existing behavior (separate validation required).
+                            (sport === 'nba' ? contextFactors : factors).push({
                                 key: 'simdef',
                                 name: `vs ${tier} defenses`,
                                 supports: direction === 'over' ? simA > line : simA < line,
+                                ...(sport === 'nba' ? { contextOnly: true, label: 'Context only — not in the projection, probability or grade' } : {}),
                                 detail: `${r1(simA)} avg vs similarly-ranked D (${sim.length}g, rank ${player.oppRank}±6)`
                             });
                         }
@@ -3765,7 +3939,11 @@
             const vsOppAvgS = shrinkToSeason(vsOppAvg, _voN, 10);
             let projection = (recentAvgS * 0.35) + (seasonAvg * 0.25) + (last10AvgS * 0.25) + (vsOppAvgS * 0.15);
 
-            if (posDefense && posDefense.rank !== undefined && sport !== 'nfl' && sport !== 'ncaaf') {
+            // NBA is EXCLUDED here (2026-10-06): this stat-agnostic points-rank nudge added the
+            // same +4..+16 stat units to every NBA prop type and failed walk-forward validation
+            // (worse than no defense on every family, every season). Other sports' behavior is
+            // unchanged -- WNBA in particular REQUIRES SEPARATE VALIDATION before any change.
+            if (posDefense && posDefense.rank !== undefined && sport !== 'nfl' && sport !== 'ncaaf' && sport !== 'nba') {
                 // Same NFL/CFB exclusion as the factor block above — expose
                 // opponentDefense data without letting this generic,
                 // pre-existing numeric nudge silently activate for a sport it
@@ -3782,17 +3960,13 @@
             // NBA: nudge by tonight's opponent's Defense-vs-Position rank for
             // THIS stat (1 = toughest → project down, 150 = softest → project
             // up). ±7% at the extremes.
-            if (sport === 'nba' && player.opponentDefense && player.opponentDefense.byPosition) {
-                const grp = /^(PG|SG|G)$/i.test(player.position || '') ? 'G' : /^(SF|PF|F)$/i.test(player.position || '') ? 'F' : 'C';
-                const pd = player.opponentDefense.byPosition[grp];
-                const rkField = {
-                    points: 'rank', pra: 'rank', pr: 'rank', pa: 'rank',
-                    rebounds: 'rebRank', ra: 'rebRank', assists: 'astRank', threes: 'tpmRank',
-                    blocks: 'blkRank', blocksSteals: 'blkRank', steals: 'stlRank', turnovers: 'toRank'
-                }[prop.statKey];
-                const rk = pd && rkField && pd[rkField];
-                if (rk) projection *= 1 + ((rk - 75.5) / 74.5) * 0.07;
-            }
+            // NBA OPPONENT DEFENSE: NO PROJECTION ADJUSTMENT (2026-10-06). The stat-specific rank
+            // multiplier that used to sit here (`projection *= 1 + ((rk-75.5)/74.5)*0.07`, with PRA/PR/PA
+            // silently reusing the POINTS rank and RA the REBOUND rank) and the generic nudge above were both
+            // rejected against the otherwise-identical no-defense model (scripts/model-integrity/*,
+            // tmp/model-integrity/*). DvP stays available as context-only information; it cannot reach
+            // the projection, probability, confidence, grade or Prime. Do not re-add without a new
+            // pre-registered walk-forward win (model-validation).
             // MLB batter: nudge by the platoon + batter-vs-starter splits,
             // relative to the player's own season baseline. Each capped, total
             // clamped ±20%. Needs a real sample or it doesn't move.
@@ -3855,7 +4029,9 @@
             // most of the weight; factor confluence is a modifier.
             let gradeScore = 0.25 * (confidence / 100) + 0.75 * edgeComponent;
             let grade;
-            const cut = GRADE_CUTOFFS && GRADE_CUTOFFS[sport];
+            // NBA customer-facing grades come ONLY from the versioned NBA_GRADE_CONFIG -- never from a
+            // browser's localStorage-derived GRADE_CUTOFFS (2026-10-06). Other sports unchanged.
+            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
             if (cut) {
                 // Cutoffs derived from THIS sport's backtest so the letters are
                 // anchored to real outcomes.
@@ -3880,7 +4056,13 @@
             // usually a hot/cold streak about to mean-revert) — its moderate
             // calls calibrate best. So an oversized gap can't be a top grade.
             const _football = sport === 'nfl' || sport === 'ncaaf';
-            const wildGap = edgeRatio > 0.5                                    // model & line disagree by a lot → regression risk
+            // Wild-gap cap. Every sport but NBA keeps the original relative rule (|edge|/line > 0.5). NBA uses the rule
+            // fixed in NBA_GRADE_CONFIG.wildGapRule (validated; see model-validation) because dividing by a tiny line
+            // (BLK 0.5, 3PM 1.5) capped ~41% / ~29% of sides regardless of how large the edge is in that stat's own units.
+            const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : 'relative';
+            // predictive spread: the same SD the probability layer uses; built only from as-of windows + the as-of projection.
+            const predictiveSpreadSD = projStdDev(projection, prop.statKey, s);
+            const wildGap = wildGapExceeds(_gapRule, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
                 || (_football && sampleGames < 6 && edgeRatio > 0.30);        // small sample + big gap
             // A cross-book line (shown because the selected DFS site hasn't
             // posted this number) isn't actually pickable there — never let it
@@ -3907,10 +4089,9 @@
             const edgeSigPct = Math.round(signal * 1000) / 10;
             const primeCorner = !thinData && matchupLabel !== 'RED MATCHUP'
                 && confShare >= 0.67 && edgeSigPct >= 11;
-            if (prop.lineSource !== 'backtest' && primeCorner && (grade === 'C' || grade === 'D')) {
-                grade = 'A';
-                gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
-            }
+            // The raw grade stops here. Prime promotion and the probability-reconciliation rules are applied by the
+            // ONE official grade function (resolveFinalGrade) once the probability exists, below.
+            const rawGrade = grade;
 
             // ---- Model probability + betting edge --------------------------
             // P(this side hits) — a calibrated ESTIMATE, not a lock. Three
@@ -4176,25 +4357,24 @@
             // a genuine edge over the book, so if the model doesn't actually
             // beat the (de-vigged) price it's a C at best. Same spirit as the
             // RED MATCHUP / thinData / crossBook caps above.
-            if (hasRealPrice && (grade === 'A' || grade === 'B') && modelProbSport <= impliedProb) grade = 'C';
+            // (Price cap + Prime promotion + reconciliation now live in resolveFinalGrade, applied just below.)
             // The letter and the probability must never openly contradict:
             //  - model has this side below a coin flip → not an A/B.
             //  - model actively dislikes this side → D, whatever the raw
             //    factor/edge score said (this catches a sample-line pick whose
             //    projection beats the player's own average but still misses the
             //    posted number).
-            // Skipped in backtest mode, where grade and probability are already
-            // driven by the same signal (nothing to reconcile) and the
-            // calibration must stay stable.
-            if (prop.lineSource !== 'backtest') {
-                if ((grade === 'A' || grade === 'B') && modelProbSport < 0.50) grade = 'C';
-                if (grade !== 'D' && modelProbSport < 0.44) grade = 'D';
-                // ...and the reverse: don't call it a D if the model clearly
-                // likes the side (keeps the letter from disagreeing with a
-                // 58%+ probability). C is as high as this bump goes — a true
-                // A/B still has to earn it through the factor + edge score.
-                if (grade === 'D' && modelProbSport >= 0.58) grade = 'C';
-            }
+            // ONE official grade pipeline (2026-10-06): the raw grade (thresholds + RED/thin/football caps) is
+            // turned into the displayed grade by resolveFinalGrade -- the SAME function for live and for every
+            // historical validation. NBA always runs the full pipeline (lineSource no longer switches it off);
+            // every other sport keeps its previous behavior (the post-rules are skipped in backtest mode).
+            const _fg = resolveFinalGrade({
+                rawGrade, prime: primeCorner, modelProbSport, impliedProb, hasRealPrice,
+                liveRules: sport === 'nba' ? true : prop.lineSource !== 'backtest'
+            });
+            grade = _fg.finalGrade;
+            if (_fg.reasons.indexOf('PRIME_PROMOTION') >= 0) gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
+            const gradeAdjustmentReason = _fg.reasons.length ? _fg.reasons.join('+') : null;
 
             const pickRate = (hr) => (hr == null ? null : (direction === 'over' ? Math.round(hr) : Math.round(100 - hr)));
             // Real per-line hit rates from the game log when we have one, so the
@@ -4220,6 +4400,10 @@
 
             return {
                 factors,
+                // Presentation-only items that are NOT model inputs (NBA opponent-defense context).
+                context: contextFactors,
+                // Trace metadata (NBA only): which model produced this, with defense explicitly NONE.
+                modelMeta: sport === 'nba' ? nbaModelMeta() : null,
                 greenCount,
                 totalFactors,
                 confidence,
@@ -4230,6 +4414,11 @@
                 prime: primeCorner,        // high confluence + large edge (backtest "prime corner")
                 matchupLabel,
                 grade,
+                // Grade trace: rawGrade = thresholds + RED/thin/football caps; finalGrade (= grade) = after the official
+                // pipeline; gradeAdjustmentReason explains any promotion/demotion (null when none).
+                rawGrade, finalGrade: grade, gradeAdjustmentReason,
+                wildGap,   // diagnostic: the wild-gap cap fired (feeds thinData)
+                predictiveSpreadSD,   // diagnostic: the as-of spread used by the NBA cap
                 gradeScore: Math.round(gradeScore * 100) / 100,
                 // probability layer (all estimates, not guarantees)
                 modelProb,
@@ -4253,6 +4442,12 @@
                 vigPct: Math.round(vig * 1000) / 10,
                 edgePct,
                 hitRates,
+                // Provenance of `hitRates`: 'game_log' = computed from the real
+                // game log against THIS prop's exact line; 'seeded_estimate' =
+                // a placeholder (estHitRate) on a seeded window; 'window' = a
+                // pre-baked window rate set against whatever line the window
+                // builder used. Smart Parlay accepts ONLY 'game_log'.
+                hitRatesSource: _hasGl ? 'game_log' : ((s.season && s.season.seeded) ? 'seeded_estimate' : 'window'),
                 probSteps,
                 // ── Projection Stability (context only, SHIPPED 2026-09-28) ──
                 // NBA Rebounds/Assists only. Real stddev of this player's own
@@ -4285,8 +4480,16 @@
         };
         // Best (lowest-ranked letter) grade across all of a player's props,
         // with the model edge of that best prop for tie-breaking.
+        // A player with NO scorable prop (all provider-only, or all INSUFFICIENT_DATA)
+        // has NO headline grade: `grade: null`, never an invented 'D'. gradeScore/edge stay
+        // numeric (0) only so sort comparators never see NaN; `gradeRankOf` ranks null last.
+        function gradeRankOf(g) { return g == null ? GRADE_RANK.D + 1 : GRADE_RANK[g]; }
+        function noModelGrade(player) {
+            const insufficient = !!(player && Array.isArray(player.props) && player.props.some(p => p && p.modelState === MODEL_STATE_INSUFFICIENT));
+            return { grade: null, gradeScore: 0, edge: 0, prime: false, noModel: true, modelState: insufficient ? MODEL_STATE_INSUFFICIENT : null };
+        }
         function playerBestGrade(player, typeFilter) {
-            if (!player || !player.props || !player.props.length) return { grade: 'D', gradeScore: 0, edge: 0 };
+            if (!player || !player.props || !player.props.length) return noModelGrade(player);
             const consider = (skipAlt) => {
                 let best = null;
                 player.props.forEach(prop => {
@@ -4297,6 +4500,7 @@
                     // for calculateEdgeScore to read in the first place.
                     if (prop.modelSupported === false) return;
                     const e = calculateEdgeScore(player, prop);
+                    if (e.insufficientData) return; // no real history -> no grade (fail closed)
                     if (!best || GRADE_RANK[e.grade] < GRADE_RANK[best.grade] ||
                         (e.grade === best.grade && e.gradeScore > best.gradeScore)) {
                         best = { grade: e.grade, gradeScore: e.gradeScore, edge: e.edge, prime: e.prime };
@@ -4304,7 +4508,7 @@
                 });
                 return best;
             };
-            return consider(true) || consider(false) || { grade: 'D', gradeScore: 0, edge: 0 };
+            return consider(true) || consider(false) || noModelGrade(player);
         }
 
         // Picks the single best-supported prop across every player/prop combo
@@ -4822,15 +5026,16 @@
             comps.forEach(k => {
                 let v = null, src = 'none';
                 const w = sbk[k];
-                const base = w && (w.season && w.season.avg != null ? w.season.avg
-                    : w.recent && w.recent.avg != null ? w.recent.avg : null);
+                // Missing history is unknown, not 0: a seeded/empty window contributes nothing.
+                const base = hasRealModelHistory(w) ? (w.season.avg != null ? w.season.avg
+                    : w.recent && w.recent.avg != null ? w.recent.avg : null) : null;
                 if (base != null) {
                     try {
                         const e = calcEdge(player, { statKey: k, type: k, line: Math.max(0.5, base), direction: 'over', lineSource: 'fantasy' });
                         if (e && typeof e.projection === 'number') { v = e.projection; src = 'model'; modelled++; }
                     } catch (err) { /* fall through */ }
                     if (v == null) { v = base; src = 'avg'; }
-                } else if (player.stats && player.stats.season && k === (player.props && player.props[0] && player.props[0].statKey)) {
+                } else if (hasRealModelHistory(player.stats) && k === (player.props && player.props[0] && player.props[0].statKey)) {
                     v = player.stats.season.avg; src = 'avg';
                 }
                 if (v != null) { parts[k] = Math.round(v * 100) / 100; if (sc[k]) fp += v * sc[k]; }
@@ -5384,7 +5589,7 @@
                         if (pr.modelSupported === false) return;
                         let e;
                         try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
-                        if (!e) return;
+                        if (!e || e.insufficientData) return; // never archive a prediction that was never made
                         const factors = {};
                         (e.factors || []).forEach(f => {
                             factors[f.key || f.name] = {
@@ -5421,7 +5626,13 @@
                             // was each input backed by REAL data (vs missing / placeholder)?
                             dataQuality: {
                                 gameLog: !!(gl[pr.statKey] && gl[pr.statKey].length >= 5),
+                                // NBA: defense is present only as context-only information (it is NOT a model input);
+                                // for NBA this flag therefore means "context available", not "used by the model".
                                 oppDefense: !!(p.opponentDefense || p.oppDef),
+                                // trace metadata (model version / feature set / defense feature / calibration id) -- NBA only
+                                modelMeta: e.modelMeta || null,
+                                // grade trace: why the displayed grade is what it is (raw -> final, with reason) and the Prime state
+                                gradeTrace: { rawGrade: e.rawGrade || null, finalGrade: e.finalGrade || e.grade || null, gradeAdjustmentReason: e.gradeAdjustmentReason || null, prime: !!e.prime },
                                 minutes: (sport === 'nba' || sport === 'wnba') ? p.projMin != null : null,
                                 splits: sport === 'mlb' ? !!(p.splitBy || p.bvp) : null,
                                 injuryStatus: !!p.status,
@@ -5546,7 +5757,8 @@
         // segment would otherwise fling an 80% raw estimate to 99%). Monotone,
         // re-clamped 1-99%.
         function applyProbCalib(p01, sport) {
-            const cal = PROB_CALIB && PROB_CALIB[sport];
+            // NBA: official probability calibration comes ONLY from NBA_GRADE_CONFIG (versioned), never from browser localStorage.
+            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
             if (!Array.isArray(cal) || cal.length < 2) return p01;
             const x = p01 * 100;
             if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
@@ -5919,6 +6131,85 @@
         // markets, which do use a real 0.5 line. Same validated P(goals>=1)
         // math either way, just gated on each market's own real line.
         const nhlBinaryThresholdLineZero = (statKey) => (row) => (NHL_FULL_GAME(row) && row.line === 0) ? statKey : null;
+
+        // ── NHL sportsbook / main-line integrity (pure helpers; extracted by scripts/test-nhl-main-line-integrity.js) ──
+        // Before: `byBook[wantBook] || Object.values(byBook)[0]` then `arr.find(primary) || arr[0]`, stamped `book: wantBook`.
+        // That (a) showed ANOTHER book's line under the requested book's name, (b) let provider array order pick the main
+        // line (nothing ever sets `primary` for NHL), and (c) could mix rows from different games. The helpers below:
+        //  - pick ONE game per player (earliest upcoming) and only read rows from that game;
+        //  - read ONLY the requested book (ALL_BOOKS walks the fixed priority list) and return the book the row really came from;
+        //  - identify the main line by rule (DFS: the single 'standard' row; sportsbook: the two-sided pair closest to even money);
+        //  - return null (FAIL CLOSED) when the main line cannot be identified reliably -- never arr[0], never an alternate.
+        const NHL_TIE_EPS = 1e-9;
+        function nhlEntryEventKey(e) {
+            if (!e) return null;
+            if (e.eventId) return 'id:' + e.eventId;
+            return 'anon:' + (e.homeTeam || '') + '|' + (e.awayTeam || '') + '|' + (Number.isFinite(e.commenceTimeMs) ? e.commenceTimeMs : '');
+        }
+        // American odds -> implied probability. Anything that is not a plausible American price is treated as malformed (null).
+        function nhlAmericanProb(odds) {
+            if (typeof odds !== 'number' || !Number.isFinite(odds) || Math.abs(odds) < 100) return null;
+            return odds < 0 ? (-odds) / (-odds + 100) : 100 / (odds + 100);
+        }
+        // Earliest upcoming game among every row the player has (any book/stat); if none is upcoming, the earliest known.
+        // Deterministic: ties on start time fall back to the event key string. Returns { key, commenceMs, homeTeam, awayTeam, playerRaw } or null.
+        function nhlPickPlayerEvent(byStat, nowMs) {
+            const events = new Map();
+            Object.values(byStat || {}).forEach(byBook => Object.values(byBook || {}).forEach(arr => (arr || []).forEach(e => {
+                if (!e) return;
+                const key = nhlEntryEventKey(e);
+                const ev = events.get(key) || { key, commenceMs: null, homeTeam: null, awayTeam: null, playerRaw: null };
+                if (Number.isFinite(e.commenceTimeMs) && (ev.commenceMs == null || e.commenceTimeMs < ev.commenceMs)) ev.commenceMs = e.commenceTimeMs;
+                if (!ev.homeTeam && e.homeTeam) ev.homeTeam = e.homeTeam;
+                if (!ev.awayTeam && e.awayTeam) ev.awayTeam = e.awayTeam;
+                if (!ev.playerRaw && e.playerRaw) ev.playerRaw = e.playerRaw;
+                events.set(key, ev);
+            })));
+            const list = [...events.values()].filter(ev => ev.playerRaw);
+            if (!list.length) return null;
+            const t = (ev) => ev.commenceMs == null ? Infinity : ev.commenceMs;
+            const cmp = (a, b) => (t(a) - t(b)) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+            const upcoming = list.filter(ev => ev.commenceMs != null && ev.commenceMs >= nowMs).sort(cmp);
+            return (upcoming.length ? upcoming : list.sort(cmp))[0];
+        }
+        // Main line for ONE book's rows (one stat, one game). Returns { entry, reason }; entry is null when it cannot be identified.
+        function nhlSelectMainLine(entries, opts) {
+            const isDfs = !!(opts && opts.isDfs), eventKey = opts ? opts.eventKey : null;
+            const cands = (entries || []).filter(e => e && Number.isFinite(e.line) && nhlEntryEventKey(e) === eventKey);
+            if (!cands.length) return { entry: null, reason: 'no_rows' };
+            if (isDfs) {
+                const std = cands.filter(e => e.ppType === 'standard');
+                if (std.length === 1) return { entry: std[0], reason: 'dfs_standard' };
+                if (std.length > 1) return { entry: null, reason: 'dfs_multiple_standard' };
+                // No tagged standard: a lone untagged line is the only line posted; goblin/demon are alternates and never the main line.
+                if (cands.length === 1 && !cands[0].ppType) return { entry: cands[0], reason: 'sole_line' };
+                return { entry: null, reason: 'dfs_no_standard' };
+            }
+            if (cands.length === 1) return { entry: cands[0], reason: 'sole_line' };
+            // Sportsbook ladder: the main line is the two-sided Over/Under pair closest to even money; one-sided rungs are alternates.
+            const two = cands.map(e => ({ e, po: nhlAmericanProb(e.over), pu: nhlAmericanProb(e.under) })).filter(x => x.po != null && x.pu != null);
+            if (!two.length) return { entry: null, reason: 'ladder_no_two_sided' };
+            two.forEach(x => { x.d = Math.abs(x.po - x.pu); });
+            const best = Math.min(...two.map(x => x.d));
+            const top = two.filter(x => x.d - best <= NHL_TIE_EPS);
+            const lines = new Set(top.map(x => x.e.line));
+            if (lines.size > 1) return { entry: null, reason: 'ladder_tie' };
+            return { entry: top[0].e, reason: 'two_sided_closest_to_even' };
+        }
+        // Resolve the line for one stat across the books. wantBook is a real book id or `allBooksId`. The returned `book` is the book the
+        // row ACTUALLY came from -- callers must stamp that, never the requested id.
+        function nhlResolveBookLine(byBook, opts) {
+            const wantBook = opts.wantBook, order = opts.priority || [];
+            const books = wantBook === opts.allBooksId ? order.filter(b => byBook && byBook[b]) : [wantBook];
+            for (const b of books) {
+                const arr = byBook && byBook[b];
+                if (!arr || !arr.length) continue;
+                const r = nhlSelectMainLine(arr, { isDfs: !!(opts.dfsBooks && opts.dfsBooks.has(b)), eventKey: opts.eventKey });
+                if (r.entry) return { entry: r.entry, book: b, reason: r.reason };
+            }
+            return { entry: null, book: null, reason: 'unidentified_main_line' };
+        }
+
         const PARLAY_NHL_MKT = {
             player_shots_on_goal: nhlModelCandidate('shots_on_goal'),
             player_shots: nhlModelCandidate('shots_on_goal'),
@@ -8838,7 +9129,7 @@
                         // back to an unrelated stat for this research tool too.
                         if (pr.modelSupported === false) return;
                         let e; try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
-                        if (!e) return;
+                        if (!e || e.insufficientData) return;
                         if (e.prime) prime = true;
                         if (!bestEdge || GRADE_RANK[e.grade] < GRADE_RANK[bestEdge.grade]) bestEdge = e;
                     });
@@ -11972,10 +12263,12 @@
             const nflSeedWindows = (perGame, line) => {
                 const avg = round1(perGame);
                 const hr = estHitRate(avg, line);
-                const w = (g) => ({ avg, hitRate: hr, games: g });
+                // `seeded: true` marks every number here as a PLACEHOLDER (never
+                // real history) so hit-rate provenance can be told apart downstream.
+                const w = (g) => ({ avg, hitRate: hr, games: g, seeded: true });
                 return {
-                    recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(1, Math.ceil(perGame * 2))], games: 0 },
-                    last5: w(0), last10: w(0), last15: w(0), last20: w(0), last40: w(0), season: w(0), trueSeason: w(0), vsOpp: { avg, hitRate: hr, games: 0 }
+                    recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(1, Math.ceil(perGame * 2))], games: 0, seeded: true },
+                    last5: w(0), last10: w(0), last15: w(0), last20: w(0), last40: w(0), season: w(0), trueSeason: w(0), vsOpp: { avg, hitRate: hr, games: 0, seeded: true }
                 };
             };
 
@@ -12020,10 +12313,13 @@
                 const perGame = games > 0 ? def.get(seasonStatObj) / games : 0;
                 const avg = round1(perGame);
                 const hr = estHitRate(avg, line);
-                const w = (g) => ({ avg, hitRate: hr, games: g });
+                // `seeded: true`: avg is the REAL season rate but `hitRate` (and the
+                // window game counts other than season) are placeholders — see
+                // hitRatesSource / smartParlayHitRate.
+                const w = (g) => ({ avg, hitRate: hr, games: g, seeded: true });
                 return {
-                    recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(2, Math.ceil(perGame * 3))], games },
-                    last5: w(5), last10: w(10), last15: w(15), last20: w(20), last40: w(40), season: w(games), trueSeason: w(games), vsOpp: { avg, hitRate: hr, games: 0 }
+                    recent: { avg, hitRate: hr, median: Math.round(perGame), range: [0, Math.max(2, Math.ceil(perGame * 3))], games, seeded: true },
+                    last5: w(5), last10: w(10), last15: w(15), last20: w(20), last40: w(40), season: w(games), trueSeason: w(games), vsOpp: { avg, hitRate: hr, games: 0, seeded: true }
                 };
             };
 
@@ -12219,7 +12515,9 @@
                         const g = mlbGamesField(seasonStat, isPitcher);
                         pushPair(k, def, mlbSampleLine(k, g > 0 ? def.get(seasonStat) / g : 0), { isProjection: true });
                     });
-                    return props;
+                    // Fail closed on missing history (see applyHistoryGate): a player with
+                    // no real season games gets INSUFFICIENT_DATA placeholders, not a 0 average.
+                    return applyHistoryGate(props, statsByKey);
                 }
 
                 if (!hasAnyReal) return props; // no live lines at all → player has no props
@@ -12271,7 +12569,8 @@
                 // shown before fetchMlbPropLines's first live fetch completes.
 
                 booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), bk)));
-                return props;
+                // Fail closed on missing history (see applyHistoryGate).
+                return applyHistoryGate(props, statsByKey);
             };
 
             // Stable identity for a prop — content-derived, NOT the array
@@ -12314,6 +12613,11 @@
                             return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK.D + 1, g: -Infinity };
                         }
                         const e = calculateEdgeScore(playerLike, pr);
+                        // No real history -> nothing to rank on (fail closed): sort last, no edge.
+                        if (e.insufficientData) {
+                            pr.__edge = null;
+                            return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK.D + 1, g: -Infinity };
+                        }
                         // Stash the computed edge on the prop so attachPlusEV (which
                         // always runs right after this) can reuse it instead of
                         // running the whole factor/probability engine a second time
@@ -13985,7 +14289,9 @@
                     const knownForBook = [...(builtForBook[bk] || [])];
                     props.push(...buildProviderOnlyProps(allLines, knownForBook, bk));
                 });
-                return props;
+                // Fail closed on missing history (see applyHistoryGate): a prop with
+                // no real game history keeps its real line but is INSUFFICIENT_DATA.
+                return applyHistoryGate(props, statsByKey);
             };
 
             const fetchNflSlate = async (date) => {
@@ -15467,7 +15773,9 @@
                     const knownForBook = [...(builtForBook[bk] || [])];
                     props.push(...buildProviderOnlyProps(allLines, knownForBook, bk));
                 });
-                return props;
+                // Fail closed on missing history (see applyHistoryGate): a prop with
+                // no real game history keeps its real line but is INSUFFICIENT_DATA.
+                return applyHistoryGate(props, statsByKey);
             };
 
             // Slate discovery is pure ESPN now (see fetchNflSlate's comment for
@@ -16105,12 +16413,11 @@
                 const SUPPORTED_STAT_KEYS = new Set(['shots_on_goal', 'goalie_saves', 'goals_at_least_1', 'assists_at_least_1', 'points_at_least_1']);
 
                 Object.values(pa.byNorm).forEach((byStat) => {
-                    let playerRaw = null, homeTeam = null, awayTeam = null, commenceMs = null;
-                    Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => {
-                        if (e.playerRaw) { playerRaw = e.playerRaw; homeTeam = e.homeTeam; awayTeam = e.awayTeam; commenceMs = e.commenceTimeMs; return true; }
-                        return false;
-                    })));
-                    if (!playerRaw) return;
+                    // ONE game per player (earliest upcoming), chosen deterministically; every line below is read only from
+                    // rows of that game, so Over/Under/line/teams/start time can never come from different games.
+                    const nhlEvent = nhlPickPlayerEvent(byStat, Date.now());
+                    if (!nhlEvent) return;
+                    const playerRaw = nhlEvent.playerRaw, homeTeam = nhlEvent.homeTeam, awayTeam = nhlEvent.awayTeam, commenceMs = nhlEvent.commenceMs;
                     // Non-player market safety: real discovery confirmed some
                     // provider rows use a "player" field that's actually a
                     // team matchup ("MTL Canadiens vs TOR Maple Leafs",
@@ -16190,8 +16497,10 @@
 
                     const props = [];
                     Object.entries(byStat).forEach(([statKey, byBook]) => {
-                        const arr = byBook[wantBook] || Object.values(byBook)[0] || [];
-                        const pr = arr.find(e => e.primary) || arr[0];
+                        // FAIL CLOSED: requested book only (ALL_BOOKS walks the fixed priority list), one game, main line by rule.
+                        // No cross-book fallback, no provider-order pick, no alternate standing in for the main line.
+                        const sel = nhlResolveBookLine(byBook, { wantBook, allBooksId: ALL_BOOKS, priority: PROPLINE_BOOK_PRIORITY, dfsBooks: DFS_PLATFORMS, eventKey: nhlEvent.key });
+                        const pr = sel.entry;
                         if (!pr) return;
                         // `model` is the frozen v2 value for THIS player vs THIS opponent: the materialized value, with the opponent
                         // factor applied only where the API supplied one (SOG / Saves / Point) and the opponent's context exists.
@@ -16210,7 +16519,7 @@
                             // re-orders player.props afterward, instead of
                             // drifting to whatever now sits at that index.
                             id: `${mk || playerRaw}:${statKey}`,
-                            statKey, line: pr.line, over: pr.over, under: pr.under, book: wantBook,
+                            statKey, line: pr.line, over: pr.over, under: pr.under, book: sel.book, mainLineBasis: sel.reason,
                             period: pr.period || 'FULL', projectionType: pr.projectionType || null,
                             eventId: pr.eventId || null, rawMarket,
                             // Real, human-readable label -- raw market_key is
@@ -17107,11 +17416,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     if (cutoffs || probCal) {
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
-                            try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { }
+                            // NBA: diagnostic only -- NBA customer-facing grades come from NBA_GRADE_CONFIG, so nothing is persisted for NBA.
+                            if (selectedSport !== 'nba') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }
                         }
                         if (probCal) {
                             PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
-                            try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { }
+                            if (selectedSport !== 'nba') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
@@ -20829,6 +21139,13 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 <div className="player-time">{player.gameTime}</div>
                                 {player.status !== 'OUT' && player.props && player.props.length > 0 && (() => {
                                     const bg = playerBestGrade(player, statFilter);
+                                    // No scorable prop (provider-only / INSUFFICIENT_DATA): no grade badge
+                                    // at all — never an invented 'D'. Say why only when history is the reason.
+                                    if (bg.grade == null) {
+                                        return bg.modelState === MODEL_STATE_INSUFFICIENT
+                                            ? <div className="player-time" title="No game history for this stat — grade, projection, probability and edge are withheld. The real sportsbook line is shown unchanged.">Insufficient data</div>
+                                            : null;
+                                    }
                                     return (
                                         <div className={`grade-badge ${GRADE_META[bg.grade].cls}${bg.prime ? ' is-prime' : ''}`} title={bg.prime ? 'Prime corner — high confluence + large edge (backtest ~63–66%)' : GRADE_META[bg.grade].label}>
                                             <div className="grade-badge-letter">{bg.grade}</div>
@@ -20891,7 +21208,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             // line, no BeatsEdge formula for this market) must never
                                             // reach calculateEdgeScore -- there's no statsByKey window
                                             // for it to read. null here, not a fabricated result.
-                                            const edge = prop.modelSupported === false ? null : calculateEdgeScore(player, prop);
+                                            const _edgeCalc = prop.modelSupported === false ? null : calculateEdgeScore(player, prop);
+                                            // INSUFFICIENT_DATA (no real game history): same as a provider-only
+                                            // prop — real line, no grade/probability/edge — but labelled honestly.
+                                            const _insufficient = prop.modelState === MODEL_STATE_INSUFFICIENT || !!(_edgeCalc && _edgeCalc.insufficientData);
+                                            const edge = (_edgeCalc && _edgeCalc.insufficientData) ? null : _edgeCalc;
                                             const isActive = activeInModal && (prop.id != null ? detailModal.propId === prop.id : detailModal.propIdx === idx);
                                             // Phase 2G -- pure UI relevance filter over the already-computed
                                             // playerResearch (Step 16: in-memory only, zero new requests).
@@ -20966,8 +21287,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         </div>
                                                     </React.Fragment>
                                                 ) : (
-                                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.35rem' }} title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no grade, probability, or edge is invented for it.">
-                                                        Model not supported yet
+                                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.35rem' }} title={_insufficient
+                                                        ? "This is a real provider line, but there is no game history for this stat — no projection, probability, grade or edge is invented for it (missing is unknown, not zero)."
+                                                        : "This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no grade, probability, or edge is invented for it."}>
+                                                        {_insufficient ? 'Insufficient data' : 'Model not supported yet'}
                                                     </div>
                                                 )}
                                                 {/* Phase 2G -- compact news research cross-check (Step 3/10:
@@ -21174,7 +21497,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     // must never run on it (no statsByKey window exists for it
                                     // to read). Show the real source/line/DFS-type honestly and
                                     // stop, rather than reaching the full model breakdown below.
-                                    if (activeProp.modelSupported === false) {
+                                    // INSUFFICIENT_DATA (no real game history) is handled exactly like a
+                                    // provider-only prop: real line, nothing invented — with an honest label.
+                                    const _insufficientHistory = activeProp.modelState === MODEL_STATE_INSUFFICIENT
+                                        || (activeProp.modelSupported !== false && !!calculateEdgeScore(player, activeProp).insufficientData);
+                                    if (activeProp.modelSupported === false || _insufficientHistory) {
                                         return (
                                             <div className="edge-section">
                                                 <div className="edge-section-header">
@@ -21190,9 +21517,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         {' · '}{bookLabel(activeProp.book) || activeProp.lineSource}
                                                         {activeProp.ppKind && <> · {activeProp.ppKind === 'demon' ? '😈 Demon' : '👺 Goblin'}</>}
                                                     </div>
-                                                    <div title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no probability, projection, edge, or grade is invented for it.">
-                                                        <strong>Model not supported for this market yet.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — BeatsEdge simply has no research formula for "{activeProp.type}" yet.
-                                                    </div>
+                                                    {_insufficientHistory ? (
+                                                        <div title="No game history exists for this stat, so BeatsEdge withholds every model output. Missing is unknown, not zero.">
+                                                            <strong>Insufficient data.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — but there is no game history for "{activeProp.type}" for this player, so no projection, probability, edge, grade or Smart Parlay eligibility is shown.
+                                                        </div>
+                                                    ) : (
+                                                        <div title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no probability, projection, edge, or grade is invented for it.">
+                                                            <strong>Model not supported for this market yet.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — BeatsEdge simply has no research formula for "{activeProp.type}" yet.
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         );
@@ -21422,6 +21755,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </div>
                                                         );
                                                     })}
+                                                    {(edge.context || []).map((f, idx) => (
+                                                        <div key={'ctx' + idx} className="factor-row" title={f.label || 'Context only — not part of the projection, probability, confidence or grade.'}
+                                                            style={{ display: 'block', padding: '0.3rem 0.6rem', fontSize: '0.74rem', lineHeight: 1.3, opacity: 0.85 }}>
+                                                            <span style={{ marginRight: '0.35rem' }}>ℹ️</span>
+                                                            <span className="factor-name" style={{ display: 'inline', fontSize: '0.76rem' }}>{f.name}</span>
+                                                            <span style={{ marginLeft: '0.4rem', padding: '0 0.35rem', border: '1px solid var(--border-color, #444)', borderRadius: '999px', fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>context only</span>
+                                                            <div className="factor-detail" style={{ fontSize: '0.7rem', marginTop: '0.1rem' }}>{f.detail}</div>
+                                                        </div>
+                                                    ))}
                                                 </div>
 
                                                 <div className={`matchup-verdict-banner ${verdictClass}`}>
@@ -21533,11 +21875,12 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         const isNba = player.sport === 'nba' || player.sport === 'wnba';
                                                         const isMlb = player.sport === 'mlb';
                                                         let _sn = 0; const N = () => (++_sn) + '.';
-                                                        const facBy = (k) => (edge.factors || []).find(f => f.key === k);
-                                                        const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}` : null; };
+                                                        // model factors first; NBA opponent-defense items live in edge.context (context only, not in the model)
+                                                        const facBy = (k) => (edge.factors || []).find(f => f.key === k) || (edge.context || []).find(f => f.key === k);
+                                                        const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}${f.contextOnly ? ' (context only)' : ''}` : null; };
                                                         const r1 = (x) => x == null ? null : Math.round(x * 10) / 10;
                                                         const hrOf = (win) => win && win.hitRate != null ? hr(win.hitRate) : null;
-                                                        const impactOf = (k) => { const f = facBy(k); if (!f) return '—'; if (f.inProjection) return 'in projection'; const d = f.probDelta || 0; return d === 0 ? '±0' : `${d > 0 ? '+' : ''}${Math.round(d * 1000) / 10} pts`; };
+                                                        const impactOf = (k) => { const f = facBy(k); if (!f) return '—'; if (f.contextOnly) return 'context only'; if (f.inProjection) return 'in projection'; const d = f.probDelta || 0; return d === 0 ? '±0' : `${d > 0 ? '+' : ''}${Math.round(d * 1000) / 10} pts`; };
                                                         const dot = (s) => s === true ? '🟢' : s === false ? '🔴' : '⚪';
                                                         const L = activeProp.line;
                                                         const beats = (win) => win && win.avg != null ? (dirUnder ? win.avg < L : win.avg > L) : null;
@@ -21840,9 +22183,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     const isNba = player.sport === 'nba' || player.sport === 'wnba';
                                                     const W = cStats || {};
                                                     const SBK = player.statsByKey || {};
-                                                    const facBy = (k) => (edge.factors || []).find(f => f.key === k);
-                                                    const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}` : null; };
-                                                    const rr = (x) => x == null ? null : (dirUnder ? 100 - x : x) + '%';
+                                                    const facBy = (k) => (edge.factors || []).find(f => f.key === k) || (edge.context || []).find(f => f.key === k);
+                                                    const facDet = (k) => { const f = facBy(k); return f ? `${f.name} — ${f.detail}${f.contextOnly ? ' (context only)' : ''}` : null; };
+                                                    const rr =(x) => x == null ? null : (dirUnder ? 100 - x : x) + '%';
                                                     const win = (w) => w && w.avg != null ? `${w.avg} avg${w.hitRate != null ? ` · ${rr(w.hitRate)} ${dirUnder ? 'under' : 'over'}` : ''}` : null;
                                                     const avgOf = (k) => SBK[k] && SBK[k].season ? SBK[k].season.avg : null;
                                                     const Topic = ({ name, rows, todo }) => {
@@ -22114,13 +22457,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
 
                                                 {(() => {
                                                     const inParlay = isPropSelected(player, activeProp);
-                                                    // Gate on the real, direction-aware hit rate for THIS
-                                                    // prop's line — from edge.hitRates (game-log based).
-                                                    const hrObj = edge.hitRates || {};
-                                                    const realHR = (hrObj.season && hrObj.season.pick != null) ? hrObj.season.pick
-                                                        : (hrObj.last10 && hrObj.last10.pick != null) ? hrObj.last10.pick : null;
-                                                    const gateHR = Math.round((realHR != null ? realHR : activeProp.hitRate) || 0);
-                                                    const eligible = gateHR >= 80;
+                                                    // Gate on the real, direction-aware hit rate for THIS prop's
+                                                    // exact line, computed from the player's game log ONLY
+                                                    // (edge.hitRatesSource === 'game_log'). FAIL CLOSED: when that
+                                                    // evidence is missing there is NO substitute rate — the old
+                                                    // `activeProp.hitRate` fallback was a synthetic `estHitRate`
+                                                    // placeholder and could make a no-history prop "80%+".
+                                                    const spGate = smartParlayEligibility(edge, activeProp);
+                                                    const gateHR = spGate.hitRate != null ? Math.round(spGate.hitRate) : null;
+                                                    const eligible = spGate.eligible;
                                                     const addProp = { ...activeProp, hitRate: gateHR };
                                                     return (
                                                         <div style={{ marginTop: '1.1rem', textAlign: 'center' }}>
@@ -22133,7 +22478,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     ? '✓ In Smart Parlay — tap to remove'
                                                                     : (eligible
                                                                         ? `➕ Add ${activeProp.direction === 'under' ? 'UNDER' : 'OVER'} ${formatProviderLine(activeProp.line)} to Smart Parlay`
-                                                                        : `Smart Parlay needs an 80%+ hit rate — this ${activeProp.direction} is ${gateHR}%`)}
+                                                                        : (gateHR == null
+                                                                            ? 'Smart Parlay needs a real game-log hit rate (80%+) — none is available for this prop'
+                                                                            : `Smart Parlay needs an 80%+ hit rate — this ${activeProp.direction} is ${gateHR}%`))}
                                                             </button>
                                                         </div>
                                                     );
@@ -22979,7 +23326,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     ? gradedPlayers.filter(x => x._n.includes(q) || x._t.includes(q) || x._o.includes(q) || x._pos === q)
                     : gradedPlayers.slice();
                 const cmp = {
-                    grade: (a, b) => (GRADE_RANK[a.g.grade] - GRADE_RANK[b.g.grade])
+                    grade: (a, b) => (gradeRankOf(a.g.grade) - gradeRankOf(b.g.grade))
                         || ((b.g.prime ? 1 : 0) - (a.g.prime ? 1 : 0))
                         || (b.g.gradeScore - a.g.gradeScore)
                         || (Math.abs(b.g.edge) - Math.abs(a.g.edge)),
