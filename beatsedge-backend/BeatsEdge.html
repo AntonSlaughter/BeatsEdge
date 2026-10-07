@@ -914,6 +914,8 @@
         .grade-badge-sm.grade-b { color: var(--info-blue); border-color: var(--info-blue); }
         .grade-badge-sm.grade-c { color: var(--warning-yellow); border-color: var(--warning-yellow); }
         .grade-badge-sm.grade-d { color: var(--danger-red); border-color: var(--danger-red); }
+        .grade-badge-sm.grade-none { color: var(--text-muted); border-color: var(--text-muted); font-weight: 600; font-size: 0.62rem; letter-spacing: 0.02em; width: auto; padding: 0.1rem 0.4rem; border-radius: 999px; }
+        .grade-badge-sm.grade-none::before { content: 'Probability only'; }
 
         /* "Prime corner" — high confluence + large edge (backtest finding) */
         .grade-badge.is-prime {
@@ -3276,6 +3278,7 @@
         // prop yields null — and null is NOT eligible. Never a substitute rate.
         function smartParlayHitRate(edge, prop) {
             if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_INSUFFICIENT || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return null;
+            if (edge.rankingEligible === false) return null;   // probability-only rare-event market (MLB P2): never Smart Parlay eligible
             if (prop && (prop.modelSupported === false || prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED)) return null;
             if (edge.hitRatesSource !== 'game_log') return null;
             const h = edge.hitRates || {};
@@ -3426,7 +3429,49 @@
                 modelState: 'BETA'                       // declared (UI gating by state is not implemented; grades are shown)
             };
         }
-        // Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
+        // ── MLB official model specification (BETA v1, 2026-10-07; spec + fingerprint: docs/MLB_MODEL_FREEZE_BETA_2026-10-07.md) ──
+// MLB customer-facing probability and grade read ONLY this config, never browser localStorage (GRADE_CUTOFFS.mlb / PROB_CALIB.mlb are developer
+// diagnostics that cannot alter MLB output). Approved composition (all validated on PSEUDO-LINES only; REAL-LINE VALIDATION = PENDING / DATA GAP):
+//   * IDENTITY probability calibration (no curve); grade thresholds, Prime rule and projection weights are the pre-existing defaults, unchanged
+//   * Cap C wild-gap rule 'floored' (the thin-history protection, sampleGames < 3, is kept separately and unchanged)
+//   * the four rare-event recipes (HR .129 / 2B .162 / 3B .016 / SB .077) bypass the generic history blend (R1) and are probability-only (P2): no letter grade,
+//     no Prime, excluded from Best Plays / Smart Parlay / +EV / any ranking surface. They ARE modeled; they are simply ungraded rare-event probabilities.
+//   * confluence stays inside the grade (F0), generic matchup / splits stay CONTEXT ONLY, sub-1 lines without a validated recipe stay NOT_YET_MODELED
+// Any change to this block (or to any value it pins) = a NEW model version and a new fingerprint.
+const MLB_MODEL_VERSION = 'mlb-edge-2026.10-v1';
+const MLB_FEATURE_SET = 'mlb-window-blend-v1';
+const MLB_GRADE_CONFIG = Object.freeze({
+    id: 'mlb-v1-identity-2026-10-07',
+    gradeCutoffs: null,        // null => built-in default thresholds (A >= .86 & conf >= 80, B >= .68 & conf >= 50, C >= .46) -- unchanged
+    probCalib: null,           // IDENTITY calibration (approved): no probability curve of any kind
+    // APPROVED Cap C (MLB Phase 3/4, pseudo-line validation only): abs(edge) / max(line, predictiveSpreadSD) > 0.50, threshold unchanged, no family values. An invalid / missing
+    // spread fails closed to the original abs(edge)/line rule. The thin-history protection (sampleGames < 3) is applied SEPARATELY and unchanged.
+    wildGapRule: 'floored',
+    wildGapRuleSpec: 'abs(edge) / max(line, predictiveSpreadSD) > 0.50',
+    matchup: 'CONTEXT_ONLY',   // opposing starter WHIP / opposing lineup K-rate, batter-vs-starter, platoon and home/road splits: displayed, never scored
+    predictiveSpreadSource: 'projStdDev(projection, statKey, windows): as-of projection + the player\'s own prior-game windows (recent.range); never the current game; missing/invalid => fails closed to the original abs(edge)/line rule',
+    // CAVEAT: predictiveSpreadSD is used ONLY as a conservative scale / floor. It is NOT validated as a true per-player standard deviation (on HR / 2B / 3B / SB it is the engine's 1.0 floor on 99.6-100% of
+    // sides, it is only weakly related to realized error within a stat, and for pitcher outs it is negatively related).
+    predictiveSpreadCaveat: 'conservative scale/floor, NOT a validated per-player standard deviation',
+    rareEventBlend: 'bypass-history',          // R1: HR / 2B / 3B / SB recipes do NOT mix the game-log EB / last-10 history priors into the probability
+    rareEventGradePolicy: 'probability-only',  // P2: probability shown, NO letter grade, NO Prime, never ranked (Best Plays / Smart Parlay / +EV)
+    confluence: 'IN_GRADE'                     // F0 retained exactly (2 model factors: recent form + season); not context-only
+});
+function mlbModelMeta() {
+    return {
+        modelVersion: MLB_MODEL_VERSION, sport: 'mlb', league: 'MLB',
+        featureSet: MLB_FEATURE_SET, defenseFeature: 'NONE', matchupFeature: 'CONTEXT_ONLY', defenseMatchup: 'context-only',
+        calibration: 'identity', calibrationId: MLB_GRADE_CONFIG.id, wildGapRule: MLB_GRADE_CONFIG.wildGapRule, wildGapRuleSpec: MLB_GRADE_CONFIG.wildGapRuleSpec,
+        predictiveSpreadSource: MLB_GRADE_CONFIG.predictiveSpreadSource, predictiveSpreadCaveat: MLB_GRADE_CONFIG.predictiveSpreadCaveat,
+        rareEventBlend: MLB_GRADE_CONFIG.rareEventBlend, rareEventGradePolicy: MLB_GRADE_CONFIG.rareEventGradePolicy, confluence: MLB_GRADE_CONFIG.confluence,
+        lowLineRecipes: ['homeRuns', 'doubles', 'triples', 'stolenBases'],     // the FROZEN, validated sub-1 rare-event recipes (Poisson + frozen league rate + curve bypass + .03-.97)
+        rareEventPriors: Object.assign({}, MLB_LOWLINE_RARE),                  // frozen 2022-2025 TRAIN rates: HR .129 / 2B .162 / 3B .016 / SB .077
+        lowLineCalibratedNoRecipe: ['hits', 'batterStrikeouts'],               // sub-1 lines still modeled by the generic path (Phase 1: gaps +0.6 / +1.5 pt) -- NOT a validated recipe
+        realLineValidation: 'PENDING',
+        state: 'BETA', modelState: 'BETA'      // declared (UI gating by state is not implemented; grades are shown)
+    };
+}
+// Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
         function nbaPositionWord(pos) {
             const p = String(pos || '').toUpperCase();
             return /^(PG|SG|G)$/.test(p) ? 'guards' : /^(SF|PF|F)$/.test(p) ? 'forwards' : p === 'C' ? 'centers' : 'this position group';
@@ -3516,6 +3561,33 @@
                 pr.modelSupported = false;
                 pr.modelState = MODEL_STATE_NOT_YET_MODELED;
                 pr.modelStateReason = NFL_SUB1_REASON;
+                pr.hitRate = null;
+            });
+            return props;
+        }
+        // MLB sub-1 SAFETY (2026-10-06, clean candidate). A line below 1 is modeled ONLY where one of these holds:
+        //   1. a FROZEN, validated rare-event recipe exists (MLB_LOWLINE_RARE: homeRuns / doubles / triples / stolenBases -- unchanged);
+        //   2. the stat is in MLB_LOWLINE_CALIBRATED_NO_RECIPE (hits, batterStrikeouts): modeled by the generic path because the Phase-1 audit measured them as
+        //      reasonably calibrated at 0.5 (gaps +0.6 / +1.5 pt). This is DOCUMENTED SEPARATELY from (1): it is an observation, not a validated recipe.
+        // Every other MLB line < 1 (runs, RBIs, singles, batter walks, total bases, earned runs, ...) has no validated low-line treatment (Phase 1: Over-side
+        // gaps of -7 to -10 pt) and FAILS CLOSED: real line shown, NO probability / grade / Prime / Best Plays / +EV / Smart Parlay. Do not invent a recipe here.
+        const MLB_LOWLINE_CALIBRATED_NO_RECIPE = Object.freeze(['hits', 'batterStrikeouts']);
+        const MLB_SUB1_REASON = 'Line below 1 with no validated low-line model for this stat — model fields withheld (the real line is shown unchanged).';
+        function mlbSubOneLineUnsupported(prop) {
+            if (!prop || !(prop.line < 1.0)) return false;
+            const rk = prop._mlbRealStat || prop.statKey;
+            if (MLB_LOWLINE_RARE[rk] != null) return false;                                                                   // frozen validated recipe
+            if (MLB_LOWLINE_CALIBRATED_NO_RECIPE.indexOf(rk) >= 0) return false;                                              // documented generic-path exception
+            if (_MLB_LOWLINE_EXPT && _MLB_LOWLINE_EXPT.stats && _MLB_LOWLINE_EXPT.stats[rk] != null) return false;             // a what-if hook explicitly supplies one
+            return true;
+        }
+        function applyMlbLowLineGate(props) {
+            (props || []).forEach(pr => {
+                if (!pr || pr.modelSupported === false) return;
+                if (!mlbSubOneLineUnsupported(pr)) return;
+                pr.modelSupported = false;
+                pr.modelState = MODEL_STATE_NOT_YET_MODELED;
+                pr.modelStateReason = MLB_SUB1_REASON;
                 pr.hitRate = null;
             });
             return props;
@@ -3643,6 +3715,12 @@
             if (!hasRealModelHistory(s)) return insufficientDataEdge();
             // NFL sub-1 lines with no validated low-line recipe fail closed (see nflSubOneLineUnsupported). rushTds / recTds keep their recipe.
             if (sport === 'nfl' && nflSubOneLineUnsupported(prop)) return notYetModeledEdge('NFL_SUB1_LINE_NO_VALIDATED_RECIPE');
+            // MLB (2026-10-06 clean candidate): ONE authoritative answer per prop. A window seeded from season totals (`seeded: true`, built by mlbSeedWindows before the
+            // real game log has loaded) is a PLACEHOLDER, not evidence: it must never yield an official probability / grade / Prime. The real game-log windows (the
+            // same builder the expanded card uses -- mlbComputeWindows) replace it; until they load the prop is INSUFFICIENT_DATA with the real line still shown.
+            if (sport === 'mlb' && s.season && s.season.seeded) return Object.assign(insufficientDataEdge(), { modelStateReason: 'MLB_HISTORY_NOT_LOADED' });
+            // MLB sub-1 lines with no validated low-line recipe fail closed (see mlbSubOneLineUnsupported). HR / 2B / 3B / SB keep their frozen recipe.
+            if (sport === 'mlb' && mlbSubOneLineUnsupported(prop)) return notYetModeledEdge('MLB_SUB1_LINE_NO_VALIDATED_RECIPE');
 
             // Factor 1: Recent Form (Last 5)
             const recentAvg = s.last5.avg;
@@ -3694,10 +3772,15 @@
                     // batter-friendly (weaker) pitcher, below it is tougher.
                     const weakPitcher = p.whip >= 1.30;
                     const matchupSupports = direction === 'over' ? weakPitcher : !weakPitcher;
-                    factors.push({
+                    // MLB (2026-10-06 clean candidate): the generic matchup is CONTEXT ONLY. Phase-1 audit (16,179 as-of targets): removing it changed Brier by -0.00008
+                    // (95% CI spans 0) and it was indistinguishable from a placebo, yet it flipped the displayed grade on ~12% of sides. It stays visible; it never reaches
+                    // the projection, probability, confluence, grade or Prime. No family-specific replacement has been validated.
+                    contextFactors.push({
                         key: 'matchup',
                         name: `vs ${p.name}`,
                         supports: matchupSupports,
+                        contextOnly: true,
+                        label: 'Context only — not in the projection, probability or grade',
                         detail: `${p.era} ERA, ${p.whip} WHIP, ${p.kPer9} K/9 this season`
                     });
                 } else if (player.role === 'pitcher' && player.opponentContext && player.opponentContext.teamBatting) {
@@ -3712,10 +3795,12 @@
                     const matchupSupports = isStrikeoutProp
                         ? (direction === 'over' ? highKTeam : !highKTeam)
                         : (direction === 'over' ? !highKTeam : highKTeam); // contact-heavy lineups put more balls in play
-                    factors.push({
+                    contextFactors.push({
                         key: 'matchup',
                         name: `vs ${player.opponent} lineup`,
                         supports: matchupSupports,
+                        contextOnly: true,
+                        label: 'Context only — not in the projection, probability or grade',
                         detail: `.${Math.round(t.teamAvg * 1000)} team avg, ${(t.kRate * 100).toFixed(1)}% K-rate this season`
                     });
                 }
@@ -3735,10 +3820,12 @@
                         const ratio = r / baseRate;
                         return ratio >= 1.10 ? true : ratio <= 0.90 ? false : null;
                     };
+                    // The split factors (career vs tonight's starter, platoon, home/road) load only when the card is expanded and cannot be reconstructed as-of for
+                    // validation, so they are CONTEXT ONLY too (2026-10-06): scoring them would give the collapsed board and the expanded card two different official answers.
                     const pushSplit = (key, name, st, mkDetail) => {
                         const more = favorsMore(mlbOffRate(st, prop.statKey));
                         if (more === null) return;
-                        factors.push({ key, name, supports: direction === 'over' ? more : !more, detail: mkDetail(st) });
+                        contextFactors.push({ key, name, supports: direction === 'over' ? more : !more, contextOnly: true, label: 'Context only — not in the projection, probability or grade', detail: mkDetail(st) });
                     };
                     if (player.bvp && mlbSplitN(player.bvp) >= 8) {
                         const b = player.bvp;
@@ -4082,20 +4169,9 @@
             // MLB batter: nudge by the platoon + batter-vs-starter splits,
             // relative to the player's own season baseline. Each capped, total
             // clamped ±20%. Needs a real sample or it doesn't move.
-            if (sport === 'mlb' && player.role === 'batter') {
-                const baseR = mlbOffRate(player._seasonStat, prop.statKey);
-                let mult = 1;
-                const nudge = (st, minN, cap) => {
-                    if (!st || mlbSplitN(st) < minN || baseR == null || baseR <= 0) return;
-                    const r = mlbOffRate(st, prop.statKey);
-                    if (r == null) return;
-                    mult *= 1 + Math.max(-cap, Math.min(cap, r / baseR - 1));
-                };
-                const hnd = player.oppPitcherHand;
-                nudge(player.splitBy && (hnd === 'L' ? player.splitBy.vl : hnd === 'R' ? player.splitBy.vr : null), 50, 0.12);
-                nudge(player.bvp, 12, 0.10);
-                projection *= Math.max(0.80, Math.min(1.20, mult));
-            }
+            // MLB (2026-10-06 clean candidate): the platoon / batter-vs-starter projection multiplier (+-12% / +-10%, clamped +-20%) that used to sit here is REMOVED
+            // from the projection. Those splits load only on card-expand and cannot be reconstructed as-of for validation, so scoring them produced a second,
+            // different official answer for the same prop. They remain visible as CONTEXT ONLY (see the matchup block above).
             if (paceRating === 'favorable') projection += 0.6;
             if (paceRating === 'unfavorable') projection -= 0.6;
 
@@ -4143,7 +4219,7 @@
             let grade;
             // NBA customer-facing grades come ONLY from the versioned NBA_GRADE_CONFIG -- never from a
             // browser's localStorage-derived GRADE_CUTOFFS (2026-10-06). Other sports unchanged.
-            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : sport === 'nfl' ? NFL_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
+            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : sport === 'nfl' ? NFL_GRADE_CONFIG.gradeCutoffs : sport === 'mlb' ? MLB_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
             if (cut) {
                 // Cutoffs derived from THIS sport's backtest so the letters are
                 // anchored to real outcomes.
@@ -4172,9 +4248,10 @@
             // fixed in NBA_GRADE_CONFIG / WNBA_GRADE_CONFIG .wildGapRule (validated; see model-validation) because dividing by a tiny line
             // (BLK 0.5, 3PM 1.5) capped ~41% / ~29% of sides regardless of how large the edge is in that stat's own units.
             const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : sport === 'wnba' ? WNBA_GRADE_CONFIG.wildGapRule : sport === 'nfl' ? NFL_GRADE_CONFIG.wildGapRule : 'relative';
+            const _gapRuleEff = sport === 'mlb' ? MLB_GRADE_CONFIG.wildGapRule : _gapRule;   // MLB BETA v1 (2026-10-07): Cap C 'floored', read from the versioned config
             // predictive spread: the same SD the probability layer uses; built only from as-of windows + the as-of projection.
             const predictiveSpreadSD = projStdDev(projection, prop.statKey, s);
-            const wildGap = wildGapExceeds(_gapRule, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
+            const wildGap = wildGapExceeds(_gapRuleEff, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
                 || (_football && sampleGames < 6 && edgeRatio > 0.30);        // small sample + big gap
             // A cross-book line (shown because the selected DFS site hasn't
             // posted this number) isn't actually pickable there — never let it
@@ -4354,14 +4431,20 @@
                     priors.push({ p: _l10p, w: 0.15, games: s.last10.games, name: 'last-10 hit rate (est.)' });
                 }
             }
-            const wHist = priors.reduce((a, x) => a + x.w, 0);
-            let pBlend = pDist * (1 - wHist) + priors.reduce((a, x) => a + x.p * x.w, 0);
-            priors.forEach(pr => probSteps.push({
+            // MLB BETA v1 (R1, 2026-10-07): for the four rare-event recipes (HR / 2B / 3B / SB on a sub-1 line) the generic history blend is BYPASSED ENTIRELY. Its game-log EB prior and
+            // last-10 prior are smoothed toward 0.5 (k = 6), which lifts a 1-15% event by +2.4 to +3.6 pts (Phase 4 attribution: last-10 +2.3, game-log +0.6). The frozen Poisson recipe
+            // (priors .129/.162/.016/.077, shrink, .03-.97 bounds) is untouched. Every other market keeps the blend exactly as before.
+            const _mlbRareBypass = _mlbScoped;
+            const _activePriors = _mlbRareBypass ? [] : priors;
+            const wHist = _activePriors.reduce((a, x) => a + x.w, 0);
+            let pBlend = pDist * (1 - wHist) + _activePriors.reduce((a, x) => a + x.p * x.w, 0);
+            _activePriors.forEach(pr => probSteps.push({
                 label: `Blend in ${pr.name}`,
                 p: pr.p, weight: pr.w,
                 detail: `~${Math.round(pr.p * 100)}% on this side over ${pr.games} games (pulled toward 50% for the small sample) — weighted ${Math.round(pr.w * 100)}%`
             }));
-            if (priors.length) probSteps.push({ label: 'After history blend', p: pBlend, subtotal: true });
+            if (_activePriors.length) probSteps.push({ label: 'After history blend', p: pBlend, subtotal: true });
+            else if (_mlbRareBypass) probSteps.push({ label: 'History blend bypassed (rare-event market)', p: pBlend, detail: 'The generic game-log / last-10 history blend is skipped for this rare-event market — it smooths a 1-15% event toward 50% and inflated these probabilities by 2-4 pts in validation. The probability comes from the Poisson count model alone.' });
 
             // per-factor nudges — skip the two already inside `projection`
             const FACTOR_STEP = 0.02, FACTOR_CAP = 0.08;
@@ -4484,9 +4567,14 @@
             // every other sport keeps its previous behavior (the post-rules are skipped in backtest mode).
             const _fg = resolveFinalGrade({
                 rawGrade, prime: primeCorner, modelProbSport, impliedProb, hasRealPrice,
-                liveRules: (sport === 'nba' || sport === 'wnba' || sport === 'nfl') ? true : prop.lineSource !== 'backtest'   // NBA + WNBA + NFL: one pipeline, live == historical
+                liveRules: (sport === 'nba' || sport === 'wnba' || sport === 'nfl' || sport === 'mlb') ? true : prop.lineSource !== 'backtest'   // NBA + WNBA + NFL + MLB: one pipeline, live == historical
             });
             grade = _fg.finalGrade;
+            // MLB BETA v1 (P2, 2026-10-07): the four rare-event markets are PROBABILITY-ONLY. They keep their projection, model probability, edge and context, but receive NO letter grade and NO
+            // Prime and are never ranked (Best Plays / Smart Parlay / +EV). Validation: 97% of rare Unders graded A at exactly the stat's base rate (lift +0.00); a letter there communicated the
+            // base rate, not model discrimination. They are modeled (not "unsupported"); they are simply ungraded.
+            const _rareProbOnly = sport === 'mlb' && _mlbScoped;
+            if (_rareProbOnly) grade = null;
             if (_fg.reasons.indexOf('PRIME_PROMOTION') >= 0) gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
             const gradeAdjustmentReason = _fg.reasons.length ? _fg.reasons.join('+') : null;
 
@@ -4517,7 +4605,7 @@
                 // Presentation-only items that are NOT model inputs (NBA opponent-defense context).
                 context: contextFactors,
                 // Trace metadata (NBA only): which model produced this, with defense explicitly NONE.
-                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : sport === 'nfl' ? nflModelMeta() : null,
+                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : sport === 'nfl' ? nflModelMeta() : sport === 'mlb' ? mlbModelMeta() : null,
                 greenCount,
                 totalFactors,
                 confidence,
@@ -4525,15 +4613,16 @@
                 thinData,
                 edge: roundedEdge,
                 edgeSignalPct: edgeSigPct, // directional (projection vs line) / line, %
-                prime: primeCorner,        // high confluence + large edge (backtest "prime corner")
+                prime: _rareProbOnly ? false : primeCorner,        // high confluence + large edge (backtest "prime corner"); never for a probability-only rare-event market
                 matchupLabel,
                 grade,
                 // Grade trace: rawGrade = thresholds + RED/thin/football caps; finalGrade (= grade) = after the official
                 // pipeline; gradeAdjustmentReason explains any promotion/demotion (null when none).
-                rawGrade, finalGrade: grade, gradeAdjustmentReason,
+                rawGrade: _rareProbOnly ? null : rawGrade, finalGrade: grade, gradeAdjustmentReason: _rareProbOnly ? null : gradeAdjustmentReason,
+                ...(_rareProbOnly ? { rankingEligible: false, gradePolicy: 'RARE_EVENT_PROBABILITY_ONLY' } : {}),
                 wildGap,   // diagnostic: the wild-gap cap fired (feeds thinData)
                 predictiveSpreadSD,   // diagnostic: the as-of spread used by the NBA cap
-                gradeScore: Math.round(gradeScore * 100) / 100,
+                gradeScore: _rareProbOnly ? null : Math.round(gradeScore * 100) / 100,
                 // probability layer (all estimates, not guarantees)
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
@@ -4590,7 +4679,9 @@
             A: { cls: 'grade-a', label: 'Strong factor + edge alignment' },
             B: { cls: 'grade-b', label: 'Solid lean' },
             C: { cls: 'grade-c', label: 'Marginal / mixed' },
-            D: { cls: 'grade-d', label: 'Factors lean against this side' }
+            D: { cls: 'grade-d', label: 'Factors lean against this side' },
+            // MLB BETA v1 (P2): an ungraded rare-event probability (grade === null) renders a neutral "Probability only" tag instead of a letter (see .grade-badge-sm.grade-none).
+            null: { cls: 'grade-none', label: 'Rare-event market — model probability only, no letter grade' }
         };
         // Best (lowest-ranked letter) grade across all of a player's props,
         // with the model edge of that best prop for tie-breaking.
@@ -4615,6 +4706,7 @@
                     if (prop.modelSupported === false) return;
                     const e = calculateEdgeScore(player, prop);
                     if (e.insufficientData) return; // no real history -> no grade (fail closed)
+                    if (e.grade == null) return;     // ungraded (MLB rare-event probability-only market): never a headline grade
                     if (!best || GRADE_RANK[e.grade] < GRADE_RANK[best.grade] ||
                         (e.grade === best.grade && e.gradeScore > best.gradeScore)) {
                         best = { grade: e.grade, gradeScore: e.gradeScore, edge: e.edge, prime: e.prime };
@@ -4703,6 +4795,13 @@
         // Undefined `modelSupported` (every prop built before this fix, and
         // every prop from a known market today) defaults to true.
         const isModelSupportedProp = (prop) => !!prop && prop.modelSupported !== false;
+        // Explicit downstream eligibility (2026-10-06): a prop / edge in the INSUFFICIENT_DATA or NOT_YET_MODELED state (unsupported low line, no history, model-unsupported)
+        // can never enter Best Plays, Prime, +EV or Smart Parlay, whatever an upstream builder did or did not flag. Pure gates -- no ranking formula is touched.
+        const isModelEligibleProp = (prop) => isModelSupportedProp(prop) && prop.modelState !== MODEL_STATE_INSUFFICIENT && prop.modelState !== MODEL_STATE_NOT_YET_MODELED;
+        const isModelEligibleEdge = (edge) => !!edge && !edge.insufficientData && edge.modelState !== MODEL_STATE_INSUFFICIENT && edge.modelState !== MODEL_STATE_NOT_YET_MODELED;
+        // Ranking eligibility (MLB BETA v1, 2026-10-07): a probability-only edge (the four MLB rare-event markets: no letter grade, no Prime) is MODELED but never RANKED -- it cannot enter Best Plays, Prime,
+        // +EV, Smart Parlay or any surface whose meaning implies validated model selection. Pure gate: no ranking formula is touched.
+        const isRankingEligibleEdge = (edge) => isModelEligibleEdge(edge) && edge.rankingEligible !== false && edge.grade != null;
 
         // Top N best-supported picks across EVERY player and EVERY one of their
         // props, using the same calculateEdgeScore engine as Browse (not a
@@ -4737,13 +4836,14 @@
                     if (!isLiveEligibleProp(prop)) return;
                     // Provider-only market (no BeatsEdge formula) -- real prop,
                     // stays visible in Browse/Search, never ranked here.
-                    if (!isModelSupportedProp(prop)) return;
+                    if (!isModelEligibleProp(prop)) return;
                     // Rank on the MAIN posted line only — alt lines (e.g. an
                     // "over 0.5" goblin) would otherwise dominate with trivially
                     // high hit rates and crowd out real picks.
                     if (prop.altLine || prop.crossBook) return;
                     if (direction && (prop.direction || 'over') !== direction) return;
                     const edge = calculateEdgeScore(player, prop);
+                    if (!isRankingEligibleEdge(edge)) return;
                     if (edge.thinData) return; // not enough game log to trust the projection
                     if (!bestForPlayer) { bestForPlayer = { player, prop, propIdx: idx, edge }; return; }
                     const ra = rank(edge), rb = rank(bestForPlayer.edge);
@@ -4793,6 +4893,7 @@
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
                     if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return;
+                    if (edge.rankingEligible === false) return;   // probability-only rare-event market (MLB P2): never a +EV pick
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
                 });
             });
@@ -4842,10 +4943,10 @@
                     if (!isLiveEligibleProp(prop)) return;
                     // Provider-only market (no BeatsEdge formula) -- real prop,
                     // stays visible in Browse/Search, never ranked here.
-                    if (!isModelSupportedProp(prop)) return;
+                    if (!isModelEligibleProp(prop)) return;
                     if (prop.altLine || prop.crossBook) return;
                     const edge = calculateEdgeScore(player, prop);
-                    if (!edge.prime) return;
+                    if (!isRankingEligibleEdge(edge) || !edge.prime) return;
                     if (!best) { best = { player, prop, propIdx: idx, edge }; return; }
                     const ra = rank(edge), rb = rank(best.edge);
                     for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) { if (ra[i] < rb[i]) best = { player, prop, propIdx: idx, edge }; break; } }
@@ -5325,27 +5426,28 @@
         const LL_TARGET = new Set(['homeRuns', 'doubles', 'triples', 'stolenBases']);
         const llBin = () => ({ n: 0, hit: 0, sumRaw: 0, sumFinal: 0, sumPre: 0, minFinal: 101, maxFinal: -1, atRawFloorN: 0, atEffFloorN: 0, brier: 0, ll: 0, cand: {}, pb: {}, gradeN: {}, primeN: 0, sumEdge: 0 });
 
-        // Walk-forward for ONE MLB player-stat series, with a {minTs,maxTs} date
-        // gate (temporal holdout) and stat-family tallying. Mirrors
-        // nbaBacktestSeries. `tss` is the per-game date in ms. Diagnostic use —
-        // there is NO MLB family calibration, so "before"/"after" are equal;
-        // this measures each MLB family's OWN calibration on unseen data.
-        // `fam` is the resolved MLB stat-family string (or null) — resolved by
-        // the caller because MLB_STAT_FAMILY is defined in component scope.
-        // `statKey` is the real MLB stat key (for the sub-1.0 floor diagnostic).
-        function mlbBacktestSeries(vals, opps, tss, position, fam, statKey, acc, gate) {
+        // Walk-forward for ONE MLB player-stat series, scored by the PRODUCTION path (2026-10-06 clean candidate). For every target game the LIVE-shaped player + prop
+        // come from `build(i, line)` (= mlbBacktestInputs inside the App): the REAL stat key, real game-log windows built from games with date STRICTLY earlier than the
+        // target date (same builder as the live card), the same final-grade pipeline. No placeholder stat key, no fake player, no history window of its own.
+        //   vals[i]  the real observation for target game i (null = missing: never a target and never history)    tss[i]  the game date in ms (midnight UTC)
+        // Pseudo-line (NO real historical lines exist): the in-app rule -- the line nearest a 48% historical Over rate over the as-of history -- unchanged.
+        // A side the model withholds (NOT_YET_MODELED / INSUFFICIENT_DATA) is COUNTED in acc.withheld and never graded. Diagnostic: nothing here is persisted.
+        function mlbBacktestSeries(vals, tss, position, fam, statKey, acc, gate, build) {
             const MIN = (gate && gate.minGames) || 12;
             const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
-            // Effective low-end floor the CURRENT frozen model applies to MLB:
-            // the bottom anchor of PROB_CALIB.mlb if a curve is active (the curve
-            // holds flat below its lowest anchor), else the 22% RAW_FLOOR.
-            const _mlbCurve = (typeof PROB_CALIB !== 'undefined' && PROB_CALIB) ? PROB_CALIB.mlb : null;
-            const effFloorPct = (Array.isArray(_mlbCurve) && _mlbCurve.length) ? Math.round(_mlbCurve[0][1]) : 22;
-            for (let i = MIN; i < vals.length; i++) {
+            // MLB has no probability curve in the official config (identity), so the low-end floor of the stated probability is the 22% raw floor.
+            const effFloorPct = (Array.isArray(MLB_GRADE_CONFIG.probCalib) && MLB_GRADE_CONFIG.probCalib.length) ? Math.round(MLB_GRADE_CONFIG.probCalib[0][1]) : 22;
+            const wh = acc.withheld || (acc.withheld = { sides: 0, byState: {}, byStat: {}, targets: 0 });
+            for (let i = 0; i < vals.length; i++) {
+                if (vals[i] == null) continue;
                 const gTs = tss[i] || 0;
-                if (maxTs && gTs && gTs >= maxTs) continue;
-                if (minTs && (!gTs || gTs < minTs)) continue;
-                const hv = vals.slice(0, i), ho = opps.slice(0, i);
+                if (!(gTs > 0)) continue;                                     // strictly as-of needs a date
+                if (maxTs && gTs >= maxTs) continue;
+                if (minTs && gTs < minTs) continue;
+                // doubleheader: two games on one DATE cannot be ordered from the date alone -> not a target (history is always strictly earlier DATES)
+                if ((i > 0 && tss[i - 1] === gTs) || (i + 1 < vals.length && tss[i + 1] === gTs)) continue;
+                const hv = []; for (let j = 0; j < i; j++) if (vals[j] != null && tss[j] > 0 && tss[j] < gTs) hv.push(vals[j]);
+                if (hv.length < MIN) continue;
                 const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
                 if (seasonAvg <= 0) continue;
                 let line = null, bestGap = 99;
@@ -5355,17 +5457,32 @@
                     if (gp < bestGap) { bestGap = gp; line = cand; }
                 }
                 if (line == null || line <= 0) continue;
-                const actual = vals[i], tonightOpp = opps[i];
+                const actual = vals[i];
                 if (actual === line) continue;
-                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
-                const fake = { sport: 'mlb', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
+                const built = build(i, line);
                 for (const dir of ['over', 'under']) {
-                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', _mlbRealStat: statKey, line, direction: dir, lineSource: 'backtest' });
+                    const pr = built.props.find(x => x.statKey === statKey && x.direction === dir);
+                    if (!pr) continue;
+                    const e = pr.modelSupported === false ? null : calculateEdgeScore(built.player, pr);
+                    if (!e || !isModelEligibleEdge(e)) {                      // withheld by the model: counted, never graded
+                        wh.sides++; const st = (pr.modelState || (e && e.modelState)) || 'UNSUPPORTED'; wh.byState[st] = (wh.byState[st] || 0) + 1; wh.byStat[statKey] = (wh.byStat[statKey] || 0) + 1; continue;
+                    }
                     const hit = dir === 'over' ? actual > line : actual < line;
+                    if (e.grade == null) {   // MLB BETA v1 (P2): an ungraded rare-event side is a PROBABILITY-ONLY observation -- never in a letter, Prime, confluence or gradeScore table
+                        const yU = hit ? 1 : 0, pU = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 50) / 100));
+                        const ro = acc.rareProbOnly || (acc.rareProbOnly = { n: 0, hit: 0, sumProb: 0, brier: 0, byStat: {} });
+                        const rs = ro.byStat[statKey] || (ro.byStat[statKey] = { n: 0, hit: 0, sumProb: 0, brier: 0 });
+                        for (const o of [ro, rs]) { o.n++; o.hit += yU; o.sumProb += pU * 100; o.brier += (pU - yU) * (pU - yU); }
+                    } else {
                     const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
                     g.n++; if (hit) g.hit++;
                     acc._total.n++; if (hit) acc._total.hit++;
                     btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
+                    btFileAlign(acc, e.greenCount, e.totalFactors, hit);
+                    btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                    btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                    btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                    e.factors.forEach(fc => { if (!fc.supports) return; const fb = acc.factors[fc.name] || (acc.factors[fc.name] = { n: 0, hit: 0 }); fb.n++; if (hit) fb.hit++; });
                     const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
                     const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
                     sb.n++; if (hit) sb.hit++;
@@ -5385,6 +5502,7 @@
                             tally(acc.mlbFam[fam] || (acc.mlbFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
                             if (e.prime) tally(acc.mlbFamPrime[fam] || (acc.mlbFamPrime[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
                         }
+                    }
                     }
                     // ── MLB sub-1.0-line floor diagnostic ──────────────────────
                     // NO model change here — this only OBSERVES how the current
@@ -5406,7 +5524,7 @@
                             if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
                             if (preRaw < 0.22) bin.atRawFloorN++;
                             if (Math.abs(finalPct - effFloorPct) <= 0.5) bin.atEffFloorN++;
-                            bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
+                            if (e.grade != null) bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
                             if (e.prime) bin.primeN++;
                             bin.sumEdge += (typeof e.edgePct === 'number' ? e.edgePct : 0);
                             bin.brier += (p - y) * (p - y);
@@ -5666,7 +5784,7 @@
                                 // trace metadata (model version / feature set / defense feature / calibration id) -- NBA only
                                 modelMeta: e.modelMeta || null,
                                 // grade trace: why the displayed grade is what it is (raw -> final, with reason) and the Prime state
-                                gradeTrace: { rawGrade: e.rawGrade || null, finalGrade: e.finalGrade || e.grade || null, gradeAdjustmentReason: e.gradeAdjustmentReason || null, prime: !!e.prime },
+                                gradeTrace: { rawGrade: e.rawGrade || null, finalGrade: e.finalGrade || e.grade || null, gradeAdjustmentReason: e.gradeAdjustmentReason || null, prime: !!e.prime, gradePolicy: e.gradePolicy || null },
                                 minutes: (sport === 'nba' || sport === 'wnba') ? p.projMin != null : null,
                                 splits: sport === 'mlb' ? !!(p.splitBy || p.bvp) : null,
                                 injuryStatus: !!p.status,
@@ -5792,7 +5910,7 @@
         // re-clamped 1-99%.
         function applyProbCalib(p01, sport) {
             // NBA: official probability calibration comes ONLY from NBA_GRADE_CONFIG (versioned), never from browser localStorage.
-            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : sport === 'nfl' ? NFL_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
+            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : sport === 'nfl' ? NFL_GRADE_CONFIG.probCalib : sport === 'mlb' ? MLB_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
             if (!Array.isArray(cal) || cal.length < 2) return p01;
             const x = p01 * 100;
             if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
@@ -9165,7 +9283,7 @@
                         let e; try { e = calculateEdgeScore(p, pr); } catch (err) { return; }
                         if (!e || e.insufficientData) return;
                         if (e.prime) prime = true;
-                        if (!bestEdge || GRADE_RANK[e.grade] < GRADE_RANK[bestEdge.grade]) bestEdge = e;
+                        if (e.grade != null && (!bestEdge || GRADE_RANK[e.grade] < GRADE_RANK[bestEdge.grade])) bestEdge = e;
                     });
                     const proj = fbProjectFantasy(p, sport, calculateEdgeScore);
                     const hist = fbPlayerGames(p, sport);
@@ -12144,50 +12262,63 @@
             // statsapi hitting/pitching stat object, and which "games" field
             // divides a season total into a per-game rate }. One table drives
             // season seeding, L5/L10 warm-up, and the on-expand game log.
-            // DraftKings-style fantasy scoring, per game, from a statsapi
-            // hitting or pitching stat object.
-            const mlbFantasyHit = (s) => {
-                const h = s.hits || 0, d = s.doubles || 0, t = s.triples || 0, hr = s.homeRuns || 0;
-                const singles = Math.max(0, h - d - t - hr);
-                return Math.round((3 * singles + 5 * d + 8 * t + 10 * hr + 2 * (s.rbi || 0) + 2 * (s.runs || 0) + 2 * (s.baseOnBalls || 0) + 2 * (s.hitByPitch || 0) + 5 * (s.stolenBases || 0)) * 10) / 10;
+            // ── MLB observation parsing (2026-10-06 clean candidate) ─────────────────────────────────────────────────────────────────────────────────
+            // A stat cell is a VALID OBSERVATION only when it is a finite number (or a clean numeric string). A real 0 is a real observation and is preserved
+            // (an all-zero history is a valid history). "--", "", null, undefined, NaN and any other non-numeric value are MISSING: the game is excluded from that
+            // stat's windows, never counted as 0. A derived / combination observation exists ONLY when EVERY component it needs was recorded -- a missing
+            // component is never silently replaced by 0.
+            const MLB_NUM_RE = /^\s*-?\d+(\.\d+)?\s*$/;
+            const mlbNum = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? v : null) : (typeof v === 'string' && MLB_NUM_RE.test(v) ? parseFloat(v) : null));
+            // Baseball innings notation is NOT decimal: 5.1 IP = 5 1/3 innings = 16 outs, 5.2 IP = 17 outs (the digit after the point counts OUTS, 0-2).
+            const mlbOutsFromIp = (ip) => {
+                if (ip == null) return null;
+                const m = /^\s*(\d+)(?:\.([012]))?\s*$/.exec(String(ip));
+                return m ? parseInt(m[1], 10) * 3 + (m[2] ? parseInt(m[2], 10) : 0) : null;
             };
-            // PrizePicks "Pitcher Fantasy Score": out +1, K +3, ER -3,
-            // Win +6, Quality Start +4. (NOT DraftKings scoring — this is
-            // the number PrizePicks/Underdog actually post.)
+            // An explicit, valid `outs` value always wins; innings-pitched notation is only the fallback.
+            const mlbOuts = (s) => { const o = mlbNum(s.outs); return o != null ? o : mlbOutsFromIp(s.inningsPitched); };
+            const mlbAll = (s, keys) => { const o = []; for (const k of keys) { const v = mlbNum(s[k]); if (v == null) return null; o.push(v); } return o; };
+            // DraftKings-style fantasy scoring, per game, from a statsapi hitting stat object. Requires EVERY component (null when any is missing).
+            const mlbFantasyHit = (s) => {
+                const c = mlbAll(s, ['hits', 'doubles', 'triples', 'homeRuns', 'rbi', 'runs', 'baseOnBalls', 'hitByPitch', 'stolenBases']);
+                if (!c) return null;
+                const [h, d, t, hr, rbi, r, bb, hbp, sb] = c; const singles = Math.max(0, h - d - t - hr);
+                return Math.round((3 * singles + 5 * d + 8 * t + 10 * hr + 2 * rbi + 2 * r + 2 * bb + 2 * hbp + 5 * sb) * 10) / 10;
+            };
+            // PrizePicks "Pitcher Fantasy Score": out +1, K +3, ER -3, Win +6, Quality Start +4. (NOT DraftKings scoring — this is the number PrizePicks/Underdog
+            // actually post.) Requires outs (or valid innings notation), strikeouts, earned runs and wins; a missing `qualityStarts` is derived per game.
             const mlbFantasyPitch = (s) => {
-                const ipStr = String(s.inningsPitched != null ? s.inningsPitched : '0');
-                const [whole, frac] = ipStr.split('.');
-                const outs = s.outs != null ? s.outs : ((parseInt(whole, 10) || 0) * 3 + (parseInt(frac, 10) || 0));
-                const er = s.earnedRuns || 0;
-                const qs = s.qualityStarts != null
-                    ? s.qualityStarts
-                    : ((outs >= 18 && er <= 3) ? 1 : 0); // derive per-game when not aggregated
-                return Math.round((outs + 3 * (s.strikeOuts || 0) - 3 * er + 6 * (s.wins || 0) + 4 * qs) * 10) / 10;
+                const outs = mlbOuts(s), k = mlbNum(s.strikeOuts), er = mlbNum(s.earnedRuns), w = mlbNum(s.wins);
+                if (outs == null || k == null || er == null || w == null) return null;
+                const qg = mlbNum(s.qualityStarts);
+                const qs = qg != null ? qg : ((outs >= 18 && er <= 3) ? 1 : 0); // derive per-game when not aggregated
+                return Math.round((outs + 3 * k - 3 * er + 6 * w + 4 * qs) * 10) / 10;
             };
 
-            // `type` matches PrizePicks' stat-category naming. `market: null`
-            // means PropLine has no line for it (fantasy scores, pitcher walks)
-            // so it's shown as a computed projection off the real game log.
+            // `type` matches PrizePicks' stat-category naming. `market: null` means PropLine has no line for it (fantasy scores, pitcher walks) so it is shown as a
+            // computed projection off the real game log. `get` returns the observation or NULL when it cannot be formed; `has` is exactly "get is not null".
+            const mlbDef = (type, market, get, extra) => Object.assign({ type, market, get, has: (s) => get(s || {}) != null }, extra || {});
+            const mlbOne = (field) => (s) => mlbNum(s[field]);
             const MLB_PROP_DEFS = {
-                hits:             { type: 'Hits',                  market: 'batter_hits',            get: s => s.hits || 0, has: s => s.hits != null },
-                totalBases:       { type: 'Total Bases',           market: 'batter_total_bases',     get: s => s.totalBases || 0, has: s => s.totalBases != null },
-                homeRuns:         { type: 'Home Runs',             market: 'batter_home_runs',       get: s => s.homeRuns || 0, has: s => s.homeRuns != null },
-                rbis:             { type: 'RBIs',                  market: 'batter_rbis',            get: s => s.rbi || 0, has: s => s.rbi != null },
-                runs:             { type: 'Runs',                  market: 'batter_runs',            get: s => s.runs || 0, has: s => s.runs != null },
-                doubles:          { type: 'Doubles',               market: 'batter_doubles',         get: s => s.doubles || 0, has: s => s.doubles != null },
-                triples:          { type: 'Triples',               market: 'batter_triples',         get: s => s.triples || 0, has: s => s.triples != null },
-                singles:          { type: 'Singles',               market: 'batter_singles',         get: s => Math.max(0, (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0)), has: s => s.hits != null },
-                batterWalks:      { type: 'Walks',                 market: 'batter_walks',           get: s => s.baseOnBalls || 0, has: s => s.baseOnBalls != null },
-                batterStrikeouts: { type: 'Hitter Strikeouts',     market: 'batter_strikeouts',      get: s => s.strikeOuts || 0, has: s => s.strikeOuts != null },
-                stolenBases:      { type: 'Stolen Bases',          market: 'batter_stolen_bases',    get: s => s.stolenBases || 0, has: s => s.stolenBases != null },
-                hitsRunsRbis:     { type: 'Hits+Runs+RBIs',        market: 'batter_hits_runs_rbis',  get: s => (s.hits || 0) + (s.runs || 0) + (s.rbi || 0), has: s => s.hits != null || s.runs != null || s.rbi != null },
-                fantasy:          { type: 'Hitter Fantasy Score',  market: null,                     get: s => mlbFantasyHit(s), has: s => s.hits != null || s.runs != null || s.rbi != null },
-                strikeouts:       { type: 'Pitcher Strikeouts',    market: 'pitcher_strikeouts',     get: s => s.strikeOuts || 0, has: s => s.strikeOuts != null, pitcher: true },
-                earnedRuns:       { type: 'Earned Runs Allowed',   market: 'pitcher_earned_runs',    get: s => s.earnedRuns || 0, has: s => s.earnedRuns != null, pitcher: true },
-                hitsAllowed:      { type: 'Hits Allowed',          market: 'pitcher_hits_allowed',   get: s => s.hits || 0, has: s => s.hits != null, pitcher: true },
-                pitcherOuts:      { type: 'Pitching Outs',         market: 'pitcher_outs',           get: s => s.outs != null ? s.outs : Math.round((parseFloat(s.inningsPitched) || 0) * 3), has: s => s.outs != null || s.inningsPitched != null, pitcher: true },
-                pitcherWalks:     { type: 'Walks Allowed',         market: null,                     get: s => s.baseOnBalls || 0, has: s => s.baseOnBalls != null, pitcher: true },
-                pitcherFantasy:   { type: 'Pitcher Fantasy Score', market: null,                     get: s => mlbFantasyPitch(s), has: s => s.outs != null || s.inningsPitched != null, pitcher: true }
+                hits:             mlbDef('Hits',                  'batter_hits',            mlbOne('hits')),
+                totalBases:       mlbDef('Total Bases',           'batter_total_bases',     mlbOne('totalBases')),
+                homeRuns:         mlbDef('Home Runs',             'batter_home_runs',       mlbOne('homeRuns')),
+                rbis:             mlbDef('RBIs',                  'batter_rbis',            mlbOne('rbi')),
+                runs:             mlbDef('Runs',                  'batter_runs',            mlbOne('runs')),
+                doubles:          mlbDef('Doubles',               'batter_doubles',         mlbOne('doubles')),
+                triples:          mlbDef('Triples',               'batter_triples',         mlbOne('triples')),
+                singles:          mlbDef('Singles',               'batter_singles',         (s) => { const c = mlbAll(s, ['hits', 'doubles', 'triples', 'homeRuns']); return c ? Math.max(0, c[0] - c[1] - c[2] - c[3]) : null; }),
+                batterWalks:      mlbDef('Walks',                 'batter_walks',           mlbOne('baseOnBalls')),
+                batterStrikeouts: mlbDef('Hitter Strikeouts',     'batter_strikeouts',      mlbOne('strikeOuts')),
+                stolenBases:      mlbDef('Stolen Bases',          'batter_stolen_bases',    mlbOne('stolenBases')),
+                hitsRunsRbis:     mlbDef('Hits+Runs+RBIs',        'batter_hits_runs_rbis',  (s) => { const c = mlbAll(s, ['hits', 'runs', 'rbi']); return c ? c[0] + c[1] + c[2] : null; }),
+                fantasy:          mlbDef('Hitter Fantasy Score',  null,                     mlbFantasyHit),
+                strikeouts:       mlbDef('Pitcher Strikeouts',    'pitcher_strikeouts',     mlbOne('strikeOuts'), { pitcher: true }),
+                earnedRuns:       mlbDef('Earned Runs Allowed',   'pitcher_earned_runs',    mlbOne('earnedRuns'), { pitcher: true }),
+                hitsAllowed:      mlbDef('Hits Allowed',          'pitcher_hits_allowed',   mlbOne('hits'), { pitcher: true }),
+                pitcherOuts:      mlbDef('Pitching Outs',         'pitcher_outs',           mlbOuts, { pitcher: true }),
+                pitcherWalks:     mlbDef('Walks Allowed',         null,                     mlbOne('baseOnBalls'), { pitcher: true }),
+                pitcherFantasy:   mlbDef('Pitcher Fantasy Score', null,                     mlbFantasyPitch, { pitcher: true })
             };
             const MLB_MARKET_TO_KEY = Object.fromEntries(Object.entries(MLB_PROP_DEFS).filter(([, v]) => v.market).map(([k, v]) => [v.market, k]));
             // MLB_STAT_FAMILY / MLB_FAMILY_ORDER / MLB_FAMILY_LABEL are defined at
@@ -12346,7 +12477,8 @@
             const mlbSeedWindows = (seasonStatObj, isPitcher, statKey, line) => {
                 const def = MLB_PROP_DEFS[statKey];
                 const games = mlbGamesField(seasonStatObj, isPitcher);
-                const perGame = games > 0 ? def.get(seasonStatObj) / games : 0;
+                const _seedV = def.get(seasonStatObj);   // null when the season object lacks a required component (never silently 0 for a REAL observation; seeded windows are placeholders anyway)
+                const perGame = (games > 0 && _seedV != null) ? _seedV / games : 0;
                 const avg = round1(perGame);
                 const hr = estHitRate(avg, line);
                 // `seeded: true`: avg is the REAL season rate but `hitRate` (and the
@@ -12472,6 +12604,24 @@
             // `noSample` is really only false during the pre-lines seed pass in
             // buildMlbPlayer, which shows season-anchored placeholders until
             // fetchMlbPropLines runs.
+            // MLB model gates applied when props are built: (1) a REAL (non-seeded) window with no real history -> INSUFFICIENT_DATA (a SEEDED window is judged by the
+            // engine, which withholds it until the real game log loads -- flagging it here would pin the prop unsupported forever); (2) sub-1 lines with no validated
+            // recipe -> NOT_YET_MODELED. The real line is untouched in every case.
+            const applyMlbModelGates = (props, statsByKey) => {
+                (props || []).forEach(pr => {
+                    if (!pr || pr.modelSupported === false) return;
+                    const w = statsByKey && statsByKey[pr.statKey];
+                    // same ORDER as the engine (history first, then the sub-1 gate): a SEEDED window that still counts games is a pending placeholder (the engine withholds it until
+                    // the real log loads); a seeded window with 0 games, a missing window, or a real window with no history is genuinely 'no history'.
+                    if (w && w.season && w.season.seeded && w.season.games >= MODEL_MIN_REAL_GAMES) return;   // pending load: not flagged here (the engine withholds it)
+                    if (hasRealModelHistory(w)) return;                                                         // real history
+                    pr.modelSupported = false;
+                    pr.modelState = MODEL_STATE_INSUFFICIENT;
+                    pr.modelStateReason = 'No game history for this stat — model fields withheld (missing is unknown, not zero).';
+                    pr.hitRate = null;
+                });
+                return applyMlbLowLineGate(props);
+            };
             const mlbBuildProps = (seasonStat, isPitcher, statsByKey, allLines, book, seedMode) => {
                 allLines = allLines || {};
                 book = book || 'prizepicks';
@@ -12549,11 +12699,10 @@
                     MLB_DEFAULT_KEYS[isPitcher ? 'pitcher' : 'batter'].forEach(k => {
                         const def = MLB_PROP_DEFS[k];
                         const g = mlbGamesField(seasonStat, isPitcher);
-                        pushPair(k, def, mlbSampleLine(k, g > 0 ? def.get(seasonStat) / g : 0), { isProjection: true });
+                        pushPair(k, def, mlbSampleLine(k, (g > 0 && def.get(seasonStat) != null) ? def.get(seasonStat) / g : 0), { isProjection: true });
                     });
-                    // Fail closed on missing history (see applyHistoryGate): a player with
-                    // no real season games gets INSUFFICIENT_DATA placeholders, not a 0 average.
-                    return applyHistoryGate(props, statsByKey);
+                    // Fail closed (2026-10-06): seeded windows are placeholders, never evidence -- the engine withholds them until the real game log loads.
+                    return applyMlbModelGates(props, statsByKey);
                 }
 
                 if (!hasAnyReal) return props; // no live lines at all → player has no props
@@ -12605,8 +12754,8 @@
                 // shown before fetchMlbPropLines's first live fetch completes.
 
                 booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), bk)));
-                // Fail closed on missing history (see applyHistoryGate).
-                return applyHistoryGate(props, statsByKey);
+                // Fail closed on missing history and on sub-1 lines without a validated recipe (see applyMlbModelGates).
+                return applyMlbModelGates(props, statsByKey);
             };
 
             // Stable identity for a prop — content-derived, NOT the array
@@ -12662,6 +12811,7 @@
                         // slate on every load AND every ~90s silent refresh was
                         // real, visible main-thread jank, not a fix to the model.
                         pr.__edge = e;
+                        if (e.grade == null) return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK.D + 1, g: -1 };   // ungraded rare-event probability (MLB P2): sorts after every graded prop
                         return { pr, alt: pr.altLine ? 1 : 0, r: GRADE_RANK[e.grade], g: e.gradeScore };
                     })
                     .sort((a, b) => a.alt - b.alt || a.r - b.r || b.g - a.g)
@@ -12783,8 +12933,10 @@
                     // ever be computed) for it, so it can never be a +EV
                     // candidate either. See sortPropsByEdge's identical guard.
                     if (pr.modelSupported === false) return prClean;
+                    if (!isModelEligibleProp(pr)) return prClean;   // NOT_YET_MODELED / INSUFFICIENT_DATA props can never become a +EV candidate
                     const byBook = player._allLines && player._allLines[pr.statKey];
                     const edge = __edge || calculateEdgeScore(player, pr);
+                    if (!isModelEligibleEdge(edge) || edge.rankingEligible === false) return prClean;   // a probability-only rare-event market (MLB P2) is never a +EV candidate
                     const result = computePlusEVForProp(pr, byBook, edge.projection, edge.thinData);
                     if (!result) return prClean;
                     return result.isAltLine ? { ...prClean, altLineValue: result } : { ...prClean, plusEV: result };
@@ -13043,74 +13195,185 @@
 
             // Layer real L5 / L10 recent-form averages (in each player's prop
             // unit) on top of the season-seeded numbers, in two batched calls.
+                        // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+            // MLB AUTHORITATIVE SCORING INPUTS (2026-10-06 clean candidate). ONE builder turns real statsapi game-log splits into the stat windows + per-game log
+            // the model reads. The expanded card (fetchMlbPlayerDetail), the collapsed board (warmMlbSlateForm) and the historical validation
+            // (mlbBacktestInputs) ALL call it, so a prop has ONE official answer and a historical prediction is made by exactly the production code.
+            // `beforeTs` (validation only) keeps STRICTLY earlier games: history date < target game date. Live passes null (completed games only).
+            // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+            const MLB_TEAM_ABBR_BY_NAME = {
+                    'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
+                    'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
+                    'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
+                    'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
+                    'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
+                    'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
+                    'New York Yankees': 'NYY', 'Athletics': 'ATH', 'Oakland Athletics': 'ATH',
+                    'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
+                    'Seattle Mariners': 'SEA', 'San Francisco Giants': 'SF', 'St. Louis Cardinals': 'STL',
+                    'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
+                    'Washington Nationals': 'WSH'
+                };
+            const mlbOppAbbr = (opp, abbrById) => (opp && ((abbrById && abbrById[opp.id]) || MLB_TEAM_ABBR_BY_NAME[opp.name] || opp.name)) || '';
+            const mlbBuildGameList = (splitsPrev, splits, seasonYr, abbrById, beforeTs) => {
+                const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                const mapSplits = (arr, yr) => arr.map(sp => {
+                    const iso = sp.date || '';
+                    const parts = iso.split('-'); // YYYY-MM-DD
+                    const disp = parts.length === 3 ? `${MON[+parts[1] - 1] || parts[1]} ${+parts[2]}, ${parts[0]}` : iso;
+                    const oppAbbr = mlbOppAbbr(sp.opponent, abbrById);
+                    return {
+                        ts: Date.parse(iso) || 0,
+                        gamePk: (sp.game && sp.game.gamePk) || null,
+                        date: disp,                       // "Sep 6, 2026"
+                        dateShort: parts.length === 3 ? `${+parts[1]}/${+parts[2]}/${parts[0].slice(2)}` : iso, // "9/6/26"
+                        opponent: oppAbbr,
+                        vsLabel: (sp.isHome === false ? '@ ' : 'vs ') + oppAbbr,
+                        season: yr,
+                        stat: sp.stat || {}
+                    };
+                });
+                // Oldest → newest; a gameLog split is a stat record (only played games have one), but guard against a future/bad date anyway.
+                // Dedup by MLB gamePk (falls back to date+opponent).
+                const now = Date.now();
+                const seen = new Set();
+                return [...mapSplits(splitsPrev, seasonYr - 1), ...mapSplits(splits, seasonYr)]
+                    .filter(g => g.ts > 0 && (beforeTs != null ? g.ts < beforeTs : g.ts <= now))
+                    .filter(g => {
+                        const key = g.gamePk != null ? `pk:${g.gamePk}` : `${g.date}|${g.opponent}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    })
+                    .sort((a, b) => a.ts - b.ts);
+            };
+            // Windows + per-game log for each stat key in `keys`. `baseByKey` supplies the (seeded) fallback window only for the vsOpp placeholder / line fallback.
+            const mlbComputeWindows = (games, baseByKey, keys, lineFor, oppAbbr, seasonYr, isPitcher) => {
+                const byKey = {}, logByKey = {};
+                const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
+                keys.forEach(k => {
+                    const def = MLB_PROP_DEFS[k]; if (!def) return;
+                    const base = (baseByKey && baseByKey[k]) || null;
+                    const getV = def.get;
+                    const hasV = def.has || (() => true);
+                    const withVal = games.filter(g => hasV(g.stat));
+                    const vals = withVal.map(g => getV(g.stat) || 0);
+                    const line = lineFor[k] != null ? lineFor[k] : (mean(vals) != null ? mean(vals) : (base && base.season && base.season.avg != null ? base.season.avg : 0));
+                    const hitRateOf = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
+                    const windowOf = (n) => {
+                        const arr = vals.slice(-n);
+                        return { avg: mean(arr), hitRate: hitRateOf(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, stability: seriesStats(arr) };
+                    };
+                    const sorted = [...vals].sort((a, b) => a - b);
+                    const oppVals = withVal.filter(g => g.opponent === oppAbbr).map(g => getV(g.stat) || 0);
+                    // `season` keeps its EXISTING meaning (the model reads season.avg/hitRate/games as an input — see calculateEdgeScore) and is NEVER filtered to a
+                    // calendar season here, only deduped/has()-corrected like every other window. `trueSeason` is a NEW, additive, UI-only field — current-SEASON
+                    // games ONLY — for the analytics tab labeled "Season"; the model never reads it.
+                    const trueSeasonVals = withVal.filter(g => g.season === seasonYr).map(g => getV(g.stat) || 0);
+                    // Projection Stability / Uncertainty research layer — see the shared seriesStats/projectionStabilitySummary helpers.
+                    const stabilitySummary = projectionStabilitySummary(vals, vals.slice(-5));
+                    const seasonStats = seriesStats(vals);
+                    byKey[k] = {
+                        last5: windowOf(5),
+                        last10: windowOf(10),
+                        last15: windowOf(15),
+                        last20: windowOf(20),
+                        last40: windowOf(40),
+                        season: { avg: mean(vals), hitRate: hitRateOf(vals), games: vals.length, stability: seasonStats },
+                        trueSeason: { avg: mean(trueSeasonVals), hitRate: hitRateOf(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, stability: seriesStats(trueSeasonVals) },
+                        vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, stability: seriesStats(oppVals) } : (base ? base.vsOpp : undefined),
+                        recent: { avg: mean(vals.slice(-10)), hitRate: hitRateOf(vals.slice(-10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length },
+                        sampleSize: seasonStats.sampleSize, floor: seasonStats.floor, median: seasonStats.median,
+                        mean: seasonStats.mean, ceiling: seasonStats.ceiling, ...stabilitySummary
+                    };
+                    // full recent series (up to 40) so the chart can widen to L20 / season when the window selector changes.
+                    // Real per-game participation, straight off the already-fetched MLB Stats API gameLog stat blob — batter PA / pitcher IP, never fabricated.
+                    logByKey[k] = withVal.slice(-40).map(g => ({
+                        date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
+                        points: getV(g.stat) || 0, line, season: g.season,
+                        pa: !isPitcher && g.stat.plateAppearances != null ? g.stat.plateAppearances : null,
+                        // Real historical AB (at-bats), straight off the same already-fetched gameLog stat blob as `pa` above -- never derived from PA.
+                        ab: !isPitcher && g.stat.atBats != null ? g.stat.atBats : null,
+                        ip: isPitcher && g.stat.inningsPitched != null ? g.stat.inningsPitched : null
+                    }));
+                });
+                return { byKey, logByKey };
+            };
+            // Prefer the STANDARD-board line per stat (an alt / goblin / demon line must not become the hit-rate baseline).
+            const mlbLineFor = (p) => {
+                const lineFor = {};
+                [...(p.props || [])].sort((a, b) => (a.altLine || a.ppKind ? 1 : 0) - (b.altLine || b.ppKind ? 1 : 0))
+                    .forEach(pr => { if (lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
+                return lineFor;
+            };
+            // A prop's placeholder hit rate (estHitRate off the SEASON average) is refreshed from the REAL window, and a prop that was flagged INSUFFICIENT_DATA only
+            // because its window was empty/seeded when it was built is re-judged on the real history (so the flag can never outlive the data that caused it).
+            const mlbRefreshProps = (props, statsByKey) => {
+                (props || []).forEach(pr => {
+                    const w = statsByKey[pr.statKey]; if (!w || !w.season) return;
+                    let restored = false;
+                    // both flags are derived from the data / line: re-judge them on the real window, in the engine's order (history first, then the sub-1 gate)
+                    if (pr.modelState === MODEL_STATE_INSUFFICIENT || (pr.modelState === MODEL_STATE_NOT_YET_MODELED && pr.modelStateReason === MLB_SUB1_REASON)) { delete pr.modelSupported; delete pr.modelState; delete pr.modelStateReason; restored = true; }
+                    if ((typeof pr.hitRate === 'number' || restored) && w.season.avg != null) { const oHR = estHitRate(w.season.avg, pr.line); pr.hitRate = pr.direction === 'over' ? oHR : Math.max(2, 100 - oHR); }
+                });
+                applyMlbModelGates(props, statsByKey);
+            };
+            const mlbMergeWindows = (p, byKey, logByKey) => {
+                const statsByKey = { ...p.statsByKey, ...byKey }, gameLogByKey = { ...p.gameLogByKey, ...logByKey };
+                const first = p.props && p.props.length ? p.props[0].statKey : null;
+                mlbRefreshProps(p.props, statsByKey);
+                return { ...p, statsByKey, gameLogByKey, stats: first ? statsByKey[first] : p.stats, gameLog: first ? (gameLogByKey[first] || []) : p.gameLog };
+            };
+            // Historical validation input: the LIVE-shaped player + props for target game `i` of `rec` ({ id, isPitcher, position, splits: API-shaped, oldest->newest }),
+            // built by the SAME builders production runs. History = games with date STRICTLY earlier than the target game (current + previous season, like live).
+            // The real stat key is used (no placeholder key), so the quantile models, the rare-event recipes and the per-stat spread run exactly as in production.
+            const mlbBacktestInputs = (rec, i, statKey, line) => {
+                const tgt = rec.splits[i]; const tTs = Date.parse(tgt.date) || 0; const seasonYr = +tgt.season || new Date(tTs).getUTCFullYear();
+                const cur = rec.splits.filter(sp => +sp.season === seasonYr), prev = rec.splits.filter(sp => +sp.season === seasonYr - 1);
+                const games = mlbBuildGameList(prev, cur, seasonYr, {}, tTs);
+                const opp = mlbOppAbbr(tgt.opponent, {});
+                const base = { [statKey]: mlbSeedWindows({}, rec.isPitcher, statKey, line) };
+                const { byKey, logByKey } = mlbComputeWindows(games, base, [statKey], { [statKey]: line }, opp, seasonYr, rec.isPitcher);
+                const statsByKey = { ...base, ...byKey };
+                const allLines = { [statKey]: { prizepicks: [{ line, over: null, under: null, setAt: null, move: null, primary: true, eventId: 'bt-' + (tgt.game && tgt.game.gamePk), commenceTimeMs: tTs + 36e5, _src: 'parlayapi', ppType: 'standard' }] } };
+                const props = mlbBuildProps({}, rec.isPitcher, statsByKey, allLines, 'prizepicks');
+                const player = { id: rec.id, sport: 'mlb', role: rec.isPitcher ? 'pitcher' : 'batter', name: rec.name || '', team: '', opponent: opp, position: rec.position, isHomeTonight: !!tgt.isHome, paceRating: 'neutral', paceDetail: '', minutesTrend: 0,
+                    gameLog: logByKey[statKey] || [], gameLogByKey: logByKey, _seasonStat: {}, _isPitcher: !!rec.isPitcher, props, statsByKey, stats: statsByKey[statKey], opponentContext: {}, opponentDefense: null, situational: null };
+                return { player, props, historyDates: games.map(g => g.ts), targetTs: tTs };
+            };
+
             const warmMlbSlateForm = async (players) => {
-                const wantGroups = {}; // id -> 'hitting' | 'pitching'
-                players.forEach(p => { wantGroups[p.id] = p.role === 'pitcher' ? 'pitching' : 'hitting'; });
-                const ids = Object.keys(wantGroups);
-
-                const fetchWindow = async (limit) => {
-                    const map = {};
-                    for (const group of chunk(ids, 40)) {
-                        try {
-                            const data = await mlbFetch(`/people?personIds=${group.join(',')}&hydrate=stats(group=[hitting,pitching],type=[lastXGames],limit=${limit},season=${MLB_SEASON})`);
-                            (data.people || []).forEach(p => {
-                                (p.stats || []).forEach(s => {
-                                    const stat = s.splits && s.splits[0] && s.splits[0].stat;
-                                    if (stat && s.group) map[p.id + ':' + s.group.displayName] = stat;
+                // 2026-10-06 clean candidate: the collapsed board and the expanded card must give ONE official answer, so the board no longer scores from season-total
+                // placeholders (+ L5/L10 lastXGames). It loads the SAME real game logs the card uses (current + previous season, batched) and builds the windows with the
+                // SAME mlbComputeWindows. Until a player's log has loaded, his props are INSUFFICIENT_DATA (real line shown); nothing is invented from a placeholder.
+                const wantGroups = { hitting: [], pitching: [] };
+                players.forEach(p => { if (p.sport === 'mlb') wantGroups[p.role === 'pitcher' ? 'pitching' : 'hitting'].push(String(p.id)); });
+                const logs = {};   // `${id}:${group}` -> { cur: splits[], prev: splits[] }
+                for (const group of ['hitting', 'pitching']) {
+                    const ids = Array.from(new Set(wantGroups[group]));
+                    for (const yr of [MLB_SEASON, MLB_SEASON - 1]) {
+                        for (const idChunk of chunk(ids, 25)) {
+                            try {
+                                const data = await mlbFetch(`/people?personIds=${idChunk.join(',')}&hydrate=stats(group=[${group}],type=[gameLog],season=${yr})`);
+                                (data.people || []).forEach(pp => {
+                                    const sp = (pp.stats && pp.stats[0] && pp.stats[0].splits) || [];
+                                    const rec = logs[pp.id + ':' + group] || (logs[pp.id + ':' + group] = { cur: [], prev: [] });
+                                    (yr === MLB_SEASON ? rec.cur : rec.prev).push(...sp);
                                 });
-                            });
-                        } catch (e) { /* leave season-seeded */ }
+                            } catch (e) { /* this chunk stays unloaded -> its props stay INSUFFICIENT_DATA (fail closed) */ }
+                        }
                     }
-                    return map;
-                };
-
-                const [l5, l10] = await Promise.all([fetchWindow(5), fetchWindow(10)]);
-
-                // per-game rate for one statKey out of a lastXGames stat object
-                const winAvg = (stat, isPitcher, statKey) => {
-                    if (!stat) return null;
-                    const g = mlbGamesField(stat, isPitcher);
-                    return g > 0 ? round1(MLB_PROP_DEFS[statKey].get(stat) / g) : null;
-                };
-
+                }
                 setPlayersData(prev => prev.map(p => {
                     if (p.sport !== 'mlb' || !p.statsByKey) return p;
-                    const grp = wantGroups[p.id];
-                    const s5 = l5[p.id + ':' + grp];
-                    const s10 = l10[p.id + ':' + grp];
-                    if (!s5 && !s10) return p;
-                    const isPitcher = !!p._isPitcher;
-                    // Prefer the STANDARD-board line for each stat — an alt /
-                    // goblin / demon line must not become the hit-rate baseline.
-                    const lineFor = {};
-                    [...p.props].sort((a, b) => (a.altLine || a.ppKind ? 1 : 0) - (b.altLine || b.ppKind ? 1 : 0))
-                        .forEach(pr => { if (lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
-                    const nextByKey = { ...p.statsByKey };
-                    Object.keys(nextByKey).forEach(k => {
-                        const line = lineFor[k] != null ? lineFor[k] : nextByKey[k].season.avg;
-                        const a5 = winAvg(s5, isPitcher, k);
-                        const a10 = winAvg(s10, isPitcher, k);
-                        if (a5 == null && a10 == null) return;
-                        const w = { ...nextByKey[k] };
-                        if (a5 != null) w.last5 = { ...w.last5, avg: a5, hitRate: estHitRate(a5, line) };
-                        if (a10 != null) {
-                            w.last10 = { ...w.last10, avg: a10, hitRate: estHitRate(a10, line) };
-                            w.recent = { ...w.recent, avg: a10 };
-                        }
-                        nextByKey[k] = w;
-                    });
-                    // Guarded the same way every other statsByKey/props[0]
-                    // merge in this file already is (e.g. fetchMlbPropLines,
-                    // fetchMlbPlayerDetail) — p.props CAN legitimately be []
-                    // here (matched real data exists for some OTHER book, but
-                    // none for the currently selected platform tab), which
-                    // this one spot didn't guard against. Only surfaced as a
-                    // crash once the "never publish seed data over real data
-                    // on a silent refresh" fix above started letting warmMlb-
-                    // SlateForm actually run against real (not freshly-reseeded)
-                    // player state — the seed array always happened to have a
-                    // non-empty props[0], which is what was masking this.
-                    return { ...p, statsByKey: nextByKey, stats: p.props.length ? nextByKey[p.props[0].statKey] : p.stats, statsSource: 'statsapi.mlb.com — season + L5/L10 (real)' };
+                    const isPitcher = p.role === 'pitcher';
+                    const rec = logs[String(p.id) + ':' + (isPitcher ? 'pitching' : 'hitting')];
+                    if (!rec || (!rec.cur.length && !rec.prev.length)) return p;
+                    const games = mlbBuildGameList(rec.prev, rec.cur, MLB_SEASON, mlbCache.current.abbrById, null);
+                    const roleKeys = Object.keys(MLB_PROP_DEFS).filter(k => !!MLB_PROP_DEFS[k].pitcher === isPitcher);
+                    const keys = Array.from(new Set([...Object.keys(p.statsByKey), ...roleKeys]));
+                    const { byKey, logByKey } = mlbComputeWindows(games, p.statsByKey, keys, mlbLineFor(p), p.opponent, MLB_SEASON, isPitcher);
+                    return { ...mlbMergeWindows(p, byKey, logByKey), _historyLoaded: true, statsSource: 'statsapi.mlb.com — full game log (real; same windows as the expanded card)' };
                 }));
             };
 
@@ -13754,138 +14017,13 @@
                 const bvp = (bvpData && bvpData.stats && bvpData.stats[0] && bvpData.stats[0].splits && bvpData.stats[0].splits[0] && bvpData.stats[0].splits[0].stat) || null;
                 const oppHand = (pitchData && pitchData.people && pitchData.people[0] && pitchData.people[0].pitchHand && pitchData.people[0].pitchHand.code) || null;
 
-                const abbrById = mlbCache.current.abbrById;
-                // abbrById is built fresh each day from ONLY today's slate games
-                // (see fetchMlbSlate) -- a historical opponent whose team isn't
-                // playing today has no entry there, so this used to fall all the
-                // way through to the raw full team name ("Texas Rangers",
-                // "Cleveland Guardians") in the compact chart, overlapping and
-                // unreadable. This is the real, static MLB Stats API team.name ->
-                // abbreviation mapping (all 30 current teams, including the
-                // post-2025-relocation "Athletics" name already relied on above
-                // for abbrById itself) -- display-only, never touches model
-                // inputs, hit rates, or window membership (g.opponent is only
-                // ever compared against p.opponent, which is always today's
-                // opponent and therefore always already resolved via abbrById).
-                const MLB_TEAM_ABBR_BY_NAME = {
-                    'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
-                    'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
-                    'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
-                    'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
-                    'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
-                    'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
-                    'New York Yankees': 'NYY', 'Athletics': 'ATH', 'Oakland Athletics': 'ATH',
-                    'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
-                    'Seattle Mariners': 'SEA', 'San Francisco Giants': 'SF', 'St. Louis Cardinals': 'STL',
-                    'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
-                    'Washington Nationals': 'WSH'
-                };
-                const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                const mapSplits = (arr, seasonYr) => arr.map(sp => {
-                    const iso = sp.date || '';
-                    const parts = iso.split('-'); // YYYY-MM-DD
-                    const disp = parts.length === 3 ? `${MON[+parts[1] - 1] || parts[1]} ${+parts[2]}, ${parts[0]}` : iso;
-                    const oppAbbr = (sp.opponent && (abbrById[sp.opponent.id] || MLB_TEAM_ABBR_BY_NAME[sp.opponent.name] || sp.opponent.name)) || '';
-                    return {
-                        ts: Date.parse(iso) || 0,
-                        gamePk: (sp.game && sp.game.gamePk) || null,
-                        date: disp,                       // "Sep 6, 2026"
-                        dateShort: parts.length === 3 ? `${+parts[1]}/${+parts[2]}/${parts[0].slice(2)}` : iso, // "9/6/26"
-                        opponent: oppAbbr,
-                        vsLabel: (sp.isHome === false ? '@ ' : 'vs ') + oppAbbr,
-                        season: seasonYr,
-                        stat: sp.stat || {}
-                    };
-                });
-                // Oldest → newest; a gameLog split is a stat record (only
-                // played games have one), but guard against a future/bad date
-                // anyway. Dedup by MLB gamePk (falls back to date+opponent).
-                const now = Date.now();
-                const seen = new Set();
-                const games = [...mapSplits(splitsPrev, MLB_SEASON - 1), ...mapSplits(splits, MLB_SEASON)]
-                    .filter(g => g.ts > 0 && g.ts <= now)
-                    .filter(g => {
-                        const key = g.gamePk != null ? `pk:${g.gamePk}` : `${g.date}|${g.opponent}`;
-                        if (seen.has(key)) return false;
-                        seen.add(key);
-                        return true;
-                    })
-                    .sort((a, b) => a.ts - b.ts);
-                const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
-
+                // Oldest → newest, strictly completed games, deduped by MLB gamePk: the SAME builder the board warm-up and the validation use.
+                const games = mlbBuildGameList(splitsPrev, splits, MLB_SEASON, mlbCache.current.abbrById, null);
                 setPlayersData(prev => prev.map(p => {
                     if (p.id !== player.id || p.role !== player.role || !p.statsByKey) return p;
-                    // Prefer the STANDARD-board line per stat (see warmMlbSlateForm).
-                    const lineFor = {};
-                    [...p.props].sort((a, b) => (a.altLine || a.ppKind ? 1 : 0) - (b.altLine || b.ppKind ? 1 : 0))
-                        .forEach(pr => { if (lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
-                    const nextByKey = { ...p.statsByKey };
-                    const nextLogByKey = { ...p.gameLogByKey };
-
-                    Object.keys(nextByKey).forEach(k => {
-                        const def = MLB_PROP_DEFS[k];
-                        const getV = def.get;
-                        const hasV = def.has || (() => true);
-                        const withVal = games.filter(g => hasV(g.stat));
-                        const vals = withVal.map(g => getV(g.stat) || 0);
-                        const line = lineFor[k] != null ? lineFor[k] : (mean(vals) != null ? mean(vals) : nextByKey[k].season.avg);
-                        const hitRateOf = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
-                        const windowOf = (n) => {
-                            const arr = vals.slice(-n);
-                            return { avg: mean(arr), hitRate: hitRateOf(arr), games: arr.length, requestedGames: n, availableGames: vals.length, complete: vals.length >= n, stability: seriesStats(arr) };
-                        };
-                        const sorted = [...vals].sort((a, b) => a - b);
-                        const oppVals = withVal.filter(g => g.opponent === p.opponent).map(g => getV(g.stat) || 0);
-                        // `season` keeps its EXISTING meaning (the model reads
-                        // season.avg/hitRate/games as an input — see
-                        // calculateEdgeScore) and is NEVER filtered to a
-                        // calendar season here, only deduped/has()-corrected
-                        // like every other window. `trueSeason` is a NEW,
-                        // additive, UI-only field — current-SEASON games ONLY
-                        // — for the analytics tab labeled "Season"; the model
-                        // never reads it.
-                        const trueSeasonVals = withVal.filter(g => g.season === MLB_SEASON).map(g => getV(g.stat) || 0);
-                        // Projection Stability / Uncertainty research layer — see
-                        // the shared seriesStats/projectionStabilitySummary helpers.
-                        const stabilitySummary = projectionStabilitySummary(vals, vals.slice(-5));
-                        const seasonStats = seriesStats(vals);
-                        nextByKey[k] = {
-                            last5: windowOf(5),
-                            last10: windowOf(10),
-                            last15: windowOf(15),
-                            last20: windowOf(20),
-                            last40: windowOf(40),
-                            season: { avg: mean(vals), hitRate: hitRateOf(vals), games: vals.length, stability: seasonStats },
-                            trueSeason: { avg: mean(trueSeasonVals), hitRate: hitRateOf(trueSeasonVals), games: trueSeasonVals.length, requestedGames: null, availableGames: trueSeasonVals.length, complete: true, stability: seriesStats(trueSeasonVals) },
-                            vsOpp: oppVals.length ? { avg: mean(oppVals), hitRate: hitRateOf(oppVals), games: oppVals.length, requestedGames: null, availableGames: oppVals.length, complete: true, stability: seriesStats(oppVals) } : nextByKey[k].vsOpp,
-                            recent: { avg: mean(vals.slice(-10)), hitRate: hitRateOf(vals.slice(-10)), median: sorted[Math.floor(sorted.length / 2)] || 0, range: [sorted[0] || 0, sorted[sorted.length - 1] || 0], games: vals.length },
-                            sampleSize: seasonStats.sampleSize, floor: seasonStats.floor, median: seasonStats.median,
-                            mean: seasonStats.mean, ceiling: seasonStats.ceiling, ...stabilitySummary
-                        };
-                        // full recent series (up to 40) so the chart can widen
-                        // to L20 / season when the window selector changes
-                        // Real per-game participation, straight off the already-
-                        // fetched MLB Stats API gameLog stat blob — batter PA /
-                        // pitcher IP, never fabricated (2026-09-27 playing-time
-                        // context fix). Left null (not displayed) if the field is
-                        // genuinely absent from a given game's stat object.
-                        nextLogByKey[k] = withVal.slice(-40).map(g => ({
-                            date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel,
-                            points: getV(g.stat) || 0, line, season: g.season,
-                            pa: !isPitcher && g.stat.plateAppearances != null ? g.stat.plateAppearances : null,
-                            // Real historical AB (at-bats), straight off the same
-                            // already-fetched MLB Stats API gameLog stat blob as
-                            // `pa` above -- never derived/estimated from PA. Left
-                            // null (omitted, not fabricated) if the field is
-                            // genuinely absent from a given game's stat object.
-                            ab: !isPitcher && g.stat.atBats != null ? g.stat.atBats : null,
-                            ip: isPitcher && g.stat.inningsPitched != null ? g.stat.inningsPitched : null
-                        }));
-                    });
-
+                    const { byKey, logByKey } = mlbComputeWindows(games, p.statsByKey, Object.keys(p.statsByKey), mlbLineFor(p), p.opponent, MLB_SEASON, isPitcher);
                     return {
-                        ...p, statsByKey: nextByKey, gameLogByKey: nextLogByKey,
-                        stats: nextByKey[p.props[0].statKey], gameLog: nextLogByKey[p.props[0].statKey] || [],
+                        ...mlbMergeWindows(p, byKey, logByKey),
                         splitBy, bvp, oppPitcherHand: oppHand,
                         _detailLoaded: true, statsSource: 'statsapi.mlb.com — full game log + splits (real)'
                     };
@@ -17443,28 +17581,32 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     let runPass = null;
 
                     if (selectedSport === 'mlb') {
+                        // 2026-10-06: scored through the PRODUCTION path (mlbBacktestInputs: real stat keys, real game-log windows from strictly earlier dates, the live
+                        // grade pipeline), on current + previous season logs like the live card. Diagnostic only -- nothing derived here can change MLB output.
                         const seen = new Set();
                         const gathered = [];
                         for (const grp of chunk(roster.filter(p => !seen.has(p.id) && seen.add(p.id)), 6)) {
                             await Promise.all(grp.map(async p => {
                                 const isPitcher = !!p._isPitcher || p.role === 'pitcher';
                                 try {
-                                    const data = await mlbFetch(`/people/${p.id}/stats?stats=gameLog&group=${isPitcher ? 'pitching' : 'hitting'}&season=${MLB_SEASON}`);
-                                    const splits = (data.stats && data.stats[0] && data.stats[0].splits) || [];
+                                    const g = isPitcher ? 'pitching' : 'hitting';
+                                    const [cur, prev] = await Promise.all([MLB_SEASON, MLB_SEASON - 1].map(yr => mlbFetch(`/people/${p.id}/stats?stats=gameLog&group=${g}&season=${yr}`).catch(() => null)));
+                                    const sp = (d) => (d && d.stats && d.stats[0] && d.stats[0].splits) || [];
+                                    const splits = [...sp(prev), ...sp(cur)].filter(s => s && s.date).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
                                     if (splits.length < 12) return;
-                                    const opps = splits.map(sp => (sp.opponent && (mlbCache.current.abbrById[sp.opponent.id] || sp.opponent.name)) || '');
-                                    gathered.push({ p, isPitcher, splits, opps });
+                                    gathered.push({ p, isPitcher, rec: { id: p.id, name: p.name, isPitcher, position: p.position, splits } });
                                 } catch (e) { /* skip this player */ }
                             }));
                         }
                         runPass = (acc) => {
-                            gathered.forEach(({ p, isPitcher, splits, opps }) => {
+                            gathered.forEach(({ p, isPitcher, rec }) => {
                                 Object.keys(MLB_PROP_DEFS).forEach(k => {
                                     const def = MLB_PROP_DEFS[k];
                                     if (!!def.pitcher !== isPitcher) return;
-                                    const vals = splits.map(sp => def.get(sp.stat || {}) || 0);
-                                    if (vals.every(v => v === 0)) return;
-                                    backtestSeries(vals, opps, 'mlb', p.position, acc);
+                                    const vals = rec.splits.map(sp => def.get(sp.stat || {}));
+                                    if (vals.every(v => v == null)) return;
+                                    const tss = rec.splits.map(sp => Date.parse(sp.date) || 0);
+                                    mlbBacktestSeries(vals, tss, p.position, MLB_STAT_FAMILY[k] || null, k, acc, { minGames: 12 }, (i, line) => mlbBacktestInputs(rec, i, k, line));
                                     evaluated++;
                                 });
                             });
@@ -17595,11 +17737,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
                             // NBA: diagnostic only -- NBA customer-facing grades come from NBA_GRADE_CONFIG, so nothing is persisted for NBA.
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA/NFL: diagnostic only, never persisted
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA/NFL/MLB: diagnostic only, never persisted
                         }
                         if (probCal) {
                             PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
@@ -18042,8 +18184,8 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 (data.people || []).forEach(pp => {
                                     const splits = (pp.stats && pp.stats[0] && pp.stats[0].splits) || [];
                                     if (!splits.length) return;
-                                    const rec = byPlayer[pp.id] || (byPlayer[pp.id] = { isPitcher: group === 'pitching', position: pp.primaryPosition && pp.primaryPosition.abbreviation, splits: [] });
-                                    splits.forEach(sp => rec.splits.push({ ts: Date.parse(sp.date + 'T12:00:00Z') || 0, stat: sp.stat || {}, opp: abbrOf(sp.opponent) }));
+                                    const rec = byPlayer[pp.id] || (byPlayer[pp.id] = { id: pp.id, name: pp.fullName, isPitcher: group === 'pitching', position: pp.primaryPosition && pp.primaryPosition.abbreviation, splits: [] });
+                                    splits.forEach(sp => rec.splits.push({ date: sp.date, season: sp.season, isHome: sp.isHome, game: sp.game, opponent: sp.opponent, stat: sp.stat || {}, ts: Date.parse(sp.date) || 0, opp: abbrOf(sp.opponent) }));
                                 });
                             }
                         }
@@ -18057,13 +18199,15 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     }).filter(rec => rec.splits.length >= 40);
                     if (!players.length) { setMlbTemporal({ error: 'No multi-season MLB game logs returned from statsapi.', ranAt: Date.now() }); return; }
 
+                    // Production-shaped series (2026-10-06): the real observation per game (null = missing), the game date, and a builder that produces the LIVE player + prop
+                    // for target game i. The old whole-series "all zeros -> skip the player" filter looked at FUTURE games and is gone: a player is skipped only when he
+                    // has no observation at all.
                     const seriesFor = (rec) => {
                         const keys = Object.keys(MLB_PROP_DEFS).filter(k => !!MLB_PROP_DEFS[k].pitcher === rec.isPitcher);
-                        const opps = rec.splits.map(s => s.opp);
                         const tss = rec.splits.map(s => s.ts);
                         return keys.map(k => {
-                            const vals = rec.splits.map(s => MLB_PROP_DEFS[k].get(s.stat) || 0);
-                            return vals.every(v => v === 0) ? null : { k, fam: MLB_STAT_FAMILY[k] || null, vals, opps, tss, position: rec.position, isPitcher: rec.isPitcher };
+                            const vals = rec.splits.map(s => MLB_PROP_DEFS[k].get(s.stat || {}));
+                            return vals.every(v => v == null) ? null : { k, fam: MLB_STAT_FAMILY[k] || null, vals, tss, position: rec.position, isPitcher: rec.isPitcher, build: (i, line) => mlbBacktestInputs(rec, i, k, line) };
                         }).filter(Boolean);
                     };
                     const allSeries = players.flatMap(seriesFor);
@@ -18071,7 +18215,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     // ---- pass 1: derive cutoffs + curve from TRAIN (pre-holdout) ----
                     const accTrain = emptyBacktestAcc();
                     accTrain.lowLine = {}; // TRAIN over-rates → leak-free floor recommendation
-                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutTs }));
+                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutTs }, s.build));
                     const cutoffs = deriveGradeCutoffs(accTrain.score);
                     const probCal = deriveProbCalib(accTrain.probRaw);
 
@@ -18083,9 +18227,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (probCal) PROB_CALIB = { ...PROB_CALIB, mlb: probCal };
                         bumpEdgeCache();
                         accHold = emptyBacktestAcc(); accHold.mlbFam = {}; accHold.mlbFamPrime = {}; accHold.lowLine = {};
-                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutTs }));
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutTs }, s.build));
                         accFull = emptyBacktestAcc(); accFull.mlbFam = {}; accFull.mlbFamPrime = {};
-                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
+                        allSeries.forEach(s => mlbBacktestSeries(s.vals, s.tss, s.position, s.fam, s.k, accFull, {}, s.build));
 
                         // ── STEP 2 EXPERIMENT ─────────────────────────────────
                         // Same frozen train cutoffs/curve. Frozen per-stat base
@@ -18113,7 +18257,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 try {
                                     _MLB_LOWLINE_EXPT = R.cfg; bumpEdgeCache();
                                     accR = emptyBacktestAcc(); accR.lowLine = {};
-                                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutTs }));
+                                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutTs }, s.build));
                                 } finally {
                                     _MLB_LOWLINE_EXPT = null; bumpEdgeCache();
                                 }
@@ -18140,7 +18284,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 try {
                                     _MLB_LOWLINE_EXPT = R.cfg; bumpEdgeCache();
                                     accR = emptyBacktestAcc(); accR.lowLine = {};
-                                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutTs }));
+                                    allSeries.forEach(s => mlbBacktestSeries(s.vals, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutTs }, s.build));
                                 } finally {
                                     _MLB_LOWLINE_EXPT = null; bumpEdgeCache();
                                 }
@@ -21955,10 +22099,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                 )}
 
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap', margin: '0 0 0.6rem' }}>
-                                                    <div className={`grade-badge ${GRADE_META[edge.grade].cls}`}>
+                                                    {edge.grade != null ? <div className={`grade-badge ${GRADE_META[edge.grade].cls}`}>
                                                         <div className="grade-badge-letter">{edge.grade}</div>
                                                         <div className="grade-badge-caption">Grade</div>
-                                                    </div>
+                                                    </div> : <div className="grade-badge" title="Rare-event market: probability only"><div className="grade-badge-letter" style={{ fontSize: '0.8rem' }}>—</div><div className="grade-badge-caption">No grade</div></div>}
                                                     <div className="edge-descriptor-row">
                                                         <div className="edge-descriptor">
                                                             <div className="edge-descriptor-val" style={{ color: 'var(--accent-red)' }}>{edge.modelProbPct}%</div>
@@ -21975,9 +22119,10 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     </div>
                                                 </div>
                                                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0 0 1.25rem' }}>
-                                                    {GRADE_META[edge.grade].label} — the letter is a descriptive summary of the numbers above, not a separate signal.
+                                                    {edge.grade == null ? 'Rare-event market — BeatsEdge shows the model probability only: no letter grade, no Prime, and it is not ranked in Best Plays or Smart Parlay.' : GRADE_META[edge.grade].label + ' — the letter is a descriptive summary of the numbers above, not a separate signal.'}
                                                     {(() => {
                                                         const cal = calibrationFor(backtest, player.sport);
+                                                        if (edge.grade == null) return null;
                                                         const c = cal && cal[edge.grade];
                                                         return c && c.rate != null
                                                             ? <span style={{ color: c.rate >= 52 ? 'var(--success-green)' : 'var(--text-muted)' }}> Backtest: this grade's side landed <strong>{c.rate}%</strong> of the time ({c.n.toLocaleString()} graded picks from real game logs).</span>
@@ -22657,7 +22802,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     : (eligible
                                                                         ? `➕ Add ${activeProp.direction === 'under' ? 'UNDER' : 'OVER'} ${formatProviderLine(activeProp.line)} to Smart Parlay`
                                                                         : (gateHR == null
-                                                                            ? 'Smart Parlay needs a real game-log hit rate (80%+) — none is available for this prop'
+                                                                            ? (edge.rankingEligible === false ? 'Rare-event probability only — not eligible for Smart Parlay' : 'Smart Parlay needs a real game-log hit rate (80%+) — none is available for this prop')
                                                                             : `Smart Parlay needs an 80%+ hit rate — this ${activeProp.direction} is ${gateHR}%`))}
                                                             </button>
                                                         </div>

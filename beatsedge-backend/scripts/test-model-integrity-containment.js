@@ -142,7 +142,8 @@ console.log('\n# Smart Parlay: only real, line-specific game-log evidence');
   const eNoGl = m.calculateEdgeScore(realPlayer('nba', 'points', 22.5, { games: 30, base: 40, noLog: true }), prop('points', 22.5));
   check('engine: same player WITHOUT a game log is "window", never "game_log" -> not eligible', eNoGl.hitRatesSource !== 'game_log' && m.smartParlayEligibility(eNoGl, prop('points', 22.5)).eligible === false, String(eNoGl.hitRatesSource));
   const eSeedMlb = m.calculateEdgeScore({ id: 'mlbs', sport: 'mlb', role: 'batter', position: 'SS', opponent: 'NYY', statsByKey: { hits: { recent: { avg: 0.9, hitRate: 62, median: 1, range: [0, 6], games: 80, seeded: true }, last5: { avg: 0.9, hitRate: 62, games: 5, seeded: true }, last10: { avg: 0.9, hitRate: 62, games: 10, seeded: true }, last20: { avg: 0.9, hitRate: 62, games: 20, seeded: true }, season: { avg: 0.9, hitRate: 62, games: 80, seeded: true }, vsOpp: { avg: 0.9, hitRate: 62, games: 0, seeded: true } } }, stats: {}, gameLogByKey: {}, props: [] }, prop('hits', 0.5, { hitRate: 62 }));
-  check('engine: MLB seeded windows (hitRate = estHitRate placeholder) -> hitRatesSource "seeded_estimate" -> not eligible', eSeedMlb.hitRatesSource === 'seeded_estimate' && m.smartParlayEligibility(eSeedMlb, prop('hits', 0.5)).eligible === false, String(eSeedMlb.hitRatesSource));
+  // 2026-10-06 MLB clean candidate: a SEEDED MLB window is a placeholder, so the engine now withholds it entirely (INSUFFICIENT_DATA, MLB_HISTORY_NOT_LOADED) instead of scoring it with a 'seeded_estimate' source -- still never Smart-Parlay eligible.
+  check('engine: MLB seeded windows (hitRate = estHitRate placeholder) are withheld (INSUFFICIENT_DATA, no probability/grade) and never Smart Parlay eligible', eSeedMlb.insufficientData === true && eSeedMlb.modelStateReason === 'MLB_HISTORY_NOT_LOADED' && eSeedMlb.modelProb == null && eSeedMlb.grade == null && m.smartParlayEligibility(eSeedMlb, prop('hits', 0.5)).eligible === false, String(eSeedMlb.hitRatesSource));
 
   // Source-level: the Smart Parlay UI block uses the gate, never prop.hitRate / realHR / estHitRate.
   const a = html.indexOf('const spGate = smartParlayEligibility(edge, activeProp);');
@@ -162,7 +163,8 @@ console.log('\n# archive / sort / fantasy guards (source-level -- these live ins
   const fb = html.slice(html.indexOf('function fbProjectFantasy'), html.indexOf('function fbFpAllowedByPos'));
   check('fantasy projection requires real history (no 0 stand-in)', /hasRealModelHistory\(w\)/.test(fb) && /hasRealModelHistory\(player\.stats\)/.test(fb));
   const n = (html.match(/return applyHistoryGate\(props, statsByKey\);/g) || []).length;
-  check('every prop builder post-passes through applyHistoryGate (NFL/CFB, NBA/WNBA, MLB x2 returns)', n >= 4, 'count=' + n);
+  const nMlb = (html.match(/return applyMlbModelGates\(props, statsByKey\);/g) || []).length;   // MLB (2026-10-06): its two returns now use applyMlbModelGates (real-window history gate + sub-1 fail-closed gate)
+  check('every prop builder post-passes through its history gate (NFL/CFB + NBA/WNBA via applyHistoryGate; MLB x2 returns via applyMlbModelGates)', n >= 2 && nMlb === 2 && /const applyMlbModelGates = [\s\S]{0,900}hasRealModelHistory\(w\)/.test(html), 'count=' + n + '/' + nMlb);
 }
 
 // -- 6. NBA opponent-defense effect REMOVED (2026-10-06) -- this section replaces the earlier CHARACTERIZATION of the defect --

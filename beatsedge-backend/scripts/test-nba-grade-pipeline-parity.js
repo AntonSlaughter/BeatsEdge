@@ -90,10 +90,11 @@ console.log('\n# 4. other sports unchanged vs the pre-change page');
     let n = 0, bad = [];
     // WNBA moved onto its own versioned pipeline (2026-10-06): it is covered by scripts/test-wnba-integrity.js, not here.
     // NFL moved onto its own cleaned pipeline (2026-10-06): covered by scripts/test-nfl-integrity.js, not here.
-    for (const sport of ['mlb', 'ncaaf']) for (const seed of [1, 9, 17]) { const pn = synth(seed, m, sport), po = synth(seed, old, sport);
+    // MLB moved onto its own cleaned pipeline (2026-10-06 clean candidate): covered by scripts/test-mlb-integrity.js, not here.
+    for (const sport of ['ncaaf']) for (const seed of [1, 9, 17]) { const pn = synth(seed, m, sport), po = synth(seed, old, sport);
       for (const k of FAMILIES) for (const d of ['over', 'under']) for (const src of ['backtest', 'live']) { const prop = src === 'backtest' ? BT(k, LINES[k], d) : LIVE(k, LINES[k], d, { odds: -110, oppOdds: -110 });
         const a = m.calculateEdgeScore(pn, prop), b = old.calculateEdgeScore(po, Object.assign({}, prop)); n++; if (pick(a, CORE) !== pick(b, CORE)) bad.push(sport + '/' + seed + '/' + k + '/' + d + '/' + src); } }
-    check(`${n} MLB/NCAAF scorings (backtest and live, with and without prices) identical to the pre-change page`, bad.length === 0, bad.slice(0, 4).join(' '));
+    check(`${n} NCAAF scorings (backtest and live, with and without prices) identical to the pre-change page`, bad.length === 0, bad.slice(0, 4).join(' '));
     // the live/backtest difference for those sports is intentionally still present (not unified in this step)
     const p = synth(9, m, 'mlb'); let diff = 0; for (const k of FAMILIES) for (const d of ['over', 'under']) { if (m.calculateEdgeScore(p, BT(k, LINES[k], d)).grade !== m.calculateEdgeScore(p, LIVE(k, LINES[k], d)).grade) diff++; }
     check('non-NBA sports keep their existing backtest-vs-live convention (scope boundary pinned; WNBA REQUIRES SEPARATE VALIDATION)', diff >= 0);
@@ -116,7 +117,7 @@ console.log('\n# 5. wild-gap cap rules');
 
 console.log('\n# 6. NBA localStorage authority removed');
 {
-  const SEED_A = { beatsedge_grade_cutoffs_v1: JSON.stringify({ nba: { A: 0.30, B: 0.20, C: 0.10 }, mlb: { A: 0.30, B: 0.20, C: 0.10 } }), beatsedge_prob_calib_v1: JSON.stringify({ nba: [[20, 5], [50, 90], [80, 99]], mlb: [[20, 5], [50, 90], [80, 99]] }) };
+  const SEED_A = { beatsedge_grade_cutoffs_v1: JSON.stringify({ nba: { A: 0.30, B: 0.20, C: 0.10 }, ncaaf: { A: 0.30, B: 0.20, C: 0.10 } }), beatsedge_prob_calib_v1: JSON.stringify({ nba: [[20, 5], [50, 90], [80, 99]], ncaaf: [[20, 5], [50, 90], [80, 99]] }) };   // control sport: NCAAF still reads browser-local values (MLB no longer does, 2026-10-06)
   const bA = loadModel({ liveNba: true, localStorageSeed: SEED_A }), bB = loadModel({ liveNba: true });
   check('precondition: browser A really holds NBA + MLB overrides, browser B holds none', bA.__sandbox.localStorage.getItem('beatsedge_grade_cutoffs_v1') && !bB.__sandbox.localStorage.getItem('beatsedge_grade_cutoffs_v1'));
   let n = 0, bad = [], nba = new Set();
@@ -124,14 +125,14 @@ console.log('\n# 6. NBA localStorage authority removed');
     for (const k of FAMILIES) for (const d of ['over', 'under']) for (const src of [BT(k, LINES[k], d), LIVE(k, LINES[k], d)]) { const a = bA.calculateEdgeScore(pA, src), b = bB.calculateEdgeScore(pB, Object.assign({}, src)); n++; const F2 = FIELDS.concat(['modelProb', 'edgePct', 'probSteps']); if (JSON.stringify(F2.map(f => a[f])) !== JSON.stringify(F2.map(f => b[f]))) bad.push(seed + '/' + k + '/' + d); nba.add(a.finalGrade); } }
   check(`two browsers with DIFFERENT localStorage give IDENTICAL official NBA probability, grade, Prime and reason (${n} scorings)`, bad.length === 0, bad.slice(0, 4).join(' '));
   // the same seeds DO change MLB => the localStorage plumbing is live and the NBA result is not a vacuous truth
-  let mlbDiff = 0; for (const seed of [11, 22, 33]) { const pA = synth(seed, bA, 'mlb'), pB = synth(seed, bB, 'mlb'); for (const k of FAMILIES) for (const d of ['over', 'under']) { const a = bA.calculateEdgeScore(pA, LIVE(k, LINES[k], d)), b = bB.calculateEdgeScore(pB, LIVE(k, LINES[k], d)); if (a.grade !== b.grade || a.modelProbPct !== b.modelProbPct) mlbDiff++; } }
-  check('control: the same browser-local values DO still alter MLB (other sports untouched), proving the NBA equality is real', mlbDiff > 0, 'mlbDiff=' + mlbDiff);
+  let mlbDiff = 0; for (const seed of [11, 22, 33]) { const pA = synth(seed, bA, 'ncaaf'), pB = synth(seed, bB, 'ncaaf'); for (const k of FAMILIES) for (const d of ['over', 'under']) { const a = bA.calculateEdgeScore(pA, LIVE(k, LINES[k], d)), b = bB.calculateEdgeScore(pB, LIVE(k, LINES[k], d)); if (a.grade !== b.grade || a.modelProbPct !== b.modelProbPct) mlbDiff++; } }
+  check('control: the same browser-local values DO still alter NCAAF (sports not yet isolated), proving the NBA equality is real', mlbDiff > 0, 'mlbDiff=' + mlbDiff);
   // in-memory override (what the in-app backtest does) cannot alter NBA either
   const pB = synth(77, bB), before = FAMILIES.map(k => bB.calculateEdgeScore(pB, LIVE(k, LINES[k], 'over'))).map(e => pick(e, FIELDS)).join();
   bB.__setGradeCutoffs({ nba: { A: 0.2, B: 0.1, C: 0.05 } }); bB.__setProbCalib({ nba: [[20, 1], [60, 99]] }); bB.bumpEdgeCache(); const pB2 = synth(77, bB);
   const after = FAMILIES.map(k => bB.calculateEdgeScore(pB2, LIVE(k, LINES[k], 'over'))).map(e => pick(e, FIELDS)).join();
   check('an in-memory GRADE_CUTOFFS / PROB_CALIB override for NBA (the in-app backtest path) leaves official output unchanged', before === after);
-  check('the NBA backtest no longer persists derived cutoffs / curves to localStorage (nor does WNBA since 2026-10-06)', /if \(selectedSport !== 'nba' && selectedSport !== 'wnba'( && selectedSport !== 'nfl')?\) \{ try \{ localStorage\.setItem\('beatsedge_grade_cutoffs_v1'/.test(html) && /if \(selectedSport !== 'nba' && selectedSport !== 'wnba'( && selectedSport !== 'nfl')?\) \{ try \{ localStorage\.setItem\('beatsedge_prob_calib_v1'/.test(html));
+  check('the NBA backtest no longer persists derived cutoffs / curves to localStorage (nor does WNBA since 2026-10-06)', /if \(selectedSport !== 'nba' && selectedSport !== 'wnba'( && selectedSport !== 'nfl')?( && selectedSport !== 'mlb')?\) \{ try \{ localStorage\.setItem\('beatsedge_grade_cutoffs_v1'/.test(html) && /if \(selectedSport !== 'nba' && selectedSport !== 'wnba'( && selectedSport !== 'nfl')?( && selectedSport !== 'mlb')?\) \{ try \{ localStorage\.setItem\('beatsedge_prob_calib_v1'/.test(html));
   check('source: NBA reads cutoffs and calibration only from NBA_GRADE_CONFIG', /const cut = sport === 'nba' \? NBA_GRADE_CONFIG\.gradeCutoffs/.test(html) && /const cal = sport === 'nba' \? NBA_GRADE_CONFIG\.probCalib/.test(html));
 }
 
