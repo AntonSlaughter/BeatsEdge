@@ -3225,6 +3225,9 @@
         const MODEL_MIN_REAL_GAMES = 1;
         const MODEL_STATE_INSUFFICIENT = 'INSUFFICIENT_DATA';
         const MODEL_STATE_NOT_YET_MODELED = 'NOT_YET_MODELED';   // an offering the model has no validated treatment for (e.g. an NFL sub-1 line without a rare-event recipe)
+// NCAAF BETA v1 (2026-10-07): a market that is MODELED (projection + probability are real) but whose letter grade / Prime / ranking were not validated. It fails closed through EVERY selector:
+// grade, rawGrade, finalGrade, gradeScore and gradeAdjustmentReason are null, prime is false, and it can never enter Best Plays, Prime, +EV, Smart Parlay or any validated ranking.
+const MODEL_STATE_PROBABILITY_ONLY = 'PROBABILITY_ONLY';
         const SMART_PARLAY_MIN_HIT_RATE = 80;
         // True only when a stat window carries real, finite season history.
         // Seeded windows (games: 0), empty real windows (avg: null) and `{}` all fail.
@@ -3279,6 +3282,7 @@
         function smartParlayHitRate(edge, prop) {
             if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_INSUFFICIENT || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return null;
             if (edge.rankingEligible === false) return null;   // probability-only rare-event market (MLB P2): never Smart Parlay eligible
+            if (edge.modelState === MODEL_STATE_PROBABILITY_ONLY || (prop && prop.modelState === MODEL_STATE_PROBABILITY_ONLY)) return null;   // NCAAF probability-only: never Smart Parlay eligible
             if (prop && (prop.modelSupported === false || prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED)) return null;
             if (edge.hitRatesSource !== 'game_log') return null;
             const h = edge.hitRates || {};
@@ -3471,6 +3475,100 @@ function mlbModelMeta() {
         state: 'BETA', modelState: 'BETA'      // declared (UI gating by state is not implemented; grades are shown)
     };
 }
+// ── NCAAF official model specification (FROZEN BETA `ncaaf-edge-2026.10-nodef-v1`, 2026-10-07; spec, evidence and fingerprint in docs/NCAAF_MODEL_FREEZE_BETA_2026-10-07.md) ──
+        // NCAAF customer-facing probability and grade read ONLY this config, never browser localStorage (GRADE_CUTOFFS.ncaaf / PROB_CALIB.ncaaf are developer diagnostics
+        // that cannot alter NCAAF output). Thresholds are the PRE-EXISTING defaults and the probability curve is IDENTITY: nothing was recalibrated or tuned.
+        // Decisions (Phase 3 walk-forward on a PSEUDO-LINE: NOT real market performance; REAL-LINE VALIDATION is a DATA GAP):
+        //   * wild-gap grade cap REMOVED ('none') and its small-sample clause REMOVED (the cap demoted the best sides; the clause demoted sides that hit above the A/B average);
+        //   * the synthetic estHitRate thin-history prior REMOVED (no grade effect, ~0.001 Brier); defense is CONTEXT ONLY; the 4-factor A requirement is REMOVED;
+        //   * every line < 1 is NOT_YET_MODELED; rushTds / recTds / interceptions are NOT_YET_MODELED (no discrimination at lines >= 1);
+        //   * passTds and longRush are PROBABILITY_ONLY (projection + probability, no letter, no Prime, never ranked); longRec stays fully graded;
+        //   * targets / kickingPts / fgMade are provider-only NOT_YET_MODELED; strict zero / missing / combo semantics; one authoritative scorer (board == card == historical).
+        // Any change to a value here = a NEW model version + a new fingerprint.
+        const NCAAF_MODEL_VERSION = 'ncaaf-edge-2026.10-nodef-v1';
+        const NCAAF_FEATURE_SET = 'ncaaf-window-blend-v1';
+        const NCAAF_GRADE_CONFIG = Object.freeze({
+            id: 'ncaaf-defaults-2026-10-07',
+            gradeCutoffs: null,        // null => built-in default thresholds (A >= .86 & conf >= 80, B >= .68 & conf >= 50, C >= .46) -- unchanged
+            probCalib: null,           // IDENTITY calibration (pooled slope ~1.28 = under-confident: an accepted, documented exception; a temporal Platt fit gained only 0.0005 Brier)
+            wildGapRule: 'none',       // no wild-gap grade cap at all (wildGapExceeds('none', ...) is always false)
+            wildGapRuleSpec: 'none: no wild-gap grade cap and no small-sample wild-gap clause; the thinData cap (< 4 season games) and the "A needs >= 6 season games" guard are separate and unchanged',
+            smallSampleWildGapClause: 'REMOVED',
+            defense: 'CONTEXT_ONLY',   // defense never alters projection, probability, confluence, grade or Prime; shown as labeled context when information exists
+            fourFactorARequirement: 'REMOVED',
+            minSeasonGamesForA: 6,     // the separate pre-existing "A needs >= 6 season games" guard is UNCHANGED
+            missingSemantics: 'STRICT', // 0 valid; "--" / blank / null / undefined / NaN / Infinity / absent = missing; all-zero recorded history valid; combos need every component
+            comboSemantics: 'EVERY_COMPONENT_REQUIRED',
+            lowLinePolicy: 'EVERY_LINE_BELOW_1_NOT_YET_MODELED',
+            thinHistoryPrior: 'NONE',  // the synthetic estHitRate prior (fewer than 5 logged games, weight 0.20) is REMOVED for NCAAF and not replaced
+            countEventPolicy: Object.freeze({ notYetModeled: Object.freeze(['rushTds', 'recTds', 'interceptions']), probabilityOnly: Object.freeze(['passTds']) }),
+            longestPlayPolicy: Object.freeze({ graded: Object.freeze(['longRec']), probabilityOnly: Object.freeze(['longRush']) }),
+            unsupportedMarkets: Object.freeze(['targets', 'kickingPts', 'fgMade']),
+            primeEligibility: 'GRADED_MARKETS_ONLY',   // passing / rushing / receiving / combos / longRec; never a withheld or probability-only market
+            predictiveSpreadSource: 'projStdDev(projection, statKey, windows): as-of projection + the player\'s own prior-game windows; never the current game',
+            realLineValidation: 'PENDING',
+            state: 'BETA'
+        });
+        // Stats the NCAAF page can offer but cannot model: no historical outcome field exists (ESPN college gamelogs have no receiving-targets column; kickers are not on the CFB slate).
+        const NCAAF_UNSUPPORTED_STATS = Object.freeze({ targets: 'ESPN college gamelogs have no receiving-targets column', kickingPts: 'no kicker history on the CFB slate', fgMade: 'no kicker history on the CFB slate' });
+        const NCAAF_UNSUPPORTED_REASON = 'No historical outcome field exists for this stat in the NCAAF data — model fields withheld (the real line is shown unchanged).';
+        const NCAAF_SUB1_REASON = 'Line below 1 with no validated low-line model for this stat — model fields withheld (the real line is shown unchanged).';
+        const NCAAF_COUNT_EVENT_REASON = 'Count-event market (touchdowns / interceptions): the generic model showed no consistent discrimination in validation — model fields withheld (the real line is shown unchanged).';
+        const NCAAF_PROBABILITY_ONLY_REASON = 'BETA — model projection and probability only: this market showed no stable grade discrimination in validation, so there is no letter grade, no Prime, and it is never ranked.';
+        function ncaafUnsupportedStat(prop) { return !!prop && Object.prototype.hasOwnProperty.call(NCAAF_UNSUPPORTED_STATS, prop.statKey); }
+        function ncaafCountEventWithheldStat(prop) { return !!prop && NCAAF_GRADE_CONFIG.countEventPolicy.notYetModeled.indexOf(prop.statKey) >= 0; }
+        function ncaafProbabilityOnlyStat(prop) { return !!prop && (NCAAF_GRADE_CONFIG.countEventPolicy.probabilityOnly.indexOf(prop.statKey) >= 0 || NCAAF_GRADE_CONFIG.longestPlayPolicy.probabilityOnly.indexOf(prop.statKey) >= 0); }
+        function ncaafSubOneLineUnsupported(prop) { return !!prop && prop.line < 1.0; }   // no validated NCAAF recipe exists for ANY stat below 1.0 (TDs, INTs, 0.5 yardage ...)
+        function ncaafModelMeta() {
+            return {
+                modelVersion: NCAAF_MODEL_VERSION, sport: 'ncaaf', league: 'NCAAF',
+                featureSet: NCAAF_FEATURE_SET, defenseFeature: 'context-only', calibration: 'identity', calibrationId: NCAAF_GRADE_CONFIG.id,
+                wildGapRule: NCAAF_GRADE_CONFIG.wildGapRule, wildGapRuleSpec: NCAAF_GRADE_CONFIG.wildGapRuleSpec, smallSampleWildGapClause: NCAAF_GRADE_CONFIG.smallSampleWildGapClause,
+                predictiveSpreadSource: NCAAF_GRADE_CONFIG.predictiveSpreadSource,
+                fourFactorARule: 'removed', minSeasonGamesForA: NCAAF_GRADE_CONFIG.minSeasonGamesForA,
+                missingSemantics: NCAAF_GRADE_CONFIG.missingSemantics, comboSemantics: NCAAF_GRADE_CONFIG.comboSemantics,
+                lowLinePolicy: 'fail-closed', thinHistoryPrior: 'none',
+                countEventPolicy: { notYetModeled: NCAAF_GRADE_CONFIG.countEventPolicy.notYetModeled.slice(), probabilityOnly: NCAAF_GRADE_CONFIG.countEventPolicy.probabilityOnly.slice() },
+                longestPlayPolicy: { graded: NCAAF_GRADE_CONFIG.longestPlayPolicy.graded.slice(), probabilityOnly: NCAAF_GRADE_CONFIG.longestPlayPolicy.probabilityOnly.slice() },
+                unsupportedMarkets: NCAAF_GRADE_CONFIG.unsupportedMarkets.slice(), primeEligibility: NCAAF_GRADE_CONFIG.primeEligibility,
+                realLineValidation: 'PENDING',
+                state: 'BETA', modelState: 'BETA'      // declared (UI gating by state is not implemented; graded markets show grades; PROBABILITY_ONLY markets are a real engine state)
+            };
+        }
+        // History first (the real history state wins), then the permanent gates. Idempotent; used by the live board, the expanded card AND the historical builder.
+        function applyNcaafModelGates(props, statsByKey) {
+            (props || []).forEach(pr => {
+                if (!pr) return;
+                if (pr.modelState === MODEL_STATE_PROBABILITY_ONLY) { delete pr.modelState; delete pr.modelStateReason; }   // re-judged below so a flag can never outlive the data / line that caused it
+                if (ncaafUnsupportedStat(pr)) {                                   // no historical outcome field: provider-only, whatever the history state
+                    pr.modelSupported = false; pr.modelState = MODEL_STATE_NOT_YET_MODELED; pr.modelStateReason = NCAAF_UNSUPPORTED_REASON; pr.hitRate = null; return;
+                }
+                if (ncaafCountEventWithheldStat(pr)) {                            // rushTds / recTds / interceptions: NOT_YET_MODELED at EVERY line
+                    pr.modelSupported = false; pr.modelState = MODEL_STATE_NOT_YET_MODELED; pr.modelStateReason = NCAAF_COUNT_EVENT_REASON; pr.hitRate = null; return;
+                }
+                if (pr.modelSupported === false) return;                          // already withheld (INSUFFICIENT_DATA / provider-only market)
+                if (!hasRealModelHistory(statsByKey && statsByKey[pr.statKey])) {
+                    pr.modelSupported = false; pr.modelState = MODEL_STATE_INSUFFICIENT; pr.modelStateReason = 'No game history for this stat — model fields withheld (missing is unknown, not zero).'; pr.hitRate = null; return;
+                }
+                if (ncaafSubOneLineUnsupported(pr)) {
+                    pr.modelSupported = false; pr.modelState = MODEL_STATE_NOT_YET_MODELED; pr.modelStateReason = NCAAF_SUB1_REASON; pr.hitRate = null; return;
+                }
+                if (ncaafProbabilityOnlyStat(pr)) { pr.modelState = MODEL_STATE_PROBABILITY_ONLY; pr.modelStateReason = NCAAF_PROBABILITY_ONLY_REASON; }   // modeled (probability + projection), never graded / ranked
+            });
+            return props;
+        }
+        // The card loads the real game log AFTER the board built the props: re-judge the gate flags on the real windows so a flag can never outlive the data that caused it.
+        function ncaafRefreshModelFlags(props, statsByKey) {
+            (props || []).forEach(pr => {
+                if (!pr || ncaafUnsupportedStat(pr) || ncaafCountEventWithheldStat(pr)) return;
+                if (pr.modelSupported === false && (pr.modelState === MODEL_STATE_INSUFFICIENT || pr.modelState === MODEL_STATE_NOT_YET_MODELED)) {
+                    delete pr.modelSupported; delete pr.modelState; delete pr.modelStateReason;
+                    const w = statsByKey && statsByKey[pr.statKey];
+                    if (w && w.season && Number.isFinite(w.season.avg)) { const oHR = estHitRate(w.season.avg || (w.recent && w.recent.avg) || pr.line, pr.line); pr.hitRate = pr.direction === 'under' ? Math.max(2, 100 - oHR) : oHR; }   // placeholder field only: the NCAAF engine no longer reads it
+                }
+            });
+            return applyNcaafModelGates(props, statsByKey);
+        }
 // Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
         function nbaPositionWord(pos) {
             const p = String(pos || '').toUpperCase();
@@ -3676,6 +3774,8 @@ function mlbModelMeta() {
             // real callers already read), not a guess, not a crash. No
             // sport's currently-working values are affected -- this can
             // only ever replace a throw with a no-op.
+            // NCAAF (2026-10-07 clean candidate): a stat with no historical outcome field is NOT_YET_MODELED; a stat with no window is INSUFFICIENT_DATA -- it never falls back to ANOTHER stat's window.
+            if (sport === 'ncaaf') { if (ncaafUnsupportedStat(prop)) return notYetModeledEdge('NCAAF_NO_HISTORICAL_OUTCOME_FIELD'); if (ncaafCountEventWithheldStat(prop)) return notYetModeledEdge('NCAAF_COUNT_EVENT_NOT_YET_MODELED'); if (!(player.statsByKey && prop.statKey && player.statsByKey[prop.statKey])) return insufficientDataEdge(); }
             if (!s) {
                 // The numeric `edge`/`gradeScore` below are the ONLY fields
                 // this fallback populates with something real (from the
@@ -3715,6 +3815,8 @@ function mlbModelMeta() {
             if (!hasRealModelHistory(s)) return insufficientDataEdge();
             // NFL sub-1 lines with no validated low-line recipe fail closed (see nflSubOneLineUnsupported). rushTds / recTds keep their recipe.
             if (sport === 'nfl' && nflSubOneLineUnsupported(prop)) return notYetModeledEdge('NFL_SUB1_LINE_NO_VALIDATED_RECIPE');
+            // NCAAF sub-1 lines (TDs, INTs, 0.5 yardage ...) have no validated recipe and fail closed (history first, then this gate).
+            if (sport === 'ncaaf' && ncaafSubOneLineUnsupported(prop)) return notYetModeledEdge('NCAAF_SUB1_LINE_NO_VALIDATED_RECIPE');
             // MLB (2026-10-06 clean candidate): ONE authoritative answer per prop. A window seeded from season totals (`seeded: true`, built by mlbSeedWindows before the
             // real game log has loaded) is a PLACEHOLDER, not evidence: it must never yield an official probability / grade / Prime. The real game-log windows (the
             // same builder the expanded card uses -- mlbComputeWindows) replace it; until they load the prop is INSUFFICIENT_DATA with the real line still shown.
@@ -3927,12 +4029,12 @@ function mlbModelMeta() {
                         // NFL (2026-10-06): the generic team points-allowed rank is CONTEXT ONLY. Phase-1 walk-forward diagnostics: no tested stat showed a
                         // probability improvement, PassAtt / INT / Rec / Targets were significantly hurt, it was indistinguishable from a permuted-rank
                         // placebo, and it diluted Prime. It stays visible but never reaches the projection, probability, confidence, grade or Prime.
-                        // CFB (ncaaf) keeps its previous behavior (not part of this change).
-                        (sport === 'nfl' ? contextFactors : factors).push({
+                        // CFB (ncaaf) 2026-10-07: same treatment -- defense was never operational for CFB (oppDef is null) and is CONTEXT ONLY if information ever exists.
+                        contextFactors.push({
                             key: 'oppdef',
                             name: `${player.opponent} defense`,
                             supports: direction === 'over' ? leaky : stingy,
-                            ...(sport === 'nfl' ? { contextOnly: true, label: 'Context only — not in the projection, probability or grade' } : {}),
+                            contextOnly: true, label: 'Context only — not in the projection, probability or grade',
                             detail: `allows ${player.oppDef.paPerGame} pts/game — #${r} of 32 in points allowed (${leaky ? 'one of the leakiest' : 'one of the stingiest'})`
                         });
                     }
@@ -4152,10 +4254,7 @@ function mlbModelMeta() {
             // Football: nudge by how leaky the opposing defense is, scaled to
             // the size of the number (±6% at the extremes of the rank scale).
             // NFL is EXCLUDED (2026-10-06): see the `oppdef` note above -- the +-6% rank multiplier no longer touches the NFL projection.
-            if (sport === 'ncaaf' && player.oppDef && player.oppDef.rank) {
-                const _span = sport === 'ncaaf' ? 65 : 15.5, _mid = sport === 'ncaaf' ? 67 : 16.5;
-                projection *= 1 + ((player.oppDef.rank - _mid) / _span) * 0.06;
-            }
+            // NCAAF (2026-10-07): the +-6% team-defense rank multiplier is REMOVED -- defense was never operational for CFB (oppDef is null) and must not hold scoring authority.
             // NBA: nudge by tonight's opponent's Defense-vs-Position rank for
             // THIS stat (1 = toughest → project down, 150 = softest → project
             // up). ±7% at the extremes.
@@ -4219,7 +4318,7 @@ function mlbModelMeta() {
             let grade;
             // NBA customer-facing grades come ONLY from the versioned NBA_GRADE_CONFIG -- never from a
             // browser's localStorage-derived GRADE_CUTOFFS (2026-10-06). Other sports unchanged.
-            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : sport === 'nfl' ? NFL_GRADE_CONFIG.gradeCutoffs : sport === 'mlb' ? MLB_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
+            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : sport === 'nfl' ? NFL_GRADE_CONFIG.gradeCutoffs : sport === 'mlb' ? MLB_GRADE_CONFIG.gradeCutoffs : sport === 'ncaaf' ? NCAAF_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
             if (cut) {
                 // Cutoffs derived from THIS sport's backtest so the letters are
                 // anchored to real outcomes.
@@ -4249,10 +4348,11 @@ function mlbModelMeta() {
             // (BLK 0.5, 3PM 1.5) capped ~41% / ~29% of sides regardless of how large the edge is in that stat's own units.
             const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : sport === 'wnba' ? WNBA_GRADE_CONFIG.wildGapRule : sport === 'nfl' ? NFL_GRADE_CONFIG.wildGapRule : 'relative';
             const _gapRuleEff = sport === 'mlb' ? MLB_GRADE_CONFIG.wildGapRule : _gapRule;   // MLB BETA v1 (2026-10-07): Cap C 'floored', read from the versioned config
+            const _gapRuleFinal = sport === 'ncaaf' ? NCAAF_GRADE_CONFIG.wildGapRule : _gapRuleEff;   // NCAAF BETA v1 (2026-10-07): 'none' (no wild-gap cap), read from the versioned config
             // predictive spread: the same SD the probability layer uses; built only from as-of windows + the as-of projection.
             const predictiveSpreadSD = projStdDev(projection, prop.statKey, s);
-            const wildGap = wildGapExceeds(_gapRuleEff, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
-                || (_football && sampleGames < 6 && edgeRatio > 0.30);        // small sample + big gap
+            const wildGap = wildGapExceeds(_gapRuleFinal, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
+                || (sport === 'nfl' && sampleGames < 6 && edgeRatio > 0.30);        // small sample + big gap (NFL only: the NCAAF clause was REMOVED 2026-10-07 -- it demoted sides that hit above the A/B average)
             // A cross-book line (shown because the selected DFS site hasn't
             // posted this number) isn't actually pickable there — never let it
             // grade above C.
@@ -4265,8 +4365,8 @@ function mlbModelMeta() {
             // for a football A; otherwise the best it earns is a B. College
             // adds a season-not-started guard (Week 1-3 = prior-year logs only).
             // NFL (2026-10-06, approved after the predeclared validation): this requirement is REMOVED for NFL ONLY. It did not improve A quality (non-TD A = B under the rule) and
-            // the vs-opponent factor it effectively demanded (>= 2 prior games vs the opponent, available on 26.5% of sides) added no discrimination on non-TD stats. CFB keeps it.
-            if (sport === 'ncaaf' && grade === 'A' && totalFactors < 4) grade = 'B';
+            // the vs-opponent factor it effectively demanded (>= 2 prior games vs the opponent, available on 26.5% of sides) added no discrimination on non-TD stats. (CFB removed it too on 2026-10-07, below.)
+            // NCAAF (2026-10-07): the "A needs >= 4 factors" requirement is REMOVED (it blocked 98.5% of A-capable sides: vs-opponent history exists on ~2% of sides, and blocked sides performed as well as surviving A's).
             if (sport === 'ncaaf' && grade === 'A' && (s.season && s.season.games || 0) < 6) grade = 'B';
 
             // ── "Prime corner" — confluence × edge, from the walk-forward.
@@ -4415,7 +4515,7 @@ function mlbModelMeta() {
                 priors.push({ p: rateAt(_glVals), w: Math.min(0.30, _glVals.length / 100 * 0.30), games: _glVals.length, name: 'game-log hit rate' });
                 const l10 = _glVals.slice(-10);
                 if (l10.length >= 5) priors.push({ p: rateAt(l10), w: 0.15, games: l10.length, name: 'last-10 hit rate' });
-            } else if (typeof prop.hitRate === 'number' && prop.hitRate >= 0 && prop.hitRate <= 100) {
+            } else if (sport !== 'ncaaf' && typeof prop.hitRate === 'number' && prop.hitRate >= 0 && prop.hitRate <= 100) {   // NCAAF BETA v1 (2026-10-07): the synthetic estHitRate prior is REMOVED for NCAAF (validated: no grade effect, ~0.001 Brier) and not replaced
                 // No game log yet (MLB pre-modal). prop.hitRate is estHitRate at
                 // THIS prop's line, already directional — the best available.
                 priors.push({ p: prop.hitRate / 100, w: 0.20, games: sampleGames || 20, name: 'estimated hit rate' });
@@ -4574,7 +4674,11 @@ function mlbModelMeta() {
             // Prime and are never ranked (Best Plays / Smart Parlay / +EV). Validation: 97% of rare Unders graded A at exactly the stat's base rate (lift +0.00); a letter there communicated the
             // base rate, not model discrimination. They are modeled (not "unsupported"); they are simply ungraded.
             const _rareProbOnly = sport === 'mlb' && _mlbScoped;
-            if (_rareProbOnly) grade = null;
+            // NCAAF BETA v1 (2026-10-07): passTds and longRush are PROBABILITY_ONLY -- a REAL engine state (modelState 'PROBABILITY_ONLY'). Projection, model probability and edge are the normal ones; grade, rawGrade,
+            // finalGrade, gradeScore and gradeAdjustmentReason are null, prime is false, and every selector (Best Plays, Prime, +EV, Smart Parlay, validated ranking) rejects the state.
+            const _ncaafProbOnly = sport === 'ncaaf' && ncaafProbabilityOnlyStat(prop);
+            const _probOnly = _rareProbOnly || _ncaafProbOnly;
+            if (_probOnly) grade = null;
             if (_fg.reasons.indexOf('PRIME_PROMOTION') >= 0) gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
             const gradeAdjustmentReason = _fg.reasons.length ? _fg.reasons.join('+') : null;
 
@@ -4605,7 +4709,7 @@ function mlbModelMeta() {
                 // Presentation-only items that are NOT model inputs (NBA opponent-defense context).
                 context: contextFactors,
                 // Trace metadata (NBA only): which model produced this, with defense explicitly NONE.
-                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : sport === 'nfl' ? nflModelMeta() : sport === 'mlb' ? mlbModelMeta() : null,
+                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : sport === 'nfl' ? nflModelMeta() : sport === 'mlb' ? mlbModelMeta() : sport === 'ncaaf' ? ncaafModelMeta() : null,
                 greenCount,
                 totalFactors,
                 confidence,
@@ -4613,16 +4717,17 @@ function mlbModelMeta() {
                 thinData,
                 edge: roundedEdge,
                 edgeSignalPct: edgeSigPct, // directional (projection vs line) / line, %
-                prime: _rareProbOnly ? false : primeCorner,        // high confluence + large edge (backtest "prime corner"); never for a probability-only rare-event market
+                prime: _probOnly ? false : primeCorner,        // high confluence + large edge (backtest "prime corner"); never for a probability-only rare-event market
                 matchupLabel,
                 grade,
                 // Grade trace: rawGrade = thresholds + RED/thin/football caps; finalGrade (= grade) = after the official
                 // pipeline; gradeAdjustmentReason explains any promotion/demotion (null when none).
-                rawGrade: _rareProbOnly ? null : rawGrade, finalGrade: grade, gradeAdjustmentReason: _rareProbOnly ? null : gradeAdjustmentReason,
+                rawGrade: _probOnly ? null : rawGrade, finalGrade: grade, gradeAdjustmentReason: _probOnly ? null : gradeAdjustmentReason,
                 ...(_rareProbOnly ? { rankingEligible: false, gradePolicy: 'RARE_EVENT_PROBABILITY_ONLY' } : {}),
+                ...(_ncaafProbOnly ? { rankingEligible: false, gradePolicy: 'NCAAF_PROBABILITY_ONLY', modelState: MODEL_STATE_PROBABILITY_ONLY, modelStateReason: NCAAF_PROBABILITY_ONLY_REASON } : {}),
                 wildGap,   // diagnostic: the wild-gap cap fired (feeds thinData)
                 predictiveSpreadSD,   // diagnostic: the as-of spread used by the NBA cap
-                gradeScore: _rareProbOnly ? null : Math.round(gradeScore * 100) / 100,
+                gradeScore: _probOnly ? null : Math.round(gradeScore * 100) / 100,
                 // probability layer (all estimates, not guarantees)
                 modelProb,
                 modelProbPct: Math.round(modelProb * 100),
@@ -4652,6 +4757,8 @@ function mlbModelMeta() {
                 // builder used. Smart Parlay accepts ONLY 'game_log'.
                 hitRatesSource: _hasGl ? 'game_log' : ((s.season && s.season.seeded) ? 'seeded_estimate' : 'window'),
                 probSteps,
+                // NCAAF: the thin-history "estimated hit rate" prior (fewer than 5 logged games) is an UNVALIDATED placeholder preserved for Phase-3 comparison.
+                ...(sport === 'ncaaf' ? { thinHistoryPriorUsed: priors.some(x => x.name === 'estimated hit rate') } : {}),   // always false for NCAAF since 2026-10-07
                 // ── Projection Stability (context only, SHIPPED 2026-09-28) ──
                 // NBA Rebounds/Assists only. Real stddev of this player's own
                 // prior-game history for THIS stat (same gameLogByKey series
@@ -4797,8 +4904,8 @@ function mlbModelMeta() {
         const isModelSupportedProp = (prop) => !!prop && prop.modelSupported !== false;
         // Explicit downstream eligibility (2026-10-06): a prop / edge in the INSUFFICIENT_DATA or NOT_YET_MODELED state (unsupported low line, no history, model-unsupported)
         // can never enter Best Plays, Prime, +EV or Smart Parlay, whatever an upstream builder did or did not flag. Pure gates -- no ranking formula is touched.
-        const isModelEligibleProp = (prop) => isModelSupportedProp(prop) && prop.modelState !== MODEL_STATE_INSUFFICIENT && prop.modelState !== MODEL_STATE_NOT_YET_MODELED;
-        const isModelEligibleEdge = (edge) => !!edge && !edge.insufficientData && edge.modelState !== MODEL_STATE_INSUFFICIENT && edge.modelState !== MODEL_STATE_NOT_YET_MODELED;
+        const isModelEligibleProp = (prop) => isModelSupportedProp(prop) && prop.modelState !== MODEL_STATE_INSUFFICIENT && prop.modelState !== MODEL_STATE_NOT_YET_MODELED && prop.modelState !== MODEL_STATE_PROBABILITY_ONLY;
+        const isModelEligibleEdge = (edge) => !!edge && !edge.insufficientData && edge.modelState !== MODEL_STATE_INSUFFICIENT && edge.modelState !== MODEL_STATE_NOT_YET_MODELED && edge.modelState !== MODEL_STATE_PROBABILITY_ONLY;
         // Ranking eligibility (MLB BETA v1, 2026-10-07): a probability-only edge (the four MLB rare-event markets: no letter grade, no Prime) is MODELED but never RANKED -- it cannot enter Best Plays, Prime,
         // +EV, Smart Parlay or any surface whose meaning implies validated model selection. Pure gate: no ranking formula is touched.
         const isRankingEligibleEdge = (edge) => isModelEligibleEdge(edge) && edge.rankingEligible !== false && edge.grade != null;
@@ -4889,10 +4996,10 @@ function mlbModelMeta() {
                     // Explicit fail-closed gate (WNBA 2026-10-06, NFL 2026-10-06): insufficient data, a model-unsupported prop and an unmodeled offering
                     // (e.g. an NFL sub-1 line without a validated recipe) are all refused HERE, whatever an upstream builder did or did not flag.
                     if (prop.modelSupported === false) return;
-                    if (prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED) return;
+                    if (prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED || prop.modelState === MODEL_STATE_PROBABILITY_ONLY) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
-                    if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return;
+                    if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_NOT_YET_MODELED || edge.modelState === MODEL_STATE_PROBABILITY_ONLY) return;
                     if (edge.rankingEligible === false) return;   // probability-only rare-event market (MLB P2): never a +EV pick
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
                 });
@@ -5910,7 +6017,7 @@ function mlbModelMeta() {
         // re-clamped 1-99%.
         function applyProbCalib(p01, sport) {
             // NBA: official probability calibration comes ONLY from NBA_GRADE_CONFIG (versioned), never from browser localStorage.
-            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : sport === 'nfl' ? NFL_GRADE_CONFIG.probCalib : sport === 'mlb' ? MLB_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
+            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : sport === 'nfl' ? NFL_GRADE_CONFIG.probCalib : sport === 'mlb' ? MLB_GRADE_CONFIG.probCalib : sport === 'ncaaf' ? NCAAF_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
             if (!Array.isArray(cal) || cal.length < 2) return p01;
             const x = p01 * 100;
             if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
@@ -14967,13 +15074,75 @@ function mlbModelMeta() {
             // window is always built from the current + 2 prior seasons — same
             // approach the NFL backtest uses. `?season=` must be explicit or
             // ESPN returns the empty in-progress season.
+            // <<NCAAF-SHARED-BEGIN>> ONE authoritative NCAAF scorer (2026-10-07): the live board, the expanded card and the historical validation all parse, window, build props, gate and score through THESE functions.
+            // Strict semantics (same as NFL): a non-numeric cell is MISSING (never an observed 0), all-zero recorded history is valid history, combos need every component.
+            const cfbParseGamelog = (gl, season) => nflParseGamelog(gl, { nonNumericAsMissing: true }).map(r => ({ ...r, season }));
+            const cfbWindowsFor = (glRows, posKeys, lineFor, oppAbbr, seasonYear) => nflComputeWindows(glRows, posKeys, lineFor, oppAbbr, seasonYear, NFL_WINDOW_OPTS);
+            const cfbBuildProps = (posKeys, statsByKey, allLines, book, perGameFor) => applyNcaafModelGates(nflBuildProps(posKeys, statsByKey, allLines, book, perGameFor), statsByKey);
+            const cfbRefreshProps = (props, statsByKey) => ncaafRefreshModelFlags(props, statsByKey);
+            const CFB_HISTORY_SEASONS = 3;   // production fetches the target season and the two before it
+            const cfbDedupeRows = (rows) => { const seen = new Set(); return (rows || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).filter(g => { const key = g.eventId != null ? `id:${g.eventId}` : `${g.date}|${g.opponent}`; if (seen.has(key)) return false; seen.add(key); return true; }); };
+            // Historical inputs for target game i of one player: the SAME builders as the live board, history = rows dated STRICTLY before the target and inside the 3-season window. Real stat key, no fake player.
+            const ncaafBacktestInputs = (rows, i, statKey, line, position) => {
+                const g = rows[i], Y = g.season;
+                const hist = rows.filter(r => r.ts < g.ts && r.season >= Y - (CFB_HISTORY_SEASONS - 1) && r.season <= Y);
+                const { statsByKey, gameLogByKey } = cfbWindowsFor(hist, [statKey], { [statKey]: line }, g.opponent, Y);
+                const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
+                const lines = { [statKey]: { prizepicks: [{ line, over: 100, under: 100, juice: 0, primary: true, ppType: 'standard', _src: 'parlayapi', eventId: 'historical', commenceTimeMs: null, setAt: 0 }] } };
+                const props = cfbBuildProps([statKey], statsByKey, lines, 'prizepicks', perGameFor);
+                const player = { id: 'bt', sport: 'ncaaf', role: 'skill', position, opponent: g.opponent, oppDef: null, status: 'ACTIVE', statsByKey, gameLogByKey, stats: {}, gameLog: [], _allLines: lines, _isCfb: true, _detailLoaded: true, _seasonPerGame: perGameFor };
+                return { player, props, historyDates: hist.map(r => r.ts), targetTs: g.ts };
+            };
+            // Walk-forward for ONE player-stat series through the production inputs. Pseudo-line (NO real historical lines exist): the in-app scale-aware rule -- the line closest to a 48% as-of Over rate.
+            // A side the model withholds is COUNTED in acc.withheld and never graded. Diagnostic only: nothing derived here can change NCAAF output.
+            const ncaafBacktestSeries = (rowsIn, position, fam, statKey, acc, gate, build) => {
+                const rows = cfbDedupeRows(rowsIn); const MIN = (gate && gate.minGames) || 1; const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
+                const def = NFL_PROP_DEFS[statKey], has = nflHasFor(def, NFL_WINDOW_OPTS); const wh = acc.withheld || (acc.withheld = { sides: 0, byState: {}, byStat: {} });
+                for (let i = 0; i < rows.length; i++) {
+                    const g = rows[i]; if (!(g.ts > 0)) continue; if (maxTs && g.ts >= maxTs) continue; if (minTs && g.ts < minTs) continue;
+                    if (!has(g.row)) continue;                                  // a game where the stat was not RECORDED is a missing observation: never a target
+                    const hv = rows.filter(r => r.ts < g.ts && r.season >= g.season - (CFB_HISTORY_SEASONS - 1) && r.season <= g.season && has(r.row)).map(r => def.get(r.row) || 0);
+                    if (hv.length < MIN) continue;
+                    const seasonAvg = hv.reduce((a, v) => a + v, 0) / hv.length; if (seasonAvg <= 0) continue;   // a pseudo-line cannot be formed from an all-zero history (the live path still treats it as valid history)
+                    const step = seasonAvg > 15 ? 5 : 1, start = step === 5 ? 2.5 : 0.5; let line = null, bestGap = 99;
+                    for (let cand = start; cand <= seasonAvg * 1.8 + step; cand += step) { const over = hv.filter(v => v > cand).length / hv.length; const gp = Math.abs(over - 0.48); if (gp < bestGap) { bestGap = gp; line = cand; } }
+                    if (line == null || line <= 0) continue;
+                    const actual = def.get(g.row) || 0; if (actual === line) continue;
+                    const built = build(i, line, rows);
+                    for (const dir of ['over', 'under']) {
+                        const pr = built.props.find(x => x.statKey === statKey && x.direction === dir); if (!pr) continue;
+                        const e = pr.modelSupported === false ? null : calculateEdgeScore(built.player, pr);
+                        if (!e || !isModelEligibleEdge(e)) { wh.sides++; const st = (pr.modelState || (e && e.modelState)) || 'UNSUPPORTED'; wh.byState[st] = (wh.byState[st] || 0) + 1; wh.byStat[statKey] = (wh.byStat[statKey] || 0) + 1; continue; }
+                        const hit = dir === 'over' ? actual > line : actual < line;
+                        const gb = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 }); gb.n++; if (hit) gb.hit++; acc._total.n++; if (hit) acc._total.hit++;
+                        btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit); btFileAlign(acc, e.greenCount, e.totalFactors, hit); btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                        btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit); btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20))); const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 }); sb.n++; if (hit) sb.hit++;
+                        if (e.prime) { acc.primeTotal.n++; if (hit) acc.primeTotal.hit++; }
+                        e.factors.forEach(f => { if (!f.supports) return; const fb = acc.factors[f.name] || (acc.factors[f.name] = { n: 0, hit: 0 }); fb.n++; if (hit) fb.hit++; });
+                    }
+                }
+            };
+            // <<NCAAF-SHARED-END>>
             const cfbGamelogMulti = async (id) => {
                 const rows = [];
                 const years = [NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON];
                 const gls = await Promise.all(years.map(y =>
                     nflFetch(`${CFB_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
-                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...cfbParseGamelog(gl, years[i])); });
                 return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            };
+            // Multi-season CFB game logs for the in-app walk-forward (diagnostic only), parsed by the SAME strict parser.
+            const cfbGamelogsMultiYears = async (ids, years) => {
+                const map = {};
+                for (const grp of chunk([...new Set(ids)], 16)) {
+                    await Promise.all(grp.map(async id => {
+                        const rows = [];
+                        for (const yr of years) { try { const gl = await nflFetch(`${CFB_ESPN_COMMON}/athletes/${id}/gamelog?season=${yr}`); if (gl && nflEventCount(gl) > 0) rows.push(...cfbParseGamelog(gl, yr)); } catch (e) { /* skip year */ } }
+                        map[id] = cfbDedupeRows(rows);
+                    }));
+                }
+                return map;
             };
             const cfbGamelogs = async (ids) => {
                 const map = {};
@@ -15235,10 +15404,10 @@ function mlbModelMeta() {
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON)
+                        ? cfbWindowsFor(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => { const w = statsByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
-                    let props = nflBuildProps(posKeys, statsByKey, lines, wantBook, perGameFor);
+                    let props = cfbBuildProps(posKeys, statsByKey, lines, wantBook, perGameFor);
                     const player = {
                         id: slot.id, name: slot.name, sport: 'ncaaf', role: 'skill',
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
@@ -15246,7 +15415,7 @@ function mlbModelMeta() {
                         oppDef: null, gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: lines, _isCfb: true, _detailLoaded: glRows.length > 0,
-                        _seasonPerGame: perGameFor
+                        _seasonPerGame: perGameFor, _cfbLineFor: lineFor   // the card reuses THIS window line so board and card build identical windows
                     };
                     props = sortPropsByEdge(player, props);
                     props = attachPlusEV(player, props);
@@ -15274,11 +15443,11 @@ function mlbModelMeta() {
                 }
                 setPlayersData(prev => prev.map(p => {
                     if (p.id !== player.id || p.sport !== 'ncaaf') return p;
-                    const lineFor = {};
-                    (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON);
+                    const lineFor = p._cfbLineFor || {};
+                    if (!p._cfbLineFor) (p.props || []).forEach(pr => { if (!pr.altLine || lineFor[pr.statKey] == null) lineFor[pr.statKey] = pr.line; });
+                    const { statsByKey, gameLogByKey } = cfbWindowsFor(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON);
                     return {
-                        ...p, statsByKey, gameLogByKey,
+                        ...p, statsByKey, gameLogByKey, props: cfbRefreshProps(p.props, statsByKey),
                         stats: statsByKey[p.props[0].statKey] || p.stats,
                         gameLog: gameLogByKey[p.props[0].statKey] || [],
                         _detailLoaded: true, statsSource: 'ESPN — full game log (real)'
@@ -17634,6 +17803,20 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 });
                             });
                         };
+                    } else if (selectedSport === 'ncaaf') {
+                        // 2026-10-07: scored through the PRODUCTION path (ncaafBacktestInputs: real stat keys, the live builders, strictly earlier dates). Diagnostic only -- nothing derived here can change NCAAF output.
+                        const ids = [...new Set(roster.map(p => p.id))];
+                        const glMap = await cfbGamelogsMultiYears(ids, [NFL_SEASON - 3, NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON]);
+                        runPass = (acc, gate) => {
+                            roster.forEach(p => {
+                                const rows = glMap[p.id] || []; if (rows.length < 3) return;
+                                nflPosKeys(p.position).forEach(k => {
+                                    if (NCAAF_UNSUPPORTED_STATS[k]) return;
+                                    ncaafBacktestSeries(rows, p.position, NFL_STAT_FAMILY[k] || null, k, acc, gate, (i, line) => ncaafBacktestInputs(rows, i, k, line, p.position));
+                                    evaluated++;
+                                });
+                            });
+                        };
                     } else if (selectedSport === 'nba') {
                         // Prefer the backend's historical pool (hoopR box scores):
                         // it works in the offseason (no live slate to iterate) and
@@ -17737,11 +17920,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
                             // NBA: diagnostic only -- NBA customer-facing grades come from NBA_GRADE_CONFIG, so nothing is persisted for NBA.
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA/NFL/MLB: diagnostic only, never persisted
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb' && selectedSport !== 'ncaaf') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA/NFL/MLB: diagnostic only, never persisted
                         }
                         if (probCal) {
                             PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl' && selectedSport !== 'mlb' && selectedSport !== 'ncaaf') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
@@ -22119,7 +22302,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     </div>
                                                 </div>
                                                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0 0 1.25rem' }}>
-                                                    {edge.grade == null ? 'Rare-event market — BeatsEdge shows the model probability only: no letter grade, no Prime, and it is not ranked in Best Plays or Smart Parlay.' : GRADE_META[edge.grade].label + ' — the letter is a descriptive summary of the numbers above, not a separate signal.'}
+                                                    {edge.grade == null ? (edge.gradePolicy === 'NCAAF_PROBABILITY_ONLY' ? 'BETA — probability only: BeatsEdge shows the model projection and probability for this market, with no letter grade and no Prime. It is not ranked in Best Plays, +EV or Smart Parlay.' : 'Rare-event market — BeatsEdge shows the model probability only: no letter grade, no Prime, and it is not ranked in Best Plays or Smart Parlay.') : GRADE_META[edge.grade].label + ' — the letter is a descriptive summary of the numbers above, not a separate signal.'}
                                                     {(() => {
                                                         const cal = calibrationFor(backtest, player.sport);
                                                         if (edge.grade == null) return null;
