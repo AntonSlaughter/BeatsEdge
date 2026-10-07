@@ -109,7 +109,7 @@ console.log('\n# 4. LIVE = BACKTEST');
   const implStarts = (html.match(/function _calculateEdgeScoreImpl\(/g) || []).length, calcDefs = (html.match(/function calculateEdgeScore\(/g) || []).length;
   check('exactly ONE model implementation exists (`_calculateEdgeScoreImpl`) behind ONE entry point (`calculateEdgeScore`)', implStarts === 1 && calcDefs === 1);
   check('the projection blend formula exists in exactly one place', (html.match(/\(recentAvgS \* 0\.35\)/g) || []).length === 1);
-  const bt = ['function backtestSeries(', 'function mlbBacktestSeries(', 'function nflBacktestSeries('].map(n => { const i = html.indexOf(n); return html.slice(i, i + 4500); });
+  const bt = ['function backtestSeries(', 'function mlbBacktestSeries(', 'const nflBacktestSeries = ('].map(n => { const i = html.indexOf(n); return html.slice(i, i + 4500); });
   check('every in-app backtest scores through calculateEdgeScore (no private formula)', bt.every(s => /calculateEdgeScore\(/.test(s)));
   check('in-app NBA backtests never feed a defense input (opponentDefense: null / oppRank: null) -- same as the post-removal live model', (html.match(/opponentDefense: null, oppRank: null/g) || []).length >= 2 && /opponentDefense: null, oppDef: null, situational: null/.test(bt[0]));
   // the harness builders ARE the live source

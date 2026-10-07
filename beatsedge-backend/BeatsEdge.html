@@ -3222,6 +3222,7 @@
         // ══════════════════════════════════════════════════════════════════
         const MODEL_MIN_REAL_GAMES = 1;
         const MODEL_STATE_INSUFFICIENT = 'INSUFFICIENT_DATA';
+        const MODEL_STATE_NOT_YET_MODELED = 'NOT_YET_MODELED';   // an offering the model has no validated treatment for (e.g. an NFL sub-1 line without a rare-event recipe)
         const SMART_PARLAY_MIN_HIT_RATE = 80;
         // True only when a stat window carries real, finite season history.
         // Seeded windows (games: 0), empty real windows (avg: null) and `{}` all fail.
@@ -3263,14 +3264,19 @@
                 probSteps: [], volatilityContext: null,
             };
         }
+        // Same shape and the same fail-closed consequences as insufficientDataEdge (grade null, no Prime, never ranked / archived / +EV / Smart Parlay),
+        // but the state says WHY: the offering itself is not modeled, not a lack of history.
+        function notYetModeledEdge(reason) {
+            return Object.assign(insufficientDataEdge(), { modelState: MODEL_STATE_NOT_YET_MODELED, modelStateReason: reason });
+        }
         // Smart Parlay evidence: ONLY a hit rate computed from the player's real
         // game log against THIS prop's exact line (edge.hitRatesSource ===
         // 'game_log'). A seeded `estHitRate` placeholder, a window rate set
         // against some other line, an insufficient-data prop, or a provider-only
         // prop yields null — and null is NOT eligible. Never a substitute rate.
         function smartParlayHitRate(edge, prop) {
-            if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_INSUFFICIENT) return null;
-            if (prop && (prop.modelSupported === false || prop.modelState === MODEL_STATE_INSUFFICIENT)) return null;
+            if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_INSUFFICIENT || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return null;
+            if (prop && (prop.modelSupported === false || prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED)) return null;
             if (edge.hitRatesSource !== 'game_log') return null;
             const h = edge.hitRates || {};
             if (h.season && Number.isFinite(h.season.pick)) return h.season.pick;
@@ -3382,6 +3388,44 @@
                 modelState: 'BETA'   // declared (UI gating by state is not implemented; grades are shown)
             };
         }
+        // ── NFL official calibration/grade configuration (FROZEN BETA, 2026-10-06; spec: docs/NFL_MODEL_FREEZE_BETA_2026-10-06.md) ──
+        // NFL customer-facing probability and grade read ONLY this config, never browser localStorage (GRADE_CUTOFFS.nfl / PROB_CALIB.nfl are developer
+        // diagnostics that cannot alter NFL output). Thresholds, projection, Prime and the probability curve are the pre-existing defaults, unchanged. The
+        // generic team points-allowed rank is CONTEXT ONLY (see the engine). Approved changes vs the previous page: Cap C, and the football "4 supporting
+        // factors for an A" requirement removed for NFL ONLY. Any change to this block = a NEW model version.
+        const NFL_MODEL_VERSION = 'nfl-edge-2026.10-nodef-v1';
+        const NFL_FEATURE_SET = 'nfl-window-blend-v1';
+        const NFL_GRADE_CONFIG = Object.freeze({
+            id: 'nfl-defaults-2026-10-06',
+            gradeCutoffs: null,        // null => built-in default thresholds (A >= .86 & conf >= 80, B >= .68 & conf >= 50, C >= .46) -- unchanged
+            probCalib: null,           // IDENTITY calibration (approved): pooled walk-forward slope 1.13; a 2-parameter logistic was NOT adopted (it degraded PassTD / RecYds)
+            // APPROVED Cap C (decision after the predeclared NFL cap comparison; synthetic pseudo-line only): abs(edge) / max(line, predictiveSpreadSD) > 0.50, threshold unchanged,
+            // no family values. The original |edge|/line rule capped ~66% of RushTD / RecTD sides and inverted their grades (B below C by ~11 pt). The football thin-history clause
+            // (games < 6 && |edge|/line > 0.30) is kept SEPARATELY and unchanged.
+            wildGapRule: 'floored',
+            wildGapRuleSpec: 'abs(edge) / max(line, predictiveSpreadSD) > 0.50',
+            predictiveSpreadSource: 'projStdDev(projection, statKey, windows): as-of projection + the player\'s own prior-game windows (recent.range); never the current game; missing/invalid => fails closed to the original abs(edge)/line rule',
+            // CAVEAT: predictiveSpreadSD is a conservative scale / floor, NOT a validated NFL per-player SD. It is the engine's 1.0 floor on 99-100% of RushTD / RecTD, is negatively related to
+            // realized error for QB passing stats, and is informative only for skill-position yards / volume stats.
+            predictiveSpreadCaveat: 'conservative scale/floor, not a validated per-player SD; the 1.0 floor is the whole spread for RushTD/RecTD and QB passing spread is uninformative',
+            // The football rule "an A needs >= 4 supporting factors" is REMOVED for NFL only (it stays for CFB). Validation: it did not improve A quality (non-TD A 58.5% vs B 58.5% under the
+            // rule; 60.4% vs 58.2% without it) and the vs-opponent factor it effectively required added no discrimination on non-TD stats.
+            fourFactorARequirement: 'REMOVED_FOR_NFL_ONLY'
+        });
+        function nflModelMeta() {
+            return {
+                modelVersion: NFL_MODEL_VERSION, sport: 'nfl', league: 'NFL',
+                featureSet: NFL_FEATURE_SET, defenseFeature: 'NONE',
+                calibrationId: NFL_GRADE_CONFIG.id, wildGapRule: NFL_GRADE_CONFIG.wildGapRule,
+                wildGapRuleSpec: NFL_GRADE_CONFIG.wildGapRuleSpec,
+                predictiveSpreadSource: NFL_GRADE_CONFIG.predictiveSpreadSource,
+                predictiveSpreadCaveat: NFL_GRADE_CONFIG.predictiveSpreadCaveat,
+                fourFactorARequirement: NFL_GRADE_CONFIG.fourFactorARequirement,
+                lowLineRecipes: ['rushTds', 'recTds'],   // the only sub-1 lines with a validated recipe; every other NFL line < 1 is NOT_YET_MODELED
+                realLineValidation: 'PENDING',
+                modelState: 'BETA'                       // declared (UI gating by state is not implemented; grades are shown)
+            };
+        }
         // Position label for the context-only defense row: SG/PG/G -> guards, SF/PF/F -> forwards, C -> centers, else generic.
         function nbaPositionWord(pos) {
             const p = String(pos || '').toUpperCase();
@@ -3453,6 +3497,29 @@
         // bypassCurve?, rawFloor?, rawCeil?, noAnchor? } around a single holdout
         // pass, then restores it.
         let _NFL_LOWLINE_EXPT = null;
+        // NFL sub-1 SAFETY (2026-10-06): the only validated low-line treatment is the rare-event recipe for rushTds / recTds. Any OTHER NFL offering with
+        // line < 1 (e.g. QB interceptions 0.5, WR rush yards 0.5) would fall through to the Gaussian path, which Phase 1 showed is badly miscalibrated
+        // there (RushYds 0.5: stated 45% vs actual 18%). It therefore FAILS CLOSED: real line shown, no probability / grade / Prime / Best Plays / +EV /
+        // Smart Parlay. Scoped to that line range only -- the same stat at a normal line is untouched. Do not invent another recipe here.
+        function nflSubOneLineUnsupported(prop) {
+            if (!prop || !(prop.line < 1.0)) return false;
+            const rk = prop._nflRealStat || prop.statKey;
+            if (NFL_LOWLINE_RARE[rk] != null) return false;                                                                   // validated recipe (rushTds / recTds)
+            if (_NFL_LOWLINE_EXPT && _NFL_LOWLINE_EXPT.stats && _NFL_LOWLINE_EXPT.stats[rk] != null) return false;             // a what-if hook explicitly supplies one
+            return true;
+        }
+        const NFL_SUB1_REASON = 'Line below 1 with no validated low-line model for this stat — model fields withheld (the real line is shown unchanged).';
+        function applyNflLowLineGate(props) {
+            (props || []).forEach(pr => {
+                if (!pr || pr.modelSupported === false) return;
+                if (!nflSubOneLineUnsupported(pr)) return;
+                pr.modelSupported = false;
+                pr.modelState = MODEL_STATE_NOT_YET_MODELED;
+                pr.modelStateReason = NFL_SUB1_REASON;
+                pr.hitRate = null;
+            });
+            return props;
+        }
         function calculateEdgeScore(player, prop) {
             let pm = _edgeCache.get(player);
             if (!pm) { pm = new Map(); _edgeCache.set(player, pm); }
@@ -3574,6 +3641,8 @@
             // 0 in the arithmetic below) and the result was a fabricated
             // projection/probability/grade/confidence. See hasRealModelHistory.
             if (!hasRealModelHistory(s)) return insufficientDataEdge();
+            // NFL sub-1 lines with no validated low-line recipe fail closed (see nflSubOneLineUnsupported). rushTds / recTds keep their recipe.
+            if (sport === 'nfl' && nflSubOneLineUnsupported(prop)) return notYetModeledEdge('NFL_SUB1_LINE_NO_VALIDATED_RECIPE');
 
             // Factor 1: Recent Form (Last 5)
             const recentAvg = s.last5.avg;
@@ -3768,10 +3837,15 @@
                     const r = player.oppDef.rank;              // 1 = stingiest, 32 = leakiest
                     const leaky = r >= 23, stingy = r <= 10;
                     if (leaky || stingy) {
-                        factors.push({
+                        // NFL (2026-10-06): the generic team points-allowed rank is CONTEXT ONLY. Phase-1 walk-forward diagnostics: no tested stat showed a
+                        // probability improvement, PassAtt / INT / Rec / Targets were significantly hurt, it was indistinguishable from a permuted-rank
+                        // placebo, and it diluted Prime. It stays visible but never reaches the projection, probability, confidence, grade or Prime.
+                        // CFB (ncaaf) keeps its previous behavior (not part of this change).
+                        (sport === 'nfl' ? contextFactors : factors).push({
                             key: 'oppdef',
                             name: `${player.opponent} defense`,
                             supports: direction === 'over' ? leaky : stingy,
+                            ...(sport === 'nfl' ? { contextOnly: true, label: 'Context only — not in the projection, probability or grade' } : {}),
                             detail: `allows ${player.oppDef.paPerGame} pts/game — #${r} of 32 in points allowed (${leaky ? 'one of the leakiest' : 'one of the stingiest'})`
                         });
                     }
@@ -3990,7 +4064,8 @@
             }
             // Football: nudge by how leaky the opposing defense is, scaled to
             // the size of the number (±6% at the extremes of the rank scale).
-            if ((sport === 'nfl' || sport === 'ncaaf') && player.oppDef && player.oppDef.rank) {
+            // NFL is EXCLUDED (2026-10-06): see the `oppdef` note above -- the +-6% rank multiplier no longer touches the NFL projection.
+            if (sport === 'ncaaf' && player.oppDef && player.oppDef.rank) {
                 const _span = sport === 'ncaaf' ? 65 : 15.5, _mid = sport === 'ncaaf' ? 67 : 16.5;
                 projection *= 1 + ((player.oppDef.rank - _mid) / _span) * 0.06;
             }
@@ -4068,7 +4143,7 @@
             let grade;
             // NBA customer-facing grades come ONLY from the versioned NBA_GRADE_CONFIG -- never from a
             // browser's localStorage-derived GRADE_CUTOFFS (2026-10-06). Other sports unchanged.
-            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
+            const cut = sport === 'nba' ? NBA_GRADE_CONFIG.gradeCutoffs : sport === 'wnba' ? WNBA_GRADE_CONFIG.gradeCutoffs : sport === 'nfl' ? NFL_GRADE_CONFIG.gradeCutoffs : (GRADE_CUTOFFS && GRADE_CUTOFFS[sport]);
             if (cut) {
                 // Cutoffs derived from THIS sport's backtest so the letters are
                 // anchored to real outcomes.
@@ -4096,7 +4171,7 @@
             // Wild-gap cap. Every sport but NBA and WNBA keeps the original relative rule (|edge|/line > 0.5). NBA / WNBA use the rule
             // fixed in NBA_GRADE_CONFIG / WNBA_GRADE_CONFIG .wildGapRule (validated; see model-validation) because dividing by a tiny line
             // (BLK 0.5, 3PM 1.5) capped ~41% / ~29% of sides regardless of how large the edge is in that stat's own units.
-            const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : sport === 'wnba' ? WNBA_GRADE_CONFIG.wildGapRule : 'relative';
+            const _gapRule = sport === 'nba' ? NBA_GRADE_CONFIG.wildGapRule : sport === 'wnba' ? WNBA_GRADE_CONFIG.wildGapRule : sport === 'nfl' ? NFL_GRADE_CONFIG.wildGapRule : 'relative';
             // predictive spread: the same SD the probability layer uses; built only from as-of windows + the as-of projection.
             const predictiveSpreadSD = projStdDev(projection, prop.statKey, s);
             const wildGap = wildGapExceeds(_gapRule, Math.abs(roundedEdge), line, predictiveSpreadSD, usingRealLine)  // model & line disagree by a lot → regression risk
@@ -4112,7 +4187,9 @@
             // the hit-rate AND vs-opponent factors to have fired (real sample)
             // for a football A; otherwise the best it earns is a B. College
             // adds a season-not-started guard (Week 1-3 = prior-year logs only).
-            if (_football && grade === 'A' && totalFactors < 4) grade = 'B';
+            // NFL (2026-10-06, approved after the predeclared validation): this requirement is REMOVED for NFL ONLY. It did not improve A quality (non-TD A = B under the rule) and
+            // the vs-opponent factor it effectively demanded (>= 2 prior games vs the opponent, available on 26.5% of sides) added no discrimination on non-TD stats. CFB keeps it.
+            if (sport === 'ncaaf' && grade === 'A' && totalFactors < 4) grade = 'B';
             if (sport === 'ncaaf' && grade === 'A' && (s.season && s.season.games || 0) < 6) grade = 'B';
 
             // ── "Prime corner" — confluence × edge, from the walk-forward.
@@ -4407,7 +4484,7 @@
             // every other sport keeps its previous behavior (the post-rules are skipped in backtest mode).
             const _fg = resolveFinalGrade({
                 rawGrade, prime: primeCorner, modelProbSport, impliedProb, hasRealPrice,
-                liveRules: (sport === 'nba' || sport === 'wnba') ? true : prop.lineSource !== 'backtest'   // NBA + WNBA: one pipeline, live == historical
+                liveRules: (sport === 'nba' || sport === 'wnba' || sport === 'nfl') ? true : prop.lineSource !== 'backtest'   // NBA + WNBA + NFL: one pipeline, live == historical
             });
             grade = _fg.finalGrade;
             if (_fg.reasons.indexOf('PRIME_PROMOTION') >= 0) gradeScore = Math.max(gradeScore, (cut ? cut.A : 0.86) + 0.01);
@@ -4440,7 +4517,7 @@
                 // Presentation-only items that are NOT model inputs (NBA opponent-defense context).
                 context: contextFactors,
                 // Trace metadata (NBA only): which model produced this, with defense explicitly NONE.
-                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : null,
+                modelMeta: sport === 'nba' ? nbaModelMeta() : sport === 'wnba' ? wnbaModelMeta() : sport === 'nfl' ? nflModelMeta() : null,
                 greenCount,
                 totalFactors,
                 confidence,
@@ -4709,10 +4786,13 @@
                     if (!isModelSupportedProp(prop)) return;
                     // Defense in depth (2026-10-06): the +EV list must not depend on an upstream builder having already filtered the
                     // prop. A prop in the INSUFFICIENT_DATA state, or whose edge is insufficient-data, can never be listed.
-                    if (prop.modelState === MODEL_STATE_INSUFFICIENT) return;
+                    // Explicit fail-closed gate (WNBA 2026-10-06, NFL 2026-10-06): insufficient data, a model-unsupported prop and an unmodeled offering
+                    // (e.g. an NFL sub-1 line without a validated recipe) are all refused HERE, whatever an upstream builder did or did not flag.
+                    if (prop.modelSupported === false) return;
+                    if (prop.modelState === MODEL_STATE_INSUFFICIENT || prop.modelState === MODEL_STATE_NOT_YET_MODELED) return;
                     if (!prop.plusEV || !prop.plusEV.eligible) return;
                     const edge = calculateEdgeScore(player, prop);
-                    if (!edge || edge.insufficientData) return;
+                    if (!edge || edge.insufficientData || edge.modelState === MODEL_STATE_NOT_YET_MODELED) return;
                     rows.push({ player, prop, propIdx: idx, edge, plusEV: prop.plusEV });
                 });
             });
@@ -5353,95 +5433,8 @@
                 }
             }
         }
-        // Walk-forward for ONE NFL player-stat series with a {minTs,maxTs} date
-        // gate (temporal holdout, Item 11) + family / per-stat / confluence /
-        // rare-line calibration tallies. Mirrors mlbBacktestSeries. Diagnostic
-        // only — no NFL model change; there is no scoped NFL engine path, so
-        // this measures the CURRENT model on unseen data.
-        function nflBacktestSeries(vals, opps, tss, position, fam, statKey, acc, gate) {
-            const MIN = (gate && gate.minGames) || 6;
-            const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
-            for (let i = MIN; i < vals.length; i++) {
-                const gTs = tss[i] || 0;
-                if (maxTs && gTs && gTs >= maxTs) continue;
-                if (minTs && (!gTs || gTs < minTs)) continue;
-                const hv = vals.slice(0, i), ho = opps.slice(0, i);
-                const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
-                if (seasonAvg <= 0) continue;
-                // Scale-aware synthetic line: big for yards, half-points for counts.
-                const step = seasonAvg > 15 ? 5 : 1;
-                const start = step === 5 ? 2.5 : 0.5;
-                let line = null, bestGap = 99;
-                for (let cand = start; cand <= seasonAvg * 1.8 + step; cand += step) {
-                    const over = hv.filter(v => v > cand).length / hv.length;
-                    const gp = Math.abs(over - 0.48);
-                    if (gp < bestGap) { bestGap = gp; line = cand; }
-                }
-                if (line == null || line <= 0) continue;
-                const actual = vals[i], tonightOpp = opps[i];
-                if (actual === line) continue;
-                const w = btWindowsAsOf(hv, ho, tonightOpp, line);
-                const fake = { sport: 'nfl', position, opponent: tonightOpp, statsByKey: { X: w }, opponentDefense: null, oppDef: null, situational: null };
-                for (const dir of ['over', 'under']) {
-                    const e = calculateEdgeScore(fake, { statKey: 'X', type: 'X', _nflRealStat: statKey, line, direction: dir, lineSource: 'backtest' });
-                    const hit = dir === 'over' ? actual > line : actual < line;
-                    const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
-                    g.n++; if (hit) g.hit++;
-                    acc._total.n++; if (hit) acc._total.hit++;
-                    btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
-                    const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
-                    const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
-                    sb.n++; if (hit) sb.hit++;
-                    if (e.prime) { acc.primeTotal.n++; if (hit) acc.primeTotal.hit++; }
-                    btFileAlign(acc, e.greenCount, e.totalFactors, hit);
-                    btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
-                    if (acc.nflFam) {
-                        const y = hit ? 1 : 0, p = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 50) / 100));
-                        const tally = (o) => {
-                            o.n++; o.hit += y; o.sumProb += p * 100;
-                            o.brier += (p - y) * (p - y);
-                            o.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
-                            const bk = btProbBucket(p * 100);
-                            if (bk) { const t = o.buckets[bk] || (o.buckets[bk] = { n: 0, hit: 0, sum: 0 }); t.n++; t.hit += y; t.sum += p * 100; }
-                        };
-                        tally(acc.nflAll || (acc.nflAll = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
-                        if (fam) tally(acc.nflFam[fam] || (acc.nflFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
-                        acc.nflByStat = acc.nflByStat || {};
-                        tally(acc.nflByStat[statKey] || (acc.nflByStat[statKey] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
-                        const ct = btConfTier(e.greenCount, e.totalFactors);
-                        if (ct) { acc.nflConf = acc.nflConf || {}; tally(acc.nflConf[ct] || (acc.nflConf[ct] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} })); }
-                    }
-                    // rare / low-line diagnostic (line < 1.0) — reuse the MLB helpers
-                    if (acc.lowLine) {
-                        const y = hit ? 1 : 0, finalPct = e.modelProbPct, rawPct = e.rawModelProbPct;
-                        const prePct = (typeof e.preFloorProbPct === 'number') ? e.preFloorProbPct : finalPct;
-                        const preRaw = (typeof e.preFloorRaw === 'number') ? e.preFloorRaw : prePct / 100;
-                        const pp = Math.max(0.001, Math.min(0.999, finalPct / 100));
-                        const sub1 = line < 1.0, isRare = NFL_RARE_STATS.indexOf(statKey) >= 0;
-                        const push = (bin) => {
-                            bin.n++; bin.hit += y;
-                            bin.sumRaw += rawPct; bin.sumFinal += finalPct; bin.sumPre += prePct;
-                            if (finalPct < bin.minFinal) bin.minFinal = finalPct;
-                            if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
-                            if (preRaw < 0.22) bin.atRawFloorN++;
-                            bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
-                            bin.brier += (pp - y) * (pp - y);
-                            bin.ll += -(y * Math.log(pp) + (1 - y) * Math.log(1 - pp));
-                            const pk = llPBucket(finalPct);
-                            const t = bin.pb[pk] || (bin.pb[pk] = { n: 0, hit: 0, sumP: 0 });
-                            t.n++; t.hit += y; t.sumP += finalPct;
-                        };
-                        push(acc.lowLine.all || (acc.lowLine.all = llBin()));
-                        push((sub1 ? (acc.lowLine.lt1 || (acc.lowLine.lt1 = llBin())) : (acc.lowLine.ge1 || (acc.lowLine.ge1 = llBin()))));
-                        if (sub1 && dir === 'over') {
-                            acc.lowLine.byStat = acc.lowLine.byStat || {};
-                            push(acc.lowLine.byStat[statKey] || (acc.lowLine.byStat[statKey] = llBin()));
-                            if (isRare) push(acc.lowLine.rareOver || (acc.lowLine.rareOver = llBin()));
-                        }
-                    }
-                }
-            }
-        }
+        // nflBacktestSeries (the NFL walk-forward scorer) now lives INSIDE the App closure, right after nflComputeWindows, because it must build
+        // its inputs with the LIVE NFL builders (2026-10-06 parity fix). It used to be here with a fake player (stat key 'X', btWindowsAsOf, no game log).
         // Dual-probability calibration accumulator — filled ONLY on the fresh
         // family-calibration validation pass (nbaBacktestSeries tallies it when
         // `acc.calibVal` is present). Tracks, for "before" (sport curve only) and
@@ -5799,7 +5792,7 @@
         // re-clamped 1-99%.
         function applyProbCalib(p01, sport) {
             // NBA: official probability calibration comes ONLY from NBA_GRADE_CONFIG (versioned), never from browser localStorage.
-            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
+            const cal = sport === 'nba' ? NBA_GRADE_CONFIG.probCalib : sport === 'wnba' ? WNBA_GRADE_CONFIG.probCalib : sport === 'nfl' ? NFL_GRADE_CONFIG.probCalib : (PROB_CALIB && PROB_CALIB[sport]);
             if (!Array.isArray(cal) || cal.length < 2) return p01;
             const x = p01 * 100;
             if (x <= cal[0][0]) return Math.max(0.01, Math.min(0.99, cal[0][1] / 100));
@@ -12272,7 +12265,9 @@
                 passAttempts:    { type: 'Pass Attempts',     market: 'player_pass_attempts',      pos: 'QB',       get: r => r.passingAttempts || 0,     has: r => r.passingAttempts != null },
                 passCompletions: { type: 'Pass Completions',  market: 'player_pass_completions',   pos: 'QB',       get: r => r.completions || 0,         has: r => r.completions != null },
                 interceptions:   { type: 'Interceptions',     market: 'player_pass_interceptions', pos: 'QB',       get: r => r.interceptions || 0,       has: r => r.interceptions != null },
-                passRushYds:     { type: 'Pass+Rush Yards',   market: 'player_pass_rush_yds',      pos: 'QB',       get: r => (r.passingYards || 0) + (r.rushingYards || 0), has: r => r.passingYards != null || r.rushingYards != null },
+                // `hasAll` (NFL only, via NFL_WINDOW_OPTS.strictCombos): a combo observation exists for a game ONLY when EVERY required component was recorded --
+                // a missing component is never silently counted as 0. `has` keeps the older either-component rule for CFB, which shares these defs.
+                passRushYds:     { type: 'Pass+Rush Yards',   market: 'player_pass_rush_yds',      pos: 'QB',       get: r => (r.passingYards || 0) + (r.rushingYards || 0), has: r => r.passingYards != null || r.rushingYards != null, hasAll: r => r.passingYards != null && r.rushingYards != null },
                 rushYds:         { type: 'Rush Yards',        market: 'player_rush_yds',           pos: 'RB,QB,WR', get: r => r.rushingYards || 0,        has: r => r.rushingYards != null },
                 rushAttempts:    { type: 'Rush Attempts',     market: 'player_rush_attempts',      pos: 'RB,QB',    get: r => r.rushingAttempts || 0,     has: r => r.rushingAttempts != null },
                 rushTds:         { type: 'Rush TDs',          market: 'player_rush_tds',           pos: 'RB,QB,WR', get: r => r.rushingTouchdowns || 0,   has: r => r.rushingTouchdowns != null },
@@ -12282,7 +12277,7 @@
                 recTds:          { type: 'Receiving TDs',     market: 'player_reception_tds',      pos: 'WR,TE,RB', get: r => r.receivingTouchdowns || 0, has: r => r.receivingTouchdowns != null },
                 targets:         { type: 'Targets',           market: 'player_reception_targets',  pos: 'WR,TE,RB', get: r => r.receivingTargets || 0,    has: r => r.receivingTargets != null },
                 longRec:         { type: 'Longest Reception', market: 'player_reception_longest',  pos: 'WR,TE,RB', get: r => r.longReception || 0,       has: r => r.longReception != null },
-                rushRecYds:      { type: 'Rush+Rec Yards',    market: 'player_rush_reception_yds', pos: 'RB,WR,TE', get: r => (r.rushingYards || 0) + (r.receivingYards || 0), has: r => r.rushingYards != null || r.receivingYards != null },
+                rushRecYds:      { type: 'Rush+Rec Yards',    market: 'player_rush_reception_yds', pos: 'RB,WR,TE', get: r => (r.rushingYards || 0) + (r.receivingYards || 0), has: r => r.rushingYards != null || r.receivingYards != null, hasAll: r => r.rushingYards != null && r.receivingYards != null },
                 kickingPts:      { type: 'Kicking Points',    market: 'player_kicking_points',     pos: 'K',        get: r => r.totalKickingPoints != null ? r.totalKickingPoints : (r.totalPoints || 0), has: r => r.totalKickingPoints != null || r.totalPoints != null },
                 fgMade:          { type: 'FG Made',           market: 'player_field_goals_made',   pos: 'K',        get: r => r['fieldGoalsMade-fieldGoalAttempts'] || r.fieldGoalsMade || 0, has: r => r['fieldGoalsMade-fieldGoalAttempts'] != null || r.fieldGoalsMade != null }
             };
@@ -14005,7 +14000,8 @@
                 const years = [NFL_SEASON - 2, NFL_SEASON - 1, NFL_SEASON];
                 const gls = await Promise.all(years.map(y =>
                     nflFetch(`${NFL_ESPN_COMMON}/athletes/${id}/gamelog?season=${y}`).catch(() => null)));
-                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl).map(r => ({ ...r, season: years[i] }))); });
+                // NFL: a non-numeric cell ("--", blank, null) is a MISSING observation, never an observed 0 (a recorded "0" stays 0).
+                gls.forEach((gl, i) => { if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl, { nonNumericAsMissing: true }).map(r => ({ ...r, season: years[i] }))); });
                 return rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
             };
             const nflGamelogs = async (ids) => {
@@ -14029,7 +14025,7 @@
                         for (const yr of years) {
                             try {
                                 const gl = await nflFetch(`${NFL_ESPN_COMMON}/athletes/${id}/gamelog?season=${yr}`);
-                                if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl));
+                                if (gl && nflEventCount(gl) > 0) rows.push(...nflParseGamelog(gl, { nonNumericAsMissing: true }));
                             } catch (e) { /* skip year */ }
                         }
                         rows.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -14112,7 +14108,13 @@
             // - Uses each stat's additive `has` check (never the shared `get`
             //   the model reads) to exclude a game where the stat was never
             //   recorded, instead of silently counting it as a real zero.
-            const nflComputeWindows = (glRows, posKeys, lineFor, oppAbbr, seasonYear) => {
+            // NFL-only history semantics (2026-10-06). `opts` is passed ONLY by the NFL call sites; CFB (which shares this builder) keeps the previous behavior.
+            //   zeroObservationsAreHistory: a stat with RECORDED games whose values are ALL 0 is real history (n games, average 0) -- not "no history".
+            //     Only a stat with ZERO recorded observations gets no window. (Previously `!vals.some(v => v > 0)` treated eight real 0-TD games as none.)
+            //   strictCombos: a combo (Pass+Rush, Rush+Rec) game counts only when every component was recorded (def.hasAll).
+            const NFL_WINDOW_OPTS = Object.freeze({ zeroObservationsAreHistory: true, strictCombos: true });
+            const nflHasFor = (def, opts) => (opts && opts.strictCombos && def.hasAll) ? def.hasAll : (def.has || (() => true));
+            const nflComputeWindows = (glRows, posKeys, lineFor, oppAbbr, seasonYear, opts) => {
                 const statsByKey = {}, gameLogByKey = {};
                 const mean = (arr) => arr.length ? round1(arr.reduce((s, v) => s + v, 0) / arr.length) : null;
                 const seen = new Set();
@@ -14125,13 +14127,15 @@
                 posKeys.forEach(k => {
                     const def = NFL_PROP_DEFS[k];
                     const getV = def.get;
-                    const hasV = def.has || (() => true);
+                    const hasV = nflHasFor(def, opts);
                     const withVal = rows.filter(g => hasV(g.row));
                     const vals = withVal.map(g => getV(g.row) || 0);
                     // No real data for this stat (ESPN gamelog had no column for
                     // it, or every game is 0) → leave the window unbuilt so the
                     // prop seeds off the posted line instead of charting zeros.
-                    if (!vals.some(v => v > 0)) return;
+                    // NFL (opts.zeroObservationsAreHistory): only ZERO observations means no window; all-zero RECORDED games are real history.
+                    if (opts && opts.zeroObservationsAreHistory) { if (!vals.length) return; }
+                    else if (!vals.some(v => v > 0)) return;
                     const line = lineFor[k] != null ? lineFor[k] : (mean(vals) || 0);
                     const rate = (a) => a.length ? Math.round((a.filter(v => v > line).length / a.length) * 100) : null;
                     const windowOf = (n) => {
@@ -14169,6 +14173,111 @@
                     gameLogByKey[k] = withVal.slice(-40).map(g => ({ date: g.date, dateShort: g.dateShort, opponent: g.opponent, vsLabel: g.vsLabel, points: getV(g.row) || 0, line, season: g.season }));
                 });
                 return { statsByKey, gameLogByKey };
+            };
+
+            // Walk-forward for ONE NFL player-stat series with a {minTs,maxTs} date gate (temporal holdout, Item 11) + family / per-stat / confluence /
+            // rare-line calibration tallies. LIVE-SHAPED (2026-10-06 parity fix): `liveRows` = the player's parsed ESPN gamelog rows; every prediction's
+            // windows and per-game log are built by the LIVE builder nflComputeWindows (same NFL options, real stat key) from strictly EARLIER rows only,
+            // and scored through the same engine call, grade pipeline and post-rules as production. It used to score a fake player (stat key 'X',
+            // btWindowsAsOf windows, no game log, no defense, post-rules skipped), i.e. a different model. Diagnostic only.
+            const nflBacktestSeries = (vals, opps, tss, position, fam, statKey, acc, gate, liveRows) => {
+                const MIN = (gate && gate.minGames) || 6;
+                const minTs = gate && gate.minTs || 0, maxTs = gate && gate.maxTs || 0;
+                const _def = NFL_PROP_DEFS[statKey], _has = nflHasFor(_def, NFL_WINDOW_OPTS);
+                for (let i = MIN; i < liveRows.length; i++) {
+                    const gTs = tss[i] || 0;
+                    if (maxTs && gTs && gTs >= maxTs) continue;
+                    if (minTs && (!gTs || gTs < minTs)) continue;
+                    // A game where this stat was not RECORDED is a missing observation: never a target, never an observed 0 in history.
+                    if (!_has(liveRows[i].row)) continue;
+                    const hv = liveRows.slice(0, i).filter(g => _has(g.row)).map(g => _def.get(g.row) || 0);
+                    if (!hv.length) continue;
+                    const seasonAvg = hv.reduce((s, v) => s + v, 0) / hv.length;
+                    if (seasonAvg <= 0) continue;     // a synthetic line cannot be formed from an all-zero history (the live path still treats it as real history)
+                    // Scale-aware synthetic line: big for yards, half-points for counts.
+                    const step = seasonAvg > 15 ? 5 : 1;
+                    const start = step === 5 ? 2.5 : 0.5;
+                    let line = null, bestGap = 99;
+                    for (let cand = start; cand <= seasonAvg * 1.8 + step; cand += step) {
+                        const over = hv.filter(v => v > cand).length / hv.length;
+                        const gp = Math.abs(over - 0.48);
+                        if (gp < bestGap) { bestGap = gp; line = cand; }
+                    }
+                    if (line == null || line <= 0) continue;
+                    const actual = _def.get(liveRows[i].row) || 0, tonightOpp = opps[i];
+                    if (actual === line) continue;
+                    const built = nflComputeWindows(liveRows.slice(0, i), [statKey], { [statKey]: line }, tonightOpp, liveRows[i].season != null ? liveRows[i].season : null, NFL_WINDOW_OPTS);
+                    const w = built.statsByKey[statKey];
+                    if (!w) continue;
+                    const fake = { sport: 'nfl', position, opponent: tonightOpp, statsByKey: { [statKey]: w }, gameLogByKey: { [statKey]: built.gameLogByKey[statKey] }, stats: {}, gameLog: [], opponentDefense: null, oppDef: null, situational: null };
+                    for (const dir of ['over', 'under']) {
+                        const e = calculateEdgeScore(fake, { statKey, type: _def.type, line, direction: dir, lineSource: 'backtest' });
+                        if (e.insufficientData) continue;   // insufficient history / NOT_YET_MODELED offering (e.g. a sub-1 line without a recipe): never scored
+                        const hit = dir === 'over' ? actual > line : actual < line;
+                        const g = acc[e.grade] || (acc[e.grade] = { n: 0, hit: 0 });
+                        g.n++; if (hit) g.hit++;
+                        acc._total.n++; if (hit) acc._total.hit++;
+                        btFileProb(acc, e.modelProbPct, e.rawModelProbPct, hit);
+                        const b = Math.max(0, Math.min(19, Math.floor(e.gradeScore * 20)));
+                        const sb = acc.score[b] || (acc.score[b] = { n: 0, hit: 0 });
+                        sb.n++; if (hit) sb.hit++;
+                        if (e.prime) { acc.primeTotal.n++; if (hit) acc.primeTotal.hit++; }
+                        btFileAlign(acc, e.greenCount, e.totalFactors, hit);
+                        btFileGradeConf(acc, e.grade, e.greenCount, e.totalFactors, hit);
+                        btFileConfEdge(acc, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        btFileGCE(acc, e.grade, e.greenCount, e.totalFactors, e.edgeSignalPct, hit);
+                        e.factors.forEach(f => {
+                            if (!f.supports) return;
+                            const name = /^vs\s+[A-Z]{2,4}$/.test(f.name) ? 'Recent vs opponent' : f.name;   // collapse the 32 "vs <TEAM>" factors into one line
+                            const fb = acc.factors[name] || (acc.factors[name] = { n: 0, hit: 0 });
+                            fb.n++; if (hit) fb.hit++;
+                        });
+                        if (acc.nflFam) {
+                            const y = hit ? 1 : 0, p = Math.max(0.01, Math.min(0.99, (e.modelProbPct || 50) / 100));
+                            const tally = (o) => {
+                                o.n++; o.hit += y; o.sumProb += p * 100;
+                                o.brier += (p - y) * (p - y);
+                                o.ll += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+                                const bk = btProbBucket(p * 100);
+                                if (bk) { const t = o.buckets[bk] || (o.buckets[bk] = { n: 0, hit: 0, sum: 0 }); t.n++; t.hit += y; t.sum += p * 100; }
+                            };
+                            tally(acc.nflAll || (acc.nflAll = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                            if (fam) tally(acc.nflFam[fam] || (acc.nflFam[fam] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                            acc.nflByStat = acc.nflByStat || {};
+                            tally(acc.nflByStat[statKey] || (acc.nflByStat[statKey] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} }));
+                            const ct = btConfTier(e.greenCount, e.totalFactors);
+                            if (ct) { acc.nflConf = acc.nflConf || {}; tally(acc.nflConf[ct] || (acc.nflConf[ct] = { n: 0, hit: 0, sumProb: 0, brier: 0, ll: 0, buckets: {} })); }
+                        }
+                        // rare / low-line diagnostic (line < 1.0) — reuse the MLB helpers
+                        if (acc.lowLine) {
+                            const y = hit ? 1 : 0, finalPct = e.modelProbPct, rawPct = e.rawModelProbPct;
+                            const prePct = (typeof e.preFloorProbPct === 'number') ? e.preFloorProbPct : finalPct;
+                            const preRaw = (typeof e.preFloorRaw === 'number') ? e.preFloorRaw : prePct / 100;
+                            const pp = Math.max(0.001, Math.min(0.999, finalPct / 100));
+                            const sub1 = line < 1.0, isRare = NFL_RARE_STATS.indexOf(statKey) >= 0;
+                            const push = (bin) => {
+                                bin.n++; bin.hit += y;
+                                bin.sumRaw += rawPct; bin.sumFinal += finalPct; bin.sumPre += prePct;
+                                if (finalPct < bin.minFinal) bin.minFinal = finalPct;
+                                if (finalPct > bin.maxFinal) bin.maxFinal = finalPct;
+                                if (preRaw < 0.22) bin.atRawFloorN++;
+                                bin.gradeN[e.grade] = (bin.gradeN[e.grade] || 0) + 1;
+                                bin.brier += (pp - y) * (pp - y);
+                                bin.ll += -(y * Math.log(pp) + (1 - y) * Math.log(1 - pp));
+                                const pk = llPBucket(finalPct);
+                                const t = bin.pb[pk] || (bin.pb[pk] = { n: 0, hit: 0, sumP: 0 });
+                                t.n++; t.hit += y; t.sumP += finalPct;
+                            };
+                            push(acc.lowLine.all || (acc.lowLine.all = llBin()));
+                            push((sub1 ? (acc.lowLine.lt1 || (acc.lowLine.lt1 = llBin())) : (acc.lowLine.ge1 || (acc.lowLine.ge1 = llBin()))));
+                            if (sub1 && dir === 'over') {
+                                acc.lowLine.byStat = acc.lowLine.byStat || {};
+                                push(acc.lowLine.byStat[statKey] || (acc.lowLine.byStat[statKey] = llBin()));
+                                if (isRare) push(acc.lowLine.rareOver || (acc.lowLine.rareOver = llBin()));
+                            }
+                        }
+                    }
+                }
             };
 
             // Market-coverage audit fix (2026-09-18): a raw ParlayAPI
@@ -14626,13 +14735,14 @@
                         if (move) pr.move = move;
                     });
                     const { statsByKey, gameLogByKey } = glRows.length
-                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON)
+                        ? nflComputeWindows(glRows, nflPosKeys(slot.pos), lineFor, slot.opponent, NFL_SEASON, NFL_WINDOW_OPTS)
                         : { statsByKey: {}, gameLogByKey: {} };
                     const perGameFor = (k) => {
                         const w = statsByKey[k];
                         return (w && (w.season.avg || w.recent.avg)) || 0;
                     };
                     let props = nflBuildProps(posKeys, statsByKey, linesByName[nm], wantBook, perGameFor);
+                    props = applyNflLowLineGate(props);   // NFL sub-1 lines without a validated recipe: real line kept, model fields withheld (NOT_YET_MODELED)
                     const player = {
                         id: slot.id, name: slot.name, sport: 'nfl', role: 'skill',
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
@@ -14683,7 +14793,7 @@
                     if (p.id !== player.id || p.sport !== 'nfl') return p;
                     const lineFor = {};
                     (p.props || []).forEach(pr => { lineFor[pr.statKey] = pr.line; });
-                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON);
+                    const { statsByKey, gameLogByKey } = nflComputeWindows(glRows, nflPosKeys(p.position), lineFor, p.opponent, NFL_SEASON, NFL_WINDOW_OPTS);
                     return {
                         ...p, statsByKey, gameLogByKey,
                         stats: statsByKey[p.props[0].statKey] || p.stats,
@@ -17365,16 +17475,19 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         // walk-forward has a real sample.
                         const years = [NFL_SEASON - 1, NFL_SEASON - 2, NFL_SEASON - 3];
                         const glMap = await nflGamelogsMulti(ids, years);
-                        runPass = (acc) => {
+                        runPass = (acc, gate) => {
                             roster.forEach(p => {
                                 const rows = glMap[p.id] || [];
                                 if (rows.length < 10) return;
                                 const opps = rows.map(r => r.opponent || '');
+                                const tss = rows.map(r => r.ts || 0);
                                 nflPosKeys(p.position).forEach(k => {
                                     const def = NFL_PROP_DEFS[k];
                                     const vals = rows.map(r => def.get(r.row) || 0);
                                     if (vals.every(v => v === 0)) return;
-                                    backtestSeries(vals, opps, 'nfl', p.position, acc, 6);
+                                    // NFL (2026-10-06): scored through the LIVE-shaped scorer (live builders, real stat key, per-game log, same grade pipeline),
+                                    // not the generic fake-player backtestSeries.
+                                    nflBacktestSeries(vals, opps, tss, p.position, NFL_STAT_FAMILY[k] || null, k, acc, Object.assign({ minGames: 6 }, gate || {}), rows);
                                     evaluated++;
                                 });
                             });
@@ -17482,11 +17595,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (cutoffs) {
                             GRADE_CUTOFFS = { ...GRADE_CUTOFFS, [selectedSport]: cutoffs };
                             // NBA: diagnostic only -- NBA customer-facing grades come from NBA_GRADE_CONFIG, so nothing is persisted for NBA.
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA: diagnostic only, never persisted
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl') { try { localStorage.setItem('beatsedge_grade_cutoffs_v1', JSON.stringify(GRADE_CUTOFFS)); } catch (e) { } }   // NBA/WNBA/NFL: diagnostic only, never persisted
                         }
                         if (probCal) {
                             PROB_CALIB = { ...PROB_CALIB, [selectedSport]: probCal };
-                            if (selectedSport !== 'nba' && selectedSport !== 'wnba') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
+                            if (selectedSport !== 'nba' && selectedSport !== 'wnba' && selectedSport !== 'nfl') { try { localStorage.setItem('beatsedge_prob_calib_v1', JSON.stringify(PROB_CALIB)); } catch (e) { } }
                         }
                         evaluated = 0;
                         acc = emptyBacktestAcc();
@@ -18328,14 +18441,14 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             const def = NFL_PROP_DEFS[k];
                             const vals = rows.map(r => def.get(r.row) || 0);
                             if (vals.every(v => v === 0)) return;
-                            allSeries.push({ k, fam: NFL_STAT_FAMILY[k] || null, vals, opps, tss, position: p.position });
+                            allSeries.push({ k, fam: NFL_STAT_FAMILY[k] || null, vals, opps, tss, position: p.position, rows });
                         });
                     });
                     if (!allSeries.length) { setNflTemporal({ error: 'No multi-season NFL game logs returned from ESPN.', ranAt: Date.now() }); return; }
 
                     const accTrain = emptyBacktestAcc();
                     accTrain.lowLine = {}; // TRAIN 0.5-line OVER rates → leak-free frozen priors for Step 7
-                    allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutStart }));
+                    allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accTrain, { maxTs: holdoutStart }, s.rows));
                     const cutoffs = deriveGradeCutoffs(accTrain.score);
                     const probCal = deriveProbCalib(accTrain.probRaw);
 
@@ -18346,9 +18459,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                         if (probCal) PROB_CALIB = { ...PROB_CALIB, nfl: probCal };
                         bumpEdgeCache();
                         accHold = emptyBacktestAcc(); accHold.nflFam = {}; accHold.lowLine = {};
-                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutStart, maxTs: holdoutEnd }));
+                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accHold, { minTs: holdoutStart, maxTs: holdoutEnd }, s.rows));
                         accFull = emptyBacktestAcc(); accFull.nflFam = {};
-                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}));
+                        allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accFull, {}, s.rows));
 
                         // ── STEP 7 EXPERIMENT ─────────────────────────────────
                         // Same frozen train cutoffs/curve. Frozen per-stat OVER
@@ -18377,7 +18490,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             try {
                                 _NFL_LOWLINE_EXPT = R.cfg; bumpEdgeCache();
                                 accR = emptyBacktestAcc(); accR.nflFam = {}; accR.lowLine = {};
-                                allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutStart, maxTs: holdoutEnd }));
+                                allSeries.forEach(s => nflBacktestSeries(s.vals, s.opps, s.tss, s.position, s.fam, s.k, accR, { minTs: holdoutStart, maxTs: holdoutEnd }, s.rows));
                             } finally {
                                 _NFL_LOWLINE_EXPT = null; bumpEdgeCache();
                             }
