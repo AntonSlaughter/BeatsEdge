@@ -157,7 +157,7 @@ eval(extractConst(src, 'nhlComputeWindows'));
   // the modal" bug regardless of root cause -- click-gating, stale/drifted
   // detailModal state after a background refresh, or anything else that
   // might otherwise set detailModal to point at this player). ──────────────
-  check('26: a stable id is assigned to every NHL prop at push time (openDetail can now correctly capture propId, not just propIdx)', src.includes('id: `${mk || playerRaw}:${statKey}`'));
+  check('26: a stable id is assigned to every NHL prop at push time (openDetail can now correctly capture propId, not just propIdx)', src.includes('id: `${idKey}${evSfx}:${statKey}`'));
   check('27: the active prop is resolved by stable id FIRST, index only as a fallback -- same pattern PlayerCard itself uses to avoid a background refresh silently swapping the displayed prop', cardSrc.includes('player.props.find(p => p.id === (detailModal && detailModal.propId))'));
   check('28: the modal can only become eligible to render when the resolved prop is model-supported AND the player is resolved', cardSrc.includes('const modalEligible = activeInModal && !!activeProp && activeProp.modelSupported === true && !!player.nhlPlayerId;'));
   check('29: the modal overlay itself is gated on modalEligible, not merely on "a detail modal is open for this player"', /\{modalEligible && \(\s*<DetailModalShell/.test(cardSrc) && !cardSrc.includes('className="modal-overlay"'));

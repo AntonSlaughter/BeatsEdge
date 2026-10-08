@@ -6223,7 +6223,12 @@ function mlbModelMeta() {
             { id: 'betrivers', name: 'BetRivers', dfs: false },
             { id: 'caesars', name: 'Caesars', dfs: false },
             { id: 'pinnacle', name: 'Pinnacle', dfs: false },
-            { id: 'bovada', name: 'Bovada', dfs: false }
+            { id: 'bovada', name: 'Bovada', dfs: false },
+            // Confirmed live provider sources (2026-10-07 audit) that BeatsEdge previously never requested. Pick6 is a DFS app (explicit line types: standard / gimme_pick / stat_slice / power_up).
+            { id: 'pick6', name: 'Pick6', dfs: true },
+            { id: 'novig', name: 'Novig', dfs: false },
+            { id: 'fliff', name: 'Fliff', dfs: false },
+            { id: 'prophetx', name: 'ProphetX', dfs: false }
         ];
         // Sentinel `book` value meaning "every book at once" -- not a real
         // bookmaker id (no book in BOOK_REGISTRY is named 'all'), so it can
@@ -6246,12 +6251,14 @@ function mlbModelMeta() {
             prizepicks: 'PrizePicks', underdog: 'Underdog', sleeper: 'Sleeper',
             fanduel: 'FanDuel', draftkings: 'DraftKings', betmgm: 'BetMGM',
             espnbet: 'ESPN BET', caesars: 'Caesars', fanatics: 'Fanatics', hardrock: 'Hard Rock',
-            betrivers: 'BetRivers', pinnacle: 'Pinnacle', bovada: 'Bovada'
+            betrivers: 'BetRivers', pinnacle: 'Pinnacle', bovada: 'Bovada', pick6: 'Pick6', novig: 'Novig', fliff: 'Fliff', prophetx: 'ProphetX',
+            kalshi: 'Kalshi', tenbet: 'TenBet', polymarket: 'Polymarket', betway: 'Betway', rushbet: 'Rushbet', betonline: 'BetOnline', betr: 'Betr', parlayplay: 'ParlayPlay', bet365: 'bet365'
         };
+        // Unknown legitimate provider books keep a SANITIZED label (letters / digits / spaces only) -- never dropped, never raw markup.
         const bookLabel = (b) => {
             if (!b) return null;
             const k = String(b).toLowerCase();
-            return BOOK_LABEL[k] || String(b).replace(/\b\w/g, c => c.toUpperCase());
+            return BOOK_LABEL[k] || String(b).replace(/[^A-Za-z0-9 _-]/g, '').replace(/[_-]+/g, ' ').trim().replace(/\b\w/g, c => c.toUpperCase()) || null;
         };
 
         // ── Line-movement ledger ───────────────────────────────────────────
@@ -6317,19 +6324,169 @@ function mlbModelMeta() {
         // a book only ever shows lines that book actually posted. Rows carry no
         // player_id → name join.
         const PARLAY_DFS_BOOKS = BOOK_REGISTRY.filter(b => b.dfs).map(b => b.id).join(',');
+        // Every confirmed provider source BeatsEdge understands (display / consensus priority stays PROPLINE_BOOK_PRIORITY).
+        const PARLAY_FETCH_BOOKS = BOOK_REGISTRY.map(b => b.id).join(',');
+
+        // <<PROVIDER-LINES-BEGIN>> Shared, PURE provider-line helpers (2026-10-08 completeness fix). No DOM, no network, no App state: unit-tested outside the browser.
+        // Principles: a real provider offering is never dropped; a market label is checked, not just market_key; a one-sided alternate never replaces a paired main; DFS Standard is only ever
+        // the row the PROVIDER tagged standard; Sleeper (no line-type metadata) is never given one; ambiguity is reported, never guessed.
+        const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_]{1,31}$/;
+        const providerSanitizeBook = (b) => { const k = String(b == null ? '' : b).trim().toLowerCase(); return PROVIDER_ID_RE.test(k) ? k : null; };
+        const PROVIDER_TEAM_SUFFIX_RE = /\s*\((?!(?:II|III|IV|JR|SR)\))[A-Z]{2,4}\)\s*$/;
+        const providerPlayerBase = (name) => { const s = String(name == null ? '' : name); const base = s.replace(PROVIDER_TEAM_SUFFIX_RE, '').trim(); return base.length >= 3 ? base : s; };
+        // Exact provider metadata -> line type. NO inference from the line value; absent metadata stays absent (Sleeper).
+        const providerDfsLineType = (row) => {
+            const raw = String(row && row.odds_type != null ? row.odds_type : (row && row.projection_type != null ? row.projection_type : '')).trim().toLowerCase();
+            if (!raw) return { ppType: null, source: 'none' };
+            if (/demon/.test(raw)) return { ppType: 'demon', source: 'provider' };
+            if (/goblin/.test(raw)) return { ppType: 'goblin', source: 'provider' };
+            if (raw === 'standard') return { ppType: 'standard', source: 'provider' };
+            return { ppType: raw.replace(/[^a-z0-9_]/g, '_').slice(0, 24), source: 'provider' };   // gimme_pick, stat_slice, power_up, ... exactly as supplied
+        };
+        const providerIsAltDfsType = (ppType) => !!ppType && ppType !== 'standard';
+        // Single-stat canonicals whose provider LABEL can be checked against the stat the market_key was mapped to. Words are only compared inside the same group (never basketball vs hockey).
+        const PROVIDER_STAT_WORDS = {
+            points: ['bb', /\b(points?|pts)\b/i], rebounds: ['bb', /\b(rebounds?|rebs?)\b/i], assists: ['bb', /\b(assists?|asts?)\b/i], threes: ['bb', /(\b3-?\s?pt|3fgm|three.?pointers?|\bthrees?\b)/i],
+            steals: ['bb', /\bsteals?\b|\bstl\b/i], blocks: ['bb', /\bblocks?\b|\bblk\b|blocked shots?/i], turnovers: ['bb', /\bturnovers?\b/i],
+            shots_on_goal: ['nhl', /\bshots?\b|\bsog\b/i], goalie_saves: ['nhl', /\bsaves?\b/i]
+        };
+        const providerLabelOf = (row) => { const l0 = String(row && row.market || ''); return row && row.player ? l0.split(String(row.player)).join(' ') : l0; };
+        // Does the provider's own market LABEL agree with the canonical stat the market_key was mapped to? Returns MAIN or the class the row really is.
+        const providerMarketClass = (row, canonical) => {
+            const key = String(row && row.market_key || ''), label = providerLabelOf(row);
+            if (/_alt$|(^|_)alternate(_|$)/.test(key) || /\balternate\b/i.test(label)) return 'ALTERNATE_LADDER';
+            if (/milestone/i.test(key) || /milestone|\bor more\b/i.test(label)) return 'MILESTONE';
+            if (/\(combo\)/i.test(label)) return 'COMBO';
+            if ((row && row.period && row.period !== 'FULL') || /\b(1st|2nd|3rd|4th|first|second)\s+(\d+\s+)?(half|quarter|period|inn(?:ing)?s?)\b|\b[1-4][QHP]\b|\bfirst\s+\d+\b/i.test(label)) return 'PERIOD';
+            if (/fantasy/i.test(label) && !/fantasy/i.test(String(canonical || ''))) return 'FANTASY';
+            const w = canonical && PROVIDER_STAT_WORDS[canonical];
+            if (w) {
+                const others = Object.keys(PROVIDER_STAT_WORDS).filter(k => k !== canonical && PROVIDER_STAT_WORDS[k][0] === w[0] && PROVIDER_STAT_WORDS[k][1].test(label));
+                const own = w[1].test(label);
+                if (others.length && own) return 'COMBO';
+                if (others.length && !own) return 'DIFFERENT_STAT';
+                if (own && /\+|&|\band\b/i.test(label)) return 'COMBO';
+                if (own && /\b(offensive|defensive|longest|first|blocked|against|allowed)\b/i.test(label) && !(canonical === 'blocks' && /blocked shots?/i.test(label))) return 'DIFFERENT_STAT';
+                if (!own && label.trim()) return 'DIFFERENT_STAT';
+            }
+            return 'MAIN';
+        };
+        const providerSlug = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+        // Display label for a routed (non-main) row: the provider's own wording, player name / team suffix removed.
+        const providerCleanLabel = (row) => providerLabelOf(row).replace(/\s*\([A-Z]{2,4}\)/g, '').replace(/\s+/g, ' ').replace(/^[\s:\-]+|[\s:\-]+$/g, '').slice(0, 60);
+        const PROVIDER_LINE_TYPE_LABEL = { standard: 'Standard', demon: 'Demon', goblin: 'Goblin', gimme_pick: 'Gimme Pick', stat_slice: 'Stat Slice', power_up: 'Power Up', alternate: 'Alternate' };
+        const providerLineTypeLabel = (k) => PROVIDER_LINE_TYPE_LABEL[k] || String(k || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        // Sides a non-standard DFS line may honestly show. Goblin / Demon are More-only. Others follow the PRICES the provider returned; when it returned none the side is not verified (shown as "over" with sidesUnverified in the caller via e.over/e.under == null).
+        const providerAltDfsSides = (e) => {
+            if (e.ppType === 'goblin' || e.ppType === 'demon') return ['over'];
+            if (Array.isArray(e.availableSides) && e.availableSides.length) return e.availableSides.slice();
+            const hasO = e.over != null, hasU = e.under != null;
+            return hasO && hasU ? ['over', 'under'] : hasU ? ['under'] : ['over'];
+        };
+        // Same real game under several provider event ids / partial metadata -> ONE canonical event per player. Deterministic; never merges two games that are > 6h apart; a partial event is only aliased when exactly ONE candidate game exists.
+        const providerUnifyEvents = (byNorm) => {
+            const stats = { players: 0, aliased: 0, merged: 0, aliasMap: {} };
+            Object.values(byNorm || {}).forEach(byStat => {
+                const evs = new Map(); const all = [];
+                Object.values(byStat).forEach(byBook => Object.values(byBook).forEach(arr => arr.forEach(e => { all.push(e); const id = e.eventId || ''; const r = evs.get(id) || { id, home: null, away: null, ms: null }; if (e.homeTeam && !r.home) r.home = e.homeTeam; if (e.awayTeam && !r.away) r.away = e.awayTeam; if (Number.isFinite(e.commenceTimeMs) && (r.ms == null || e.commenceTimeMs < r.ms)) r.ms = e.commenceTimeMs; evs.set(id, r); })));
+                if (evs.size < 2) return; stats.players++;
+                const full = [...evs.values()].filter(r => r.id && r.home && r.away && r.ms != null).sort((a, b) => a.id < b.id ? -1 : 1);
+                const alias = new Map();
+                full.forEach(a => { const c = full.find(b => b.id <= a.id && b.id !== a.id && b.home === a.home && b.away === a.away && Math.abs(b.ms - a.ms) <= 6 * 3600e3 && !alias.has(b.id)); if (c) alias.set(a.id, c); });
+                [...evs.values()].forEach(r => { if (!r.id || alias.has(r.id) || (r.home && r.away && r.ms != null)) return;
+                    const cand = r.home && r.away ? full.filter(a => a.id !== r.id && a.home === r.home && a.away === r.away && !alias.has(a.id)) : (r.ms != null ? full.filter(a => a.id !== r.id && Math.abs(a.ms - r.ms) <= 3 * 3600e3 && !alias.has(a.id)) : []);
+                    if (cand.length === 1) alias.set(r.id, cand[0]); });
+                if (!alias.size) return;
+                all.forEach(e => { const a = alias.get(e.eventId || ''); if (!a) return; if (e._rawEventId === undefined) e._rawEventId = e.eventId; e.eventId = a.id; e.homeTeam = a.home; e.awayTeam = a.away; e.commenceTimeMs = a.ms; e._kk = e._kkBase + '|' + a.id; stats.aliased++; });
+                alias.forEach((a, rawId) => { if (rawId) stats.aliasMap[rawId] = a.id; });
+                Object.values(byStat).forEach(byBook => Object.keys(byBook).forEach(bk => { const seen = new Set(); const arr = byBook[bk].filter(e => { if (seen.has(e._kk)) { stats.merged++; return false; } seen.add(e._kk); return true; }); byBook[bk] = arr; }));
+            });
+            return stats;
+        };
+        const providerIsLadderKey = (rawKey) => /_alt$|milestone|alternate|@/.test(String(rawKey || ''));
+        const providerAmericanProb = (o) => (typeof o === 'number' && Number.isFinite(o) && Math.abs(o) >= 100) ? (o < 0 ? (-o) / (-o + 100) : 100 / (o + 100)) : null;
+        const providerMedian = (nums) => { if (!nums.length) return null; const s = nums.slice().sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+        // Sportsbook main line for ONE book, ONE stat, ONE event: a paired Over/Under line is preferred; a one-sided rung can never replace a paired main; ties / no pair -> ambiguous (entry null).
+        const providerSelectSportsbookMain = (entries) => {
+            const c = (entries || []).filter(e => e && Number.isFinite(e.line)); if (!c.length) return { entry: null, reason: 'no_rows' };
+            const lines = new Set(c.map(e => e.line));
+            const two = c.map(e => ({ e, po: providerAmericanProb(e.over), pu: providerAmericanProb(e.under) })).filter(x => x.po != null && x.pu != null).map(x => Object.assign(x, { d: Math.abs(x.po - x.pu) }));
+            if (lines.size === 1) return { entry: (two[0] && two[0].e) || c[0], reason: 'sole_line' };
+            if (!two.length) return { entry: null, reason: 'ladder_no_two_sided' };
+            const best = Math.min.apply(null, two.map(x => x.d)); const top = two.filter(x => x.d - best <= 1e-9); const tl = new Set(top.map(x => x.e.line));
+            return tl.size > 1 ? { entry: null, reason: 'ladder_tie' } : { entry: top[0].e, reason: 'two_sided_closest_to_even' };
+        };
+        // DFS main for ONE book, ONE stat, ONE event. Standard = only what the provider tagged standard. No standard -> ALT_ONLY (explicit alternate types) or UNCLASSIFIED (no metadata); never manufactured.
+        const providerSelectDfsMain = (es, marketLine) => {
+            const stds = es.filter(e => e.ppType === 'standard');
+            // More than one DISTINCT provider-tagged standard line (Pick6 posts a whole "standard" ladder per player / stat) => the provider names no single main line: ambiguous, never guessed.
+            if (new Set(stds.map(e => e.line)).size > 1) {
+                // Pick6 also tells us, per rung, WHICH SIDES it offers (available_sides): the ladder's higher rungs are over-only with escalating payouts, and exactly one rung is the
+                // two-way (over + under) line. If -- and only if -- exactly one distinct standard line is offered on both sides, that provider-stated two-way rung is the main line.
+                // Otherwise (no two-way rung, or several) the provider names no single main line: ambiguous, never guessed from the line values or the sharp market.
+                const two = stds.filter(e => Array.isArray(e.availableSides) && e.availableSides.indexOf('over') >= 0 && e.availableSides.indexOf('under') >= 0);
+                if (two.length && new Set(two.map(e => e.line)).size === 1) return { primary: two[0], std: two[0], kind: 'STANDARD_PRESENT', basis: 'provider_two_sided_rung' };
+                return { primary: null, std: null, kind: 'AMBIGUOUS' };
+            }
+            const std = stds[0];
+            const anchor = marketLine != null ? marketLine : providerMedian(es.map(e => e.line));
+            const primary = std || es.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
+            const kind = std ? 'STANDARD_PRESENT' : (es.some(e => providerIsAltDfsType(e.ppType)) ? 'ALT_ONLY' : 'UNCLASSIFIED');
+            return { primary, std, kind };
+        };
+        // In-place consolidation of ONE stat's byBook map, PER EVENT. Idempotent. Returns one record per (book, event) group for telemetry.
+        // opts: sanityAbs (DFS standard vs sharp-market guard), keepPrimaryOnSuspect (MLB legacy: flag only), isDfs(book)
+        const providerConsolidateStat = (byBook, opts) => {
+            opts = opts || {}; const isDfs = opts.isDfs || (() => false); const sanityAbs = opts.sanityAbs == null ? 3 : opts.sanityAbs; const out = [];
+            const groupByEvent = (arr) => { const m = new Map(); arr.forEach(e => { const k = e.eventId || ''; (m.get(k) || m.set(k, []).get(k)).push(e); }); return m; };
+            Object.values(byBook || {}).forEach(arr => (arr || []).forEach(e => { e.primary = false; delete e._lineSanitySuspect; delete e._ambiguousMain; delete e._altOnly; delete e._suspiciousReason; }));
+            const sharpByEvent = {};
+            Object.entries(byBook || {}).forEach(([bk, arr]) => { if (isDfs(bk) || !arr || !arr.length) return; arr.sort((a, b) => a.line - b.line);
+                groupByEvent(arr).forEach((es, ev) => { const r = providerSelectSportsbookMain(es);
+                    if (r.entry) { r.entry.primary = true; (sharpByEvent[ev] = sharpByEvent[ev] || []).push(r.entry.line); out.push({ book: bk, eventId: ev, kind: 'MAIN_RETAINED', reason: r.reason, known: !!es[0].known, ladder: !!es[0].ladder }); }
+                    else { es.forEach(e => { e.primary = false; e._lineSanitySuspect = true; e._ambiguousMain = true; e._suspiciousReason = 'AMBIGUOUS_MAIN_LINE (' + r.reason + ')'; }); out.push({ book: bk, eventId: ev, kind: 'AMBIGUOUS_MAIN', reason: r.reason, known: !!es[0].known, ladder: !!es[0].ladder }); } }); });
+            Object.entries(byBook || {}).forEach(([bk, arr]) => { if (!isDfs(bk) || !arr || !arr.length) return; arr.sort((a, b) => a.line - b.line);
+                groupByEvent(arr).forEach((es, ev) => { const marketLine = providerMedian(sharpByEvent[ev] || []); const r = providerSelectDfsMain(es, marketLine);
+                    if (r.kind === 'AMBIGUOUS') { es.forEach(e => { e.primary = false; e._lineSanitySuspect = true; e._ambiguousMain = true; e._suspiciousReason = 'AMBIGUOUS_MAIN_LINE (multiple_standard)'; }); out.push({ book: bk, eventId: ev, kind: 'AMBIGUOUS_MAIN', reason: 'multiple_standard', known: !!es[0].known, ladder: !!es[0].ladder }); return; }
+                    if (r.std && marketLine != null && Math.abs(r.std.line - marketLine) > Math.max(sanityAbs, Math.abs(marketLine) * 0.6)) {
+                        const reason = 'standard line ' + r.std.line + ' vs sharp-market ' + marketLine + ' (' + bk + ')';
+                        if (opts.keepPrimaryOnSuspect) { es.forEach(e => { e._suspiciousLine = true; e._suspiciousReason = reason; e.primary = (e === r.primary); }); out.push({ book: bk, eventId: ev, kind: r.kind, known: !!es[0].known, ladder: !!es[0].ladder, suspect: true }); }
+                        else { es.forEach(e => { e.primary = false; e._lineSanitySuspect = true; e._suspiciousReason = reason; }); out.push({ book: bk, eventId: ev, kind: 'SUSPECT_STANDARD', known: !!es[0].known, ladder: !!es[0].ladder }); }
+                        return; }
+                    es.forEach(e => { e.primary = (e === r.primary); if (r.kind === 'ALT_ONLY') e._altOnly = true; });
+                    out.push({ book: bk, eventId: ev, kind: r.kind, known: !!es[0].known, ladder: !!es[0].ladder, hasPromo: es.some(e => providerIsAltDfsType(e.ppType)) }); }); });
+            return out;
+        };
+        const PROVIDER_ALT_DERIVES_STANDARD = new Set(['prizepicks']);   // goblin / demon rows are variants of a PrizePicks standard board: ALT_ONLY there means the Standard was NOT RETURNED by the provider
+        const providerEntryMeta = (e) => { const m = {}; if (e._altOnly) m.altOnly = true; if (e._ambiguousMain) m.ambiguousMain = true; if (e.lineTypeSource) m.lineTypeSource = e.lineTypeSource; if (e.providerLabel) m.providerLabel = e.providerLabel; return m; };
+        const providerNewAcc = (sportKey) => ({ sportKey, byNorm: {}, n: 0, pagesFetched: 0, rowsReceived: 0, requests: 0, truncated: false, reqTruncated: false, unresolvedTruncated: 0, truncatedResponses: 0, truncatedHints: [], partialFailure: false, providerErrors: 0, failedBooks: [], skippedEmptyBooks: [], fetchMode: 'BROAD',
+            rejected: { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0, marketIdentityRouted: 0 }, src: {}, marketKeysBySource: {} });
+        const providerAccSrc = (acc, book) => acc.src[book] || (acc.src[book] = { rawRows: 0, playerPropRows: 0, events: new Set(), players: new Set(), unmappedKeys: new Set(), lineTypes: { standard: 0, demon: 0, goblin: 0, gimme_pick: 0, stat_slice: 0, power_up: 0, unclassified: 0, other: {} }, suffixStripped: 0, playerIdentityFailures: 0, eventIdentityFailures: 0, routedMarketRows: 0, duplicates: 0, alternates: 0, requested: true });
+        // Telemetry in the shape of the site-telemetry contract (beatsedge-site-telemetry/1): key "<sport_key>|<source>".
+        const providerBuildTelemetry = (acc, status, consolidation, nowIso) => {
+            const by = {}; const g = {}; (consolidation || []).forEach(r => { if (!r.known || r.ladder) return; const s = g[r.book] || (g[r.book] = { groups: 0, retained: 0, altOnly: 0, providerStandardNotReturned: 0, ambiguous: 0, standardPresent: 0, unclassified: 0 }); s.groups++;
+                if (r.kind === 'AMBIGUOUS_MAIN') s.ambiguous++; else if (r.kind === 'ALT_ONLY') { s.altOnly++; if (PROVIDER_ALT_DERIVES_STANDARD.has(r.book)) s.providerStandardNotReturned++; } else if (r.kind === 'UNCLASSIFIED') { s.unclassified++; s.retained++; } else if (r.kind === 'STANDARD_PRESENT') { s.standardPresent++; s.retained++; } else if (r.kind === 'MAIN_RETAINED') s.retained++; });
+            Object.entries(acc.src).forEach(([book, s]) => { const gg = g[book] || {}; const failed = acc.failedBooks.indexOf(book) >= 0;
+                by[acc.sportKey + '|' + book] = { fetchStatus: failed ? 'PROVIDER_ERROR' : status, rawRows: s.rawRows, playerPropRows: s.playerPropRows, events: s.events.size, players: s.players.size, mainLineGroups: gg.groups || 0, mainLinesRetained: gg.retained || 0, alternates: s.alternates,
+                    lineTypes: { standard: s.lineTypes.standard, demon: s.lineTypes.demon, goblin: s.lineTypes.goblin, gimme_pick: s.lineTypes.gimme_pick, stat_slice: s.lineTypes.stat_slice, power_up: s.lineTypes.power_up, unclassified: s.lineTypes.unclassified, other: s.lineTypes.other },
+                    altOnlyGroups: gg.altOnly || 0, providerStandardNotReturned: gg.providerStandardNotReturned || 0, standardPresentGroups: gg.standardPresent || 0, unmappedMarkets: s.unmappedKeys.size, routedMarketRows: s.routedMarketRows, playerIdentityFailures: s.playerIdentityFailures, playerNameSuffixStripped: s.suffixStripped, eventIdentityFailures: s.eventIdentityFailures,
+                    ambiguousMainLines: gg.ambiguous || 0, truncatedResponses: acc.truncatedResponses, providerErrors: acc.providerErrors, duplicates: s.duplicates }; });
+            return { version: 'beatsedge-site-telemetry/1', generatedAt: nowIso || null, available: true, sportsLoaded: [acc.sportKey], sourcesLoaded: Object.keys(acc.src).sort(), sport: acc.sportKey, fetchStatus: status, fetchMode: acc.fetchMode, requests: acc.requests, pagesFetched: acc.pagesFetched, rowsReceived: acc.rowsReceived, rejected: acc.rejected, failedBooks: acc.failedBooks.slice(), skippedEmptyBooks: acc.skippedEmptyBooks.slice(), bySportSource: by };
+        };
+        // <<PROVIDER-LINES-END>>
         // ParlayAPI market_key → BeatsEdge statKey. Only the clean, gradeable
         // ones; its DFS-oddity markets ("halves with 25+ rec yds") are skipped.
         const PARLAY_MLB_MKT = {
-            player_hits: 'hits', player_hits_alt: 'hits',
-            player_total_bases: 'totalBases', player_total_bases_alt: 'totalBases',
-            player_home_runs: 'homeRuns', player_home_runs_alt: 'homeRuns',
-            player_rbis: 'rbis', player_runs: 'runs', player_runs_alt: 'runs',
+            player_hits: 'hits',
+            player_total_bases: 'totalBases',
+            player_home_runs: 'homeRuns',
+            player_rbis: 'rbis', player_runs: 'runs',
             player_singles: 'singles', player_doubles: 'doubles', player_triples: 'triples',
-            player_stolen_bases: 'stolenBases', player_stolen_bases_alt: 'stolenBases',
+            player_stolen_bases: 'stolenBases',
             player_hits_runs_rbis: 'hitsRunsRbis', player_hits__runs__rbis: 'hitsRunsRbis',
             player_walks: 'batterWalks', player_batter_walks: 'batterWalks', player_bat_walks: 'batterWalks',
             player_hitter_strikeouts: 'batterStrikeouts',
-            player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts', player_strike_outs: 'strikeouts', player_strikeouts_alt: 'strikeouts',
+            player_pitcher_strikeouts: 'strikeouts', player_strikeouts: 'strikeouts', player_strike_outs: 'strikeouts',
             player_earned_runs: 'earnedRuns', player_earned_runs_allowed: 'earnedRuns',
             player_hits_allowed: 'hitsAllowed',
             player_pitching_outs: 'pitcherOuts', player_outs: 'pitcherOuts', player_pitcher_outs: 'pitcherOuts',
@@ -6347,6 +6504,7 @@ function mlbModelMeta() {
             player_hitter_fantasy_score: 'fantasy',
             player_pitcher_fantasy_score: 'pitcherFantasy',
             player_walks_allowed: 'pitcherWalks'
+            // (2026-10-08) the *_alt ladder keys are NO LONGER mapped here: an alternate ladder is a separate offering and must never enter the main-stat candidate pool.
         };
         const PARLAY_FB_MKT = {
             player_pass_yds: 'passYds', player_passing_yards: 'passYds', player_pass_yards: 'passYds',
@@ -6365,6 +6523,8 @@ function mlbModelMeta() {
             player_rushing_receiving_yards: 'rushRecYds', 'player_rush___rec_yards': 'rushRecYds',
             'player_pass+rush_yds': 'passRushYds', player_pass_rush_yds: 'passRushYds',
             player_passing_rushing_yards: 'passRushYds', player_passing_and_rushing_yards: 'passRushYds', 'player_pass___rush_yards': 'passRushYds',
+            // Live-verified aliases (2026-10-07 audit): ParlayAPI's own receiving-yards key, the PrizePicks '+' combo keys, FanDuel's rush+rec key, Underdog's INT key.
+            player_reception_yds: 'recYds', player_receiving_yds: 'recYds', player_pass_plus_rush_yds: 'passRushYds', player_rush_plus_rec_yds: 'rushRecYds', player_rush_reception_yds: 'rushRecYds', player_ints_thrown: 'interceptions',
             player_kicking_points: 'kickingPts',
             player_field_goal_made: 'fgMade', player_field_goals_made: 'fgMade', player_fg_made: 'fgMade', player_field_goals: 'fgMade'
         };
@@ -6430,6 +6590,26 @@ function mlbModelMeta() {
             const cmp = (a, b) => (t(a) - t(b)) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
             const upcoming = list.filter(ev => ev.commenceMs != null && ev.commenceMs >= nowMs).sort(cmp);
             return (upcoming.length ? upcoming : list.sort(cmp))[0];
+        }
+        // Every OTHER upcoming game the player has rows in, after `first` (the game nhlPickPlayerEvent chose): a player in two legitimate games gets an
+        // offering card for each (2026-10-08). Same event objects as nhlPickPlayerEvent ({ key, commenceMs, homeTeam, awayTeam, playerRaw }); deterministic order
+        // (start time, then key). Past / already-started games are never added. Returns [first, ...others].
+        function nhlListPlayerEvents(byStat, nowMs, first) {
+            const events = new Map();
+            Object.values(byStat || {}).forEach(byBook => Object.values(byBook || {}).forEach(arr => (arr || []).forEach(e => {
+                if (!e) return;
+                const key = nhlEntryEventKey(e);
+                const ev = events.get(key) || { key, commenceMs: null, homeTeam: null, awayTeam: null, playerRaw: null };
+                if (Number.isFinite(e.commenceTimeMs) && (ev.commenceMs == null || e.commenceTimeMs < ev.commenceMs)) ev.commenceMs = e.commenceTimeMs;
+                if (!ev.homeTeam && e.homeTeam) ev.homeTeam = e.homeTeam;
+                if (!ev.awayTeam && e.awayTeam) ev.awayTeam = e.awayTeam;
+                if (!ev.playerRaw && e.playerRaw) ev.playerRaw = e.playerRaw;
+                events.set(key, ev);
+            })));
+            const t = (ev) => ev.commenceMs == null ? Infinity : ev.commenceMs;
+            const others = [...events.values()].filter(ev => ev.playerRaw && ev.key !== first.key && ev.commenceMs != null && ev.commenceMs >= nowMs)
+                .sort((a, b) => (t(a) - t(b)) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+            return [first].concat(others);
         }
         // Main line for ONE book's rows (one stat, one game). Returns { entry, reason }; entry is null when it cannot be identified.
         function nhlSelectMainLine(entries, opts) {
@@ -6637,6 +6817,7 @@ function mlbModelMeta() {
             //   (player_three_pointers and player_threes_made used to be
             //   listed here too -- both confirmed equivalent to player_threes
             //   via their own provider-supplied labels and aliased above.)
+            player_blks_plus_stls: 'blocksSteals',   // live-verified (PrizePicks 'Blks+Stls')
             player_fg_made: 'fgMade', player_fg_attempted: 'fgAttempted',
             player_free_throws_made: 'ftMade', player_free_throws_attempted: 'ftAttempted',
             player_two_pointers_made: 'twoPtMade', player_two_pointers_attempted: 'twoPtAttempted',
@@ -6714,6 +6895,14 @@ function mlbModelMeta() {
                 </div>
             );
         }
+        // Placeholder windows (nflSeedWindows / mlbSeedWindows, flagged `seeded: true`) carry an ESTIMATED hitRate -- and, with 0 games, an avg / median / range -- that is NOT history.
+        // They are blanked before anything is displayed (2026-10-08): no valid history = no hit rate. Real (unseeded) windows are returned untouched, by reference.
+        function stripSeededWindows(stats) {
+            if (!stats || typeof stats !== 'object') return stats || {};
+            const out = {};
+            Object.keys(stats).forEach(k => { const w = stats[k]; out[k] = (w && typeof w === 'object' && w.seeded === true) ? Object.assign({}, w, { hitRate: null, avg: w.games > 0 ? w.avg : null, median: null, range: null }) : w; });
+            return out;
+        }
         // Historical hit-rate headline + per-window bars. bars: [{label, value}] already filtered to real values.
         // compact (optional): tighter header; bars[i].active (optional): emphasise the selected window.
         function HitRateSection({ title, headline, note, bars, compact }) {
@@ -6722,7 +6911,9 @@ function mlbModelMeta() {
                     <div className={compact ? 'hit-rate-header is-compact' : 'hit-rate-header'}>
                         <div>
                             <div className="hit-rate-title">{title}</div>
-                            <div className="hit-rate-main">{headline ?? '—'}%</div>
+                            {headline == null && !(bars && bars.length)
+                                ? <div className="hit-rate-main" style={{ fontSize: '0.95rem' }}>Insufficient historical data</div>
+                                : <div className="hit-rate-main">{headline ?? '—'}%</div>}
                         </div>
                         {note}
                     </div>
@@ -7365,7 +7556,7 @@ function mlbModelMeta() {
                                 <div className="prime-card-player">{p.player.name}{p.player.position ? <span className="pos-chip">{p.player.position}</span> : null}</div>
                                 <div className="prime-card-prop">
                                     {p.prop.type} {ev.direction === 'UNDER' ? 'Under' : 'Over'} {ev.prizePicksLine}
-                                    {ev.ppKind && ev.ppKind !== 'standard' && <span className={`pp-kind ${ev.ppKind}`}> {ev.ppKind === 'goblin' ? '👺' : '😈'}</span>}
+                                    {ev.ppKind && ev.ppKind !== 'standard' && <span className={`pp-kind ${ev.ppKind}`}> {ev.ppKind === 'goblin' ? '👺' : ev.ppKind === 'demon' ? '😈' : providerLineTypeLabel(ev.ppKind)}</span>}
                                     <span className="prime-book" title={`Sharp-market median across ${ev.sportsbookCount} book(s): ${ev.marketMedianLine}`}>PrizePicks vs {ev.sportsbookCount}-book market</span>
                                 </div>
                             </div>
@@ -10983,8 +11174,9 @@ function mlbModelMeta() {
             useEffect(() => {
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 setPlayersData(prev => {
-                    if (!prev.some(p => (p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba' || p.sport === 'wnba') && p._allLines)) return prev;
+                    if (!prev.some(p => ((p.sport === 'mlb' || p.sport === 'nfl' || p.sport === 'ncaaf' || p.sport === 'nba' || p.sport === 'wnba') && p._allLines) || (p.sport === 'nhl' && p._nhlBuild))) return prev;
                     return prev.map(p => {
+                        if (p.sport === 'nhl' && p._nhlBuild) return { ...p, props: p._nhlBuild(wantBook) };   // same card (game + model join), props rebuilt for the chosen book
                         if (!p._allLines) return p;
                         if (p.sport === 'mlb') {
                             const nextByKey = { ...p.statsByKey };
@@ -10999,7 +11191,7 @@ function mlbModelMeta() {
                         }
                         if (p.sport === 'nfl' || p.sport === 'ncaaf') {
                             const nextByKey = { ...p.statsByKey };
-                            const posKeys = nflPosKeys(p.position).filter(k => p._allLines[k]);
+                            const posKeys = p._providerOnlyPlayer ? [] : nflPosKeys(p.position).filter(k => p._allLines[k]);   // provider-only: position unknown -> nothing modeled
                             const perGameFor = (k) => { const w = nextByKey[k]; return (w && (w.season.avg || w.recent.avg)) || 0; };
                             let props = nflBuildProps(posKeys, nextByKey, p._allLines, wantBook, perGameFor);
                             props = sortPropsByEdge({ ...p, statsByKey: nextByKey }, props);
@@ -12489,7 +12681,7 @@ function mlbModelMeta() {
             const NFL_ESPN_COMMON = 'https://site.api.espn.com/apis/common/v3/sports/football/nfl';
             const NFL_SKILL_POS = { QB: 'QB', RB: 'RB', FB: 'RB', WR: 'WR', TE: 'TE', K: 'K', PK: 'K' };
             // Aggressive name normalization for the PropLine `desc` <-> ESPN join.
-            const nflNormName = (s) => (s || '')
+            const nflNormName = (s) => providerPlayerBase(s || '')   // trailing sportsbook "(TEAM)" suffix removed first (Bovada: "Aliyah Boston (IND)"); roman numerals / Jr / Sr in parentheses are kept
                 .toLowerCase()
                 .normalize('NFD').replace(/[̀-ͯ]/g, '')
                 .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
@@ -12768,12 +12960,12 @@ function mlbModelMeta() {
                     // but "All Books" mode (below) calls this once per real
                     // book, so this must reflect whichever book this specific
                     // line actually belongs to.
-                    if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
+                    if (DFS_PLATFORMS.has(extra.book) && providerIsAltDfsType(e.ppType)) {
                         // Goblins/Demons are never the standard board — treat them
                         // as alt lines even when they're the only rung for a stat,
                         // so they sit behind the "Show Goblins & Demons" toggle and
                         // don't headline a stat-category on their own.
-                        pushOne(k, def, e.line, 'over', { ...extra, altLine: true, ppKind: e.ppType });
+                        providerAltDfsSides(e).forEach(sd => pushOne(k, def, e.line, sd, { ...extra, altLine: true, ppKind: e.ppType, ...(e._altOnly ? { altOnly: true } : {}) }));
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
@@ -12783,6 +12975,7 @@ function mlbModelMeta() {
                     // never guess "under" just because nothing was priced.
                     // Only a genuinely one-sided sportsbook alt-ladder rung
                     // (exactly one of over/under populated) gets pushOne.
+                    if (e.availableSides && e.availableSides.length === 1) { pushOne(k, def, e.line, e.availableSides[0], { ...extra, ppKind: null }); return; }   // provider offers ONE side of this rung only
                     if (hasO === hasU) { pushPair(k, def, e.line, extra); return; }
                     pushOne(k, def, e.line, hasO ? 'over' : 'under', { ...extra, ppKind: null });
                 };
@@ -12825,11 +13018,14 @@ function mlbModelMeta() {
                 // id already includes `book`, so two books' lines for the
                 // same stat/line/side never collide.
                 const booksToBuild = book === ALL_BOOKS ? booksPresentIn(allLines) : [book];
+                const builtMlb = {};   // keys ACTUALLY built per book (an AMBIGUOUS main is skipped and must fall through to provider-only, not be treated as known)
                 booksToBuild.forEach(bk => {
                     Object.keys(MLB_PROP_DEFS).forEach(k => {
                         const def = MLB_PROP_DEFS[k];
                         const arr = allLines[k] && allLines[k][bk];
                         if (!arr || !arr.length) return;
+                        if (arr.every(e => e._ambiguousMain)) return;
+                        (builtMlb[bk] || (builtMlb[bk] = new Set())).add(k);
                         const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                         const multi = sorted.length > 1;
                         const stdLine = (sorted.find(e => e.over != null && e.under != null) || {}).line;
@@ -12860,7 +13056,7 @@ function mlbModelMeta() {
                 // the `seedMode` branch above, the brief pre-fetch placeholder
                 // shown before fetchMlbPropLines's first live fetch completes.
 
-                booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, Object.keys(MLB_PROP_DEFS), bk)));
+                booksToBuild.forEach(bk => props.push(...buildProviderOnlyProps(allLines, [...(builtMlb[bk] || [])], bk)));
                 // Fail closed on missing history and on sub-1 lines without a validated recipe (see applyMlbModelGates).
                 return applyMlbModelGates(props, statsByKey);
             };
@@ -13000,7 +13196,7 @@ function mlbModelMeta() {
             const computePlusEVForProp = (prop, byBook, projection, thinData) => {
                 if (!DFS_PLATFORMS.has(prop.book) || prop.crossBook || prop.isProjection || prop.line == null) return null;
                 if (thinData) return null; // same "not enough game log to trust the projection" bar findTopPicks/Prime already use — a huge gap built on an untrustworthy projection is exactly the "system fooling itself" the +EV signal must avoid
-                const isAlt = prop.ppKind === 'goblin' || prop.ppKind === 'demon';
+                const isAlt = !!prop.ppKind;   // any non-standard provider line type (goblin / demon / gimme_pick / stat_slice / power_up / alternate)
                 const cfg = isAlt ? ALT_LINE_VALUE_CONFIG : PRIZEPICKS_EV_CONFIG;
                 const consensus = computeMarketConsensus(byBook);
                 if (!consensus || consensus.count < cfg.minSharpBooks) return null; // no real market to compare — show nothing, never guess
@@ -13504,6 +13700,8 @@ function mlbModelMeta() {
             // set that matters for the Pinnacle-style visibility bug is fixed
             // via PLATFORM_BOOK/platforms above, not this priority ordering).
             const PROPLINE_BOOK_PRIORITY = ['draftkings', 'fanduel', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'prizepicks', 'underdog', 'sleeper', 'bovada'];
+            // Every confirmed provider book, in display order (the 10 above first). Used where a fixed order is walked (NHL All Books); consensus / sharp-book logic keeps PROPLINE_BOOK_PRIORITY.
+            const PROVIDER_BOOK_ORDER = PROPLINE_BOOK_PRIORITY.concat(BOOK_REGISTRY.map(b => b.id).filter(id => !PROPLINE_BOOK_PRIORITY.includes(id)));
 
             // ── ParlayAPI: fetch DFS props for one sport, shaped as
             //   { normName: { statKey: { book: [ {line,over,under,juice,setAt,ppType,_src} ] } } }
@@ -13533,91 +13731,61 @@ function mlbModelMeta() {
             // once actually observed in a live response).
             const _parlayUnmappedWarned = new Set();
 
+            // Completeness rewrite (2026-10-08). One request sequence for one (books, markets) selection; ALL rows are merged into a shared accumulator (`opts.acc`) so a
+            // book-by-book / market-by-market split (see fetchParlayPropsBulk) can recover what a truncated broad board sampled away. Returns null only when the FIRST page
+            // failed. Row identity is event-aware, market identity is label-checked (not market_key alone), the line type is the provider's exact tag (never inferred),
+            // and every legitimate provider book is kept with a sanitized label. Telemetry counters are accumulated per source.
             const fetchParlayProps = async (parlaySportKey, mktMap, marketsFilter, opts) => {
                 if (!parlayApiKey || !backendUrl) return null;
                 const books = (opts && opts.books) || PARLAY_DFS_BOOKS;
-                const allowBooks = new Set(books.split(','));
+                const anyBook = books === '*';
+                const allowBooks = new Set(anyBook ? [] : books.split(',').map(providerSanitizeBook).filter(Boolean));
                 const pageLimit = (opts && opts.limit) || 1000;
-                // Safety cap on pages, not rows — ParlayAPI's own internal
-                // per-source cap (~10k rows, confirmed live via
-                // x-result-truncated) means an unbounded loop could otherwise
-                // spin forever against a board that's permanently truncated
-                // upstream. 25 pages * pageLimit is comfortably past that cap.
-                // Default kept LOW (most callers make one big combined-market
-                // request with no concurrency of their own — NFL/CFB/WNBA —
-                // so sequential pagination there has real, felt latency with
-                // nothing to overlap it against). MLB passes its own higher
-                // maxPages explicitly: its calls are already split one-market-
-                // at-a-time and run concurrently, so each individual call's
-                // volume is small and a higher cap barely costs anything.
+                // Safety cap on pages, not rows (the provider's own ~10k-row per-source cap is what truncates a broad board; pagination cannot recover it).
                 const maxPages = (opts && opts.maxPages) || 3;
                 const commenceWindow = opts && opts.commenceWindow;
-                const byNorm = {};
-                let n = 0, pagesFetched = 0, rowsReceived = 0;
-                // unmappedMarket is now a COUNT of preserved-but-unlabeled rows,
-                // not a drop reason -- see the row loop below. Genuine drops
-                // (row unusable for a real reason) stay in their own counters.
-                const rejected = { commenceWindow: 0, unmappedMarket: 0, noNameOrLine: 0, disallowedBook: 0, duplicate: 0 };
+                const refetch = !!(opts && opts.refetch);
+                const acc = (opts && opts.acc) || providerNewAcc(parlaySportKey);
+                const byNorm = acc.byNorm, rejected = refetch ? providerNewAcc(parlaySportKey).rejected : acc.rejected;   // a re-request of rows already seen must not inflate the reject counters
+                let pagesFetched = 0, rowsReceived = 0;
                 let truncated = false, truncatedHint = null, offset = 0, partialFailure = false;
 
                 while (true) {
                     const marketsQS = marketsFilter ? `&markets=${encodeURIComponent(marketsFilter)}` : '';
+                    const booksQS = anyBook ? '' : `&bookmakers=${books}`;
                     const url = `${backendUrl}/api/parlayapi/v1/sports/${parlaySportKey}/props`
-                        + `?apiKey=${encodeURIComponent(parlayApiKey)}&bookmakers=${books}${marketsQS}&limit=${pageLimit}&offset=${offset}`;
-                    // Retry transient upstream failures (seen live: a 503 when
-                    // several markets are requested concurrently, despite this
-                    // being an "unlimited" rate-limit tier — reads as a
-                    // simultaneous-connections limit, not a per-second one). A
-                    // single 503 must not silently wipe out an entire market's
-                    // worth of real PrizePicks lines.
+                        + `?apiKey=${encodeURIComponent(parlayApiKey)}${booksQS}${marketsQS}&limit=${pageLimit}&offset=${offset}`;
+                    // Retry transient upstream failures; a 429 / 503 means retrying immediately is pointless -- stop at once.
                     let r, lastErr;
+                    acc.requests++;
                     for (let attempt = 0; attempt < 4; attempt++) {
                         try {
                             r = await fetch(url);
                             if (r.ok) { lastErr = null; break; }
                             lastErr = new Error('ParlayAPI HTTP ' + r.status);
-                            // 429 (ParlayAPI itself rate-limiting) or 503 (this
-                            // app's own backend already cooling this provider
-                            // down, see lib/dataSourceHealth.js) mean retrying
-                            // immediately is pointless and is exactly the
-                            // "keep hammering a rate-limited provider"
-                            // behavior that must not happen — stop now
-                            // instead of burning the remaining attempts
-                            // against a response that will not change in the
-                            // next second.
                             if (r.status === 429 || r.status === 503) break;
                         } catch (fe) { lastErr = fe; }
                         if (attempt < 3) await new Promise(res => setTimeout(res, 250 * (attempt + 1)));
                     }
                     if (lastErr) {
-                        // A page failed even after retries. If this is the FIRST
-                        // page, this market has no data at all this refresh — same
-                        // as before, return null so the caller doesn't treat an
-                        // empty result as "confirmed no real props". If it's a
-                        // LATER page, every row already fetched from prior pages
-                        // is real and must NOT be thrown away — a transient failure
-                        // three pages in must never silently erase pages 1-2's
-                        // worth of real PrizePicks lines. Keep what was fetched,
-                        // flag it, and stop paginating this market.
+                        acc.providerErrors++;
+                        // First page failed: no data for this selection. A LATER page failed: every row already fetched is real and is kept (flagged partial).
                         if (pagesFetched === 0) {
                             console.warn('ParlayAPI fetch failed:', lastErr.message);
-                            setParlaySource('error');
+                            if (!refetch) setParlaySource('error');
                             return null;
                         }
                         console.warn(`[ParlayAPI] ${parlaySportKey}: page ${pagesFetched + 1} failed after retries (${lastErr.message}) — keeping the ${rowsReceived} rows already fetched from earlier pages, stopping here.`);
-                        partialFailure = true;
-                        truncated = true;
+                        partialFailure = true; truncated = true;
                         break;
                     }
-                    // A malformed response body (e.g. bad JSON) gets the same
-                    // partial-preservation treatment as a failed page above —
-                    // never let one bad page erase prior real pages.
                     let rows;
                     try {
                         rows = await r.json();
                         if (!Array.isArray(rows)) throw new Error('non-array response body');
                     } catch (pe) {
-                        if (pagesFetched === 0) { console.warn('ParlayAPI fetch failed:', pe.message); setParlaySource('error'); return null; }
+                        acc.providerErrors++;
+                        if (pagesFetched === 0) { console.warn('ParlayAPI fetch failed:', pe.message); if (!refetch) setParlaySource('error'); return null; }
                         console.warn(`[ParlayAPI] ${parlaySportKey}: page ${pagesFetched + 1} unreadable (${pe.message}) — keeping the ${rowsReceived} rows already fetched.`);
                         partialFailure = true; truncated = true;
                         break;
@@ -13630,78 +13798,79 @@ function mlbModelMeta() {
                             const ct = Date.parse(row.commence_time || '');
                             if (Number.isFinite(ct) && (ct < commenceWindow.lo || ct > commenceWindow.hi)) { rejected.commenceWindow++; return; }
                         }
-                        // A market_key with no entry in mktMap has no friendly
-                        // BeatsEdge statKey (and no *_PROP_DEFS windowing
-                        // formula to compute real hit-rate history from) -- but
-                        // the raw provider row is still real data and must not
-                        // be deleted. It's grouped under its own raw market_key
-                        // instead of a recognized statKey, tagged rawMarket so
-                        // callers can tell real-but-unlabeled apart from a
-                        // known stat, and counted separately (preserved, not
-                        // dropped). It will not appear in the existing
-                        // per-stat player-card UI yet -- that UI is
-                        // intentionally whitelist-driven (see mlbBuildProps and
-                        // its NFL/CFB/NBA/WNBA equivalents, which iterate only
-                        // the known *_PROP_DEFS keys) -- displaying arbitrary
-                        // provider markets with no real-stat windowing source
-                        // is a separate follow-up UI feature, not a data-loss
-                        // bug fix.
-                        // NHL's map has function-valued entries (classification
-                        // depends on the row's own line/period, not just its
-                        // market_key -- see PARLAY_NHL_MKT below). Every other
-                        // sport's map is string-valued only, so `typeof
-                        // mktEntry === 'function'` is always false for them and
-                        // `known` resolves exactly as it always has.
+                        const book = providerSanitizeBook(row.bookmaker);
+                        if (!book || (!anyBook && !allowBooks.has(book))) { rejected.disallowedBook++; return; }
+                        const S = providerAccSrc(acc, book);
+                        if (!refetch) S.rawRows++;
+                        // Market identity. The mapping is by market_key, but a key can carry rows whose own LABEL is a different offering (combo / fantasy / period /
+                        // alternate ladder / milestone / "Offensive Rebounds" under a rebounds key): such rows are routed to their OWN provider-only group, never merged
+                        // into the base-stat main-line pool. NHL's map is function-valued and already classifies by the row itself.
                         const mktEntry = mktMap[row.market_key];
-                        const known = typeof mktEntry === 'function' ? mktEntry(row) : mktEntry;
-                        const sk = known || row.market_key;
+                        const mapped = typeof mktEntry === 'function' ? mktEntry(row) : mktEntry;
+                        const mclass = providerMarketClass(row, typeof mapped === 'string' ? mapped : null);
+                        const known = (mapped && mclass === 'MAIN') ? mapped : null;
+                        let sk = known || row.market_key;
+                        let providerLabel = null;
                         if (!known) {
-                            rejected.unmappedMarket++;
-                            if (!_parlayUnmappedWarned.has(row.market_key)) {
-                                _parlayUnmappedWarned.add(row.market_key);
-                                console.warn(`[ParlayAPI] Unmapped market_key "${row.market_key}" (sport ${parlaySportKey}) — no statKey alias exists; preserving raw, not shown in the per-stat UI yet.`);
+                            if (mapped && mclass !== 'MAIN') {
+                                // Routed (mapped key, but the row is not that base stat).
+                                const lab = providerCleanLabel(row);
+                                sk = `${row.market_key}~${providerSlug(lab || mclass)}`;
+                                providerLabel = lab || null;
+                                rejected.marketIdentityRouted++; if (!refetch) S.routedMarketRows++;
+                            } else {
+                                rejected.unmappedMarket++; S.unmappedKeys.add(row.market_key);
+                                if (mclass !== 'MAIN') { const lab = providerCleanLabel(row); sk = `${row.market_key}~${providerSlug(lab || mclass)}`; providerLabel = lab || null; }
+                                if (!_parlayUnmappedWarned.has(row.market_key)) {
+                                    _parlayUnmappedWarned.add(row.market_key);
+                                    console.warn(`[ParlayAPI] Unmapped market_key "${row.market_key}" (sport ${parlaySportKey}) — no statKey alias exists; preserving raw, not shown in the per-stat UI yet.`);
+                                }
                             }
                         }
-                        const nn = nflNormName(row.player);
-                        if (!nn || row.line == null) { rejected.noNameOrLine++; return; }
-                        const book = row.bookmaker;
-                        if (!allowBooks.has(book)) { rejected.disallowedBook++; return; }
-                        const ppType = /demon/i.test(row.odds_type || row.projection_type || '') ? 'demon'
-                            : /goblin/i.test(row.odds_type || row.projection_type || '') ? 'goblin'
-                                : (row.is_dfs_flat_payout ? 'standard' : null);
+                        // Player identity: the provider's display name with a trailing sportsbook "(TEAM)" suffix removed (roman numerals / Jr / Sr in parentheses are kept).
+                        const baseName = providerPlayerBase(row.player || '');
+                        if (row.player && baseName !== String(row.player)) S.suffixStripped++;
+                        const nn = nflNormName(baseName);
+                        if (!nn || row.line == null) { rejected.noNameOrLine++; if (!nn && !refetch) S.playerIdentityFailures++; return; }
+                        if (!refetch) S.playerPropRows++;
+                        S.players.add(nn);
+                        (acc.marketKeysBySource[book] || (acc.marketKeysBySource[book] = new Set())).add(row.market_key);
+                        if (row.event_id) S.events.add(row.event_id); else if (!refetch) S.eventIdentityFailures++;
+                        // Exact provider metadata only: Sleeper (no odds_type / projection_type) stays unclassified -- never invented, never inferred from the line value.
+                        const lt = DFS_PLATFORMS.has(book) ? providerDfsLineType(row) : { ppType: null, source: 'none' };
+                        const ppType = lt.ppType;
+                        if (!refetch) {
+                            if (DFS_PLATFORMS.has(book)) {
+                                if (!ppType) S.lineTypes.unclassified++;
+                                else if (Object.prototype.hasOwnProperty.call(S.lineTypes, ppType) && typeof S.lineTypes[ppType] === 'number') S.lineTypes[ppType]++;
+                                else S.lineTypes.other[ppType] = (S.lineTypes.other[ppType] || 0) + 1;
+                            }
+                            if (mclass === 'ALTERNATE_LADDER' || mclass === 'MILESTONE' || providerIsAltDfsType(ppType)) S.alternates++;
+                        }
                         const t2 = byNorm[nn] || (byNorm[nn] = {});
                         const t3 = t2[sk] || (t2[sk] = {});
                         const arr = t3[book] || (t3[book] = []);
-                        const kk = ppType ? `${row.line}|${ppType}` : `${row.line}`;
-                        if (arr.some(e => e._kk === kk)) { rejected.duplicate++; return; }
+                        const kkBase = `${row.line}|${ppType || ''}|${providerSlug(row.period || '')}`;
+                        const kk = `${kkBase}|${row.event_id || ''}`;
+                        if (arr.some(e => e._kk === kk)) { if (!refetch) { rejected.duplicate++; S.duplicates++; } return; }
                         const o = row.over_price, u = row.under_price;
-                        // Game-start filter (PART 8): the raw commence_time,
-                        // parsed once here and carried on the entry, so a
-                        // render-time check (never baked in at fetch time --
-                        // a cached response must still be re-checked against
-                        // the CURRENT clock, since a game can start while a
-                        // fetch sits in the 2-minute server cache or the
-                        // silent-refresh interval hasn't fired yet) can hide
-                        // this specific prop once its own game has started,
-                        // without needing another provider call.
                         const commenceMs = Date.parse(row.commence_time || '');
                         arr.push({
-                            _kk: kk, line: row.line, over: o ?? null, under: u ?? null,
+                            _kk: kk, _kkBase: kkBase, line: row.line, over: o ?? null, under: u ?? null,
                             juice: Math.min(Math.abs(o || 9999), Math.abs(u || 9999)),
                             setAt: row.last_update || null, ppType, primary: false, _src: 'parlayapi',
                             homeTeam: row.home_team || null, awayTeam: row.away_team || null,
                             eventId: row.event_id || null,
                             rawMarket: known ? null : row.market_key,
                             commenceTimeMs: Number.isFinite(commenceMs) ? commenceMs : null,
-                            // Additive only, unused by NBA/WNBA/NFL/CFB/MLB (their
-                            // roster join keys off `nn`, which already collapses
-                            // spaces/case). NHL needs the raw display string
-                            // because its own real historical names arrive
-                            // abbreviated ("B. Marchand") -- see nhlMatchKey.
                             playerRaw: row.player || null,
-                            period: row.period || null, projectionType: row.projection_type || null
+                            period: row.period || null, projectionType: row.projection_type || null,
+                            // Completeness metadata (additive; no existing reader depends on it)
+                            known: !!known, ladder: providerIsLadderKey(row.market_key) || mclass === 'ALTERNATE_LADDER' || mclass === 'MILESTONE',
+                            marketClass: mclass, lineTypeSource: lt.source, providerLabel, providerBook: book, labelRaw: providerCleanLabel(row) || null,
+                            availableSides: Array.isArray(row.available_sides) ? row.available_sides.filter(x => x === 'over' || x === 'under') : null
                         });
-                        n++;
+                        acc.n++;
                     });
 
                     if (r.headers.get('x-result-truncated') === 'true') {
@@ -13709,9 +13878,6 @@ function mlbModelMeta() {
                         truncatedHint = r.headers.get('x-result-truncated-hint') || null;
                     }
                     const hasMoreHeader = r.headers.get('x-result-has-more');
-                    // Fall back to a row-count heuristic when the header is
-                    // absent (e.g. an older proxy build) — a full page means
-                    // there may be more; a short page means we're done.
                     const hasMore = hasMoreHeader != null ? hasMoreHeader === 'true' : rows.length >= pageLimit;
                     if (!hasMore || !rows.length || pagesFetched >= maxPages) {
                         if (hasMore && pagesFetched >= maxPages) {
@@ -13724,73 +13890,81 @@ function mlbModelMeta() {
                     offset = nextOffsetHeader != null ? parseInt(nextOffsetHeader, 10) : offset + rows.length;
                 }
 
+                acc.pagesFetched += pagesFetched; acc.rowsReceived += rowsReceived;
                 if (truncated) {
+                    acc.truncatedResponses++;
+                    if (truncatedHint) acc.truncatedHints.push(truncatedHint);
                     console.warn(`[ParlayAPI] ${parlaySportKey}: response truncated upstream (per-source cap) — markets="${marketsFilter}" books="${books}". ${truncatedHint || ''}`);
                 }
-                setParlaySource('live');
-                return { byNorm, n, pagesFetched, rowsReceived, rejected, truncated, partialFailure };
+                if (partialFailure) acc.partialFailure = true;
+                if (!refetch) setParlaySource('live');
+                return { byNorm, n: acc.n, pagesFetched, rowsReceived, rowsThisCall: rowsReceived, rejected, truncated, partialFailure, acc };
             };
 
 
-            // Bulk-board fetch for NFL/CFB/NBA/WNBA/MLB (all five sports use
-            // this one function; MLB's own former inline copy of the same
-            // fan-out pattern -- see fetchMlbPropLines below -- now calls
-            // this too).
+            // Bulk-board fetch for NFL/CFB/NBA/WNBA/MLB/NHL.
             //
-            // History: this used to be a one-request-per-market-alias fan-out
-            // (up to 43 requests per sport per refresh, mirroring MLB's
-            // proven-live pattern of "give each market its own ~10k-row
-            // budget"), because ParlayAPI's per-request row cap made one
-            // combined multi-market request truncate on a busy slate. That
-            // was the right fix for the information available at the time,
-            // but it also meant a full board refresh cost dozens of upstream
-            // requests, and even at concurrency=1 with a stagger, real live
-            // testing this session (2026-09-16) still saw the provider's
-            // rate limit trip repeatedly against that many sequential calls.
-            //
-            // Live-verified this session (real ParlayAPI Pro key): a SINGLE
-            // unfiltered request (GET /v1/sports/{sport}/props with no
-            // markets= param at all) returns real rows -- 10,000 rows at
-            // limit=10000, 181 distinct market_key values for MLB alone (far
-            // more than any hardcoded market map recognizes), 10 books, 16
-            // events -- confirming the provider's /props endpoint natively
-            // supports "give me everything" rather than requiring the caller
-            // to enumerate markets. rawRowCount landed exactly on the
-            // requested limit, which reads as hitting a cap (ours or
-            // theirs) rather than the natural end of the data, so this
-            // fetches with a high per-page limit and paginates via the
-            // existing offset/x-next-offset/x-result-has-more loop already
-            // built into fetchParlayProps (unchanged, sport-agnostic) until
-            // the provider itself reports no more pages or a safety cap is
-            // hit -- never a blind single shot assumed to be complete.
-            //
-            // This is ONE request per sport per refresh (or a small, strictly
-            // sequential handful if the board needs multiple pages) instead
-            // of dozens -- both far fewer credits AND far less exposure to
-            // the provider's rate limit than the fan-out ever was. Unknown
-            // (unmapped) market_key rows are no longer excluded by omitting
-            // a markets= filter — see fetchParlayProps's own row-loop
-            // comment for how those are preserved rather than dropped.
+            // A broad board (every book, every market) is SAMPLED by the provider once a source exceeds its ~10,000-row per-source cap (x-result-truncated; pagination
+            // cannot recover the rest -- measured live 2026-10-07). So: one broad request first; if (and only if) any response was truncated, the same selection is
+            // re-requested book by book, and a book that is STILL truncated is re-requested market-group by market-group (groups re-split to single markets). All rows
+            // merge into one accumulator with event-aware dedupe. The split is bounded by `maxSplitRequests` (each request costs provider credits); anything left
+            // unresolved is reported as TRUNCATED -- never silently treated as complete. Then: same game under several provider event ids is unified per player,
+            // every (book, stat, event) group gets its main line selected, and completeness telemetry (beatsedge-site-telemetry/1) is published.
             const fetchParlayPropsBulk = async (parlaySportKey, mktMap, opts, isStale) => {
                 const gone = () => typeof isStale === 'function' && isStale();
                 if (gone()) return null;
-                const pa = await fetchParlayProps(parlaySportKey, mktMap, null, {
-                    books: opts.books,
-                    limit: opts.limit || 10000,
-                    commenceWindow: opts.commenceWindow,
-                    // Pagination pages, not markets -- a full slate day can run
-                    // past one 10k-row page (12,276 real MLB lines were
-                    // observed live in this same session), so this allows
-                    // several sequential pages (each its own request, offset-
-                    // advanced, never concurrent) rather than the single
-                    // page opts.maxPages defaulted to under the old per-market
-                    // pattern.
-                    maxPages: opts.maxPages || 5
-                });
+                const acc = providerNewAcc(parlaySportKey);
+                const bookList = String(opts.books || PARLAY_FETCH_BOOKS).split(',').map(providerSanitizeBook).filter(Boolean);
+                const base = { limit: opts.limit || 10000, commenceWindow: opts.commenceWindow, maxPages: opts.maxPages || 5, acc };
+                const first = await fetchParlayProps(parlaySportKey, mktMap, null, { ...base, books: bookList.join(',') });
                 if (gone()) return null;
-                if (!pa) return null;
-                if (pa.truncated) console.warn(`[ParlayAPI ${parlaySportKey}] Bulk board request was still truncated after paginating to the safety cap — some rows may be missing this refresh.`);
-                return pa;
+                if (!first) return null;
+                if (first.truncated) {
+                    acc.fetchMode = 'SPLIT_BY_BOOK';
+                    let budget = opts.maxSplitRequests || 90;
+                    const mapKeys = Object.keys(mktMap).filter(k => typeof mktMap[k] === 'string' || typeof mktMap[k] === 'function');
+                    for (const bk of bookList) {
+                        if (gone()) return null;
+                        if (budget <= 0) { acc.unresolvedTruncated++; continue; }
+                        budget--;
+                        const r = await fetchParlayProps(parlaySportKey, mktMap, null, { ...base, books: bk, refetch: true });
+                        if (!r) { if (acc.failedBooks.indexOf(bk) < 0) acc.failedBooks.push(bk); continue; }
+                        if (!r.rowsThisCall) { acc.skippedEmptyBooks.push(bk); continue; }
+                        if (!r.truncated) continue;
+                        // Still truncated for this one book: split by market (keys seen so far for this book + every key BeatsEdge maps).
+                        acc.fetchMode = 'SPLIT_BY_MARKET';
+                        const keys = [...new Set([...(acc.marketKeysBySource[bk] || []), ...mapKeys])].sort();
+                        const queue = []; for (let i = 0; i < keys.length; i += 8) queue.push(keys.slice(i, i + 8));
+                        while (queue.length) {
+                            if (gone()) return null;
+                            if (budget <= 0) { acc.unresolvedTruncated += queue.length; break; }
+                            const grp = queue.shift(); budget--;
+                            const rr = await fetchParlayProps(parlaySportKey, mktMap, grp.join(','), { ...base, books: bk, refetch: true });
+                            if (!rr) { acc.partialFailure = true; if (acc.failedBooks.indexOf(bk) < 0) acc.failedBooks.push(bk); continue; }
+                            if (rr.truncated) { if (grp.length > 1) grp.slice().reverse().forEach(k => queue.unshift([k])); else acc.unresolvedTruncated++; }
+                        }
+                    }
+                }
+                if (gone()) return null;
+                const eventUnify = providerUnifyEvents(acc.byNorm);
+                const recs = [];
+                const consolidateOpts = Object.assign({ isDfs: (b) => DFS_PLATFORMS.has(b) }, opts.consolidate || {});
+                Object.values(acc.byNorm).forEach(byStat => Object.values(byStat).forEach(byBook => recs.push(...providerConsolidateStat(byBook, consolidateOpts))));
+                const status = (acc.unresolvedTruncated || acc.partialFailure) ? 'TRUNCATED' : (acc.failedBooks.length ? 'PROVIDER_ERROR' : 'COMPLETE');
+                const telemetry = providerBuildTelemetry(acc, status, recs, new Date().toISOString());
+                try { (window.__beatsEdgeProviderTelemetry = window.__beatsEdgeProviderTelemetry || {})[parlaySportKey] = telemetry; } catch (e) { /* telemetry is diagnostic only */ }
+                // Report the same object to the backend (POST /api/site-telemetry -> GET /api/site-status): counters only -- no key, URL, name or price. Throttled to one report per
+                // sport per minute, fire-and-forget (a failed report never affects the board), skipped when no backend URL is set or when the caller opts out (tests / replays).
+                try {
+                    const _posted = (window.__beatsEdgeTelemetryPosted = window.__beatsEdgeTelemetryPosted || {});
+                    if (backendUrl && opts.reportTelemetry !== false && (!_posted[parlaySportKey] || Date.now() - _posted[parlaySportKey] > 60000)) {
+                        _posted[parlaySportKey] = Date.now();
+                        fetch(`${backendUrl}/api/site-telemetry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(telemetry), keepalive: true }).catch(() => {});
+                    }
+                } catch (e) { /* diagnostic only */ }
+                console.log(`[ParlayAPI ${parlaySportKey}] completeness`, JSON.stringify({ status, mode: acc.fetchMode, requests: acc.requests, rows: acc.rowsReceived, retained: acc.n, unresolvedTruncated: acc.unresolvedTruncated, failedBooks: acc.failedBooks, skippedEmptyBooks: acc.skippedEmptyBooks, eventUnify: { players: eventUnify.players, aliased: eventUnify.aliased, merged: eventUnify.merged } }));
+                if (status !== 'COMPLETE') console.warn(`[ParlayAPI ${parlaySportKey}] Board is ${status} after the book/market split — some rows may be missing this refresh.`);
+                return { byNorm: acc.byNorm, n: acc.n, pagesFetched: acc.pagesFetched, rowsReceived: acc.rowsReceived, rejected: acc.rejected, truncated: status === 'TRUNCATED', partialFailure: acc.partialFailure, acc, status, telemetry, eventUnify };
             };
 
             // ============================================================
@@ -13907,7 +14081,7 @@ function mlbModelMeta() {
                 // strictly sequential run of paginated requests if the board
                 // needs more than one page), not one request per market alias.
                 const pa = await fetchParlayPropsBulk('baseball_mlb', PARLAY_MLB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, commenceWindow, maxPages: 5
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, commenceWindow, maxPages: 5, consolidate: { sanityAbs: 2.5, keepPrimaryOnSuspect: true }
                 }, isStale);
                 if (gone()) return;
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return; }
@@ -13976,59 +14150,13 @@ function mlbModelMeta() {
                 // the standard one primary and drop a standard that's wildly off
                 // the sharp market (bad data). Sportsbooks: their `N+` ladder has
                 // no tag → keep the min-juice rung as primary.
-                const medianOf = (nums) => {
-                    if (!nums.length) return null;
-                    const s = [...nums].sort((a, b) => a - b);
-                    const m = Math.floor(s.length / 2);
-                    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-                };
+                // Main line per (book, stat, event) via the shared, unit-tested providerConsolidateStat (same rules every sport uses):
+                //  - sportsbooks: the legitimate PAIRED Over/Under line closest to even money; a one-sided rung never replaces a paired main; an unresolvable
+                //    ladder is flagged AMBIGUOUS_MAIN_LINE (no modeled prop is built from it -- the real rows still surface as provider-only);
+                //  - DFS: the row the PROVIDER tagged standard; goblin / demon / gimme_pick / stat_slice / power_up / alternate are never the main line; no tagged
+                //    standard -> ALT_ONLY / UNCLASSIFIED (reported, never manufactured); a standard far off the sharp market is flagged, not erased.
                 Object.values(allLinesByPid).forEach(byKey =>
-                    Object.entries(byKey).forEach(([statKey, byBook]) => {
-                        const sharpPrimaries = [];
-                        Object.entries(byBook).forEach(([bk, arr]) => {
-                            arr.sort((a, b) => a.line - b.line);
-                            let best = arr[0];
-                            arr.forEach(e => { if (e.juice < best.juice) best = e; });
-                            arr.forEach(e => { e.primary = (e === best); });
-                            if (!DFS_PLATFORMS.has(bk) && best) sharpPrimaries.push(best.line);
-                        });
-                        const marketLine = medianOf(sharpPrimaries);
-
-                        Object.keys(byBook).forEach(bk => {
-                            if (!DFS_PLATFORMS.has(bk)) return;
-                            let arr = byBook[bk];
-                            if (!arr || !arr.length) return;
-                            // primary = the standard line (fallback: closest to sharp market, else first).
-                            // A source can (rarely) tag MORE than one line "standard"
-                            // for the same book+stat — seen live on this exact codepath
-                            // (WNBA Points once returned both a real 20.5 full-game
-                            // standard AND an erroneous 5.5 for the same player). A
-                            // plain `.find()` would silently grab whichever sorts
-                            // first. When more than one is tagged standard, prefer
-                            // whichever sits closest to the sharp-market consensus,
-                            // else the highest line (a genuine full-game counting-stat
-                            // number is never smaller than a same-tagged duplicate).
-                            const stds = arr.filter(e => e.ppType === 'standard');
-                            const std = stds.length <= 1 ? stds[0] : (marketLine != null
-                                ? stds.slice().sort((a, b) => Math.abs(a.line - marketLine) - Math.abs(b.line - marketLine))[0]
-                                : stds.reduce((a, b) => b.line > a.line ? b : a));
-                            const anchor = marketLine != null ? marketLine : medianOf(arr.map(e => e.line));
-                            const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
-                            // bad data guard: a STANDARD line >2.5 (or >60%) off the
-                            // sharp market. This used to clear the whole array
-                            // (`byBook[bk] = []`), which destroyed a REAL source
-                            // line and made downstream code believe none was ever
-                            // fetched. A real PrizePicks line must never be erased
-                            // — flag it instead and keep it flowing through.
-                            if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(2.5, marketLine * 0.6)) {
-                                const reason = `standard line ${std.line} vs sharp-market ${marketLine} (${bk})`;
-                                console.warn(`[MLB PropLine] Suspicious line flagged, not discarded — ${statKey}: ${reason}`);
-                                arr.forEach(e => { e._suspiciousLine = true; e._suspiciousReason = reason; });
-                            }
-                            arr.forEach(e => { e.primary = (e === primary); });
-                            byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);
-                        });
-                    }));
+                    Object.values(byKey).forEach(byBook => providerConsolidateStat(byBook, { isDfs: (b) => DFS_PLATFORMS.has(b), sanityAbs: 2.5, keepPrimaryOnSuspect: true })));
 
                 // ---- Line movement (client-side): diff each book's PRIMARY line
                 // against the day's ledger — the true opening line plus every
@@ -14280,65 +14408,12 @@ function mlbModelMeta() {
                 return map;
             };
 
-            // DFS books: PropLine tags every line standard/goblin/demon, so keep
-            // them all (that IS the PrizePicks board); mark the standard one
-            // primary and drop a standard that's wildly off the sharp market.
-            // Sportsbooks: keep the min-juice rung of their N+ ladder as primary.
+            // Main line per (book, stat, event) -- the shared providerConsolidateStat rules (see the MLB call site for the full description): sportsbooks use the
+            // paired Over/Under line closest to even money (ambiguity is flagged, never guessed); DFS uses only the provider-tagged standard line, and a standard far
+            // from the sharp-book consensus is flagged unreliable (kept, never deleted, so it surfaces as a provider-only row).
             const nflConsolidate = (linesByName) => {
-                const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m-1]+s[m]) / 2; };
-                Object.values(linesByName).forEach(byKey => Object.entries(byKey).forEach(([statKey, byBook]) => {
-                    const sharp = [];
-                    Object.entries(byBook).forEach(([bk, arr]) => {
-                        arr.sort((a, b) => a.line - b.line);
-                        let best = arr[0];
-                        arr.forEach(e => { if (e.juice < best.juice) best = e; });
-                        arr.forEach(e => { e.primary = (e === best); });
-                        if (!DFS_PLATFORMS.has(bk) && best) sharp.push(best.line);
-                    });
-                    const marketLine = median(sharp);
-                    Object.keys(byBook).forEach(bk => {
-                        if (!DFS_PLATFORMS.has(bk)) return;
-                        const arr = byBook[bk];
-                        if (!arr || !arr.length) return;
-                        // A source can (rarely) tag MORE than one line
-                        // "standard" for the same book+stat — seen live: a DFS
-                        // feed returned both a real 20.5 full-game Points
-                        // standard AND an erroneous 5.5 for the same player,
-                        // almost certainly a partial-game/segment market mis-
-                        // tagged under the same key. `.find()` would just grab
-                        // whichever sorts first and silently show the wrong
-                        // number as THE line. When that happens, prefer
-                        // whichever tagged-standard line sits closest to the
-                        // sharp-book consensus if we have one; otherwise the
-                        // highest line (a genuine full-game counting-stat
-                        // number is never smaller than a same-tagged dupe).
-                        const stds = arr.filter(e => e.ppType === 'standard');
-                        const std = stds.length <= 1 ? stds[0] : (marketLine != null
-                            ? stds.slice().sort((a, b) => Math.abs(a.line - marketLine) - Math.abs(b.line - marketLine))[0]
-                            : stds.reduce((a, b) => b.line > a.line ? b : a));
-                        const anchor = marketLine != null ? marketLine : median(arr.map(e => e.line));
-                        const primary = std || arr.slice().sort((a, b) => Math.abs(a.line - anchor) - Math.abs(b.line - anchor))[0];
-                        if (std && marketLine != null && Math.abs(std.line - marketLine) > Math.max(3, Math.abs(marketLine) * 0.6)) {
-                            // Line-integrity fix (Phase 2I-O): this used to WIPE the
-                            // entire book+stat array (byBook[bk] = []) when the DFS
-                            // standard line looked implausible vs the sharp-book
-                            // consensus -- which deleted the real provider row
-                            // before buildProviderOnlyProps ever got a chance to
-                            // show it as "Model not supported yet". A real main
-                            // line would silently vanish from the whole app instead
-                            // of falling back. Now: keep the raw rows (so the real
-                            // line/source/DFS type still surfaces via the
-                            // provider-only path) but flag every entry unreliable
-                            // so no *_BuildProps loop builds a modeled prop off it
-                            // -- see the matching `_lineSanitySuspect` check there.
-                            arr.forEach(e => { e.primary = false; e._lineSanitySuspect = true; });
-                            byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);
-                            return;
-                        }
-                        arr.forEach(e => { e.primary = (e === primary); });
-                        byBook[bk] = arr.slice().sort((a, b) => a.line - b.line);
-                    });
-                }));
+                Object.values(linesByName).forEach(byKey => Object.values(byKey).forEach(byBook =>
+                    providerConsolidateStat(byBook, { isDfs: (b) => DFS_PLATFORMS.has(b), sanityAbs: 3 })));
             };
 
             // Real windows for one player from their parsed game log.
@@ -14550,6 +14625,7 @@ function mlbModelMeta() {
             const humanizeMarketKey = (key) => {
                 if (!key) return 'Unknown market';
                 return String(key)
+                    .replace(/~.*$/, '')
                     .replace(/^player_/, '')
                     .replace(/[_]+/g, ' ')
                     .trim()
@@ -14565,7 +14641,7 @@ function mlbModelMeta() {
                     if (!arr || !arr.length) return;
                     const sorted = arr.slice().sort((a, c) => (c.primary ? 1 : 0) - (a.primary ? 1 : 0) || a.line - c.line);
                     const multi = sorted.length > 1;
-                    const label = humanizeMarketKey(rawKey);
+                    const label = (sorted[0] && sorted[0].providerLabel) || (sorted[0] && (sorted[0].known || sorted[0]._ambiguousMain || sorted[0]._lineSanitySuspect) && sorted[0].labelRaw) || humanizeMarketKey(rawKey);   // a mapped stat that was not built (unmodeled / ambiguous / flagged) keeps the provider's exact label
                     sorted.forEach(e => {
                         const base = {
                             type: label, statKey: rawKey, line: e.line, modelSupported: false,
@@ -14573,18 +14649,23 @@ function mlbModelMeta() {
                             book, setAt: e.setAt, move: e.move, altLine: multi && !e.primary,
                             eventId: e.eventId || null, commenceTimeMs: e.commenceTimeMs != null ? e.commenceTimeMs : null,
                             homeTeam: e.homeTeam || null, awayTeam: e.awayTeam || null,
+                            ...(e._ambiguousMain ? { lineStatus: 'AMBIGUOUS_MAIN_LINE' } : (e._lineSanitySuspect ? { lineStatus: 'LINE_FLAGGED', flagReason: e._suspiciousReason || 'line far from the sharp market' } : {})), ...(e.marketClass && e.marketClass !== 'MAIN' ? { marketClass: e.marketClass } : {}),
                             // Phase 5: a provider-only market's real period, from the
                             // raw market_key itself (rawKey) -- NEVER the caller's
                             // knownKeys/statKey space, and never defaulted to
                             // FULL_GAME just because most other markets are.
-                            period: periodForMarketKey(rawKey)
+                            period: (e.marketClass === 'PERIOD' && e.period) ? (({ Q1: '1Q', '1H': '1H', '2H': '2H' })[e.period] || 'UNKNOWN') : periodForMarketKey(String(rawKey).replace(/~.*$/, ''))
                         };
-                        if (DFS_PLATFORMS.has(book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                            props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: e.over ?? null, oppOdds: null, hitRate: null });
+                        if (DFS_PLATFORMS.has(book) && providerIsAltDfsType(e.ppType)) {
+                            providerAltDfsSides(e).forEach(sd => props.push({ ...base, altLine: true, direction: sd, oneWay: true, ppKind: e.ppType, odds: (sd === 'over' ? e.over : e.under) ?? null, oppOdds: null, hitRate: null, ...(e._altOnly ? { altOnly: true } : {}) }));
                             return;
                         }
                         const hasO = e.over != null, hasU = e.under != null;
-                        if (hasO && hasU) {
+                        if (e.availableSides && e.availableSides.length === 1 && !(hasO && hasU)) {   // provider offers ONE side only
+                            const sd = e.availableSides[0]; props.push({ ...base, direction: sd, oneWay: true, ppKind: null, odds: (sd === 'over' ? e.over : e.under) ?? null, oppOdds: null, hitRate: null });
+                            return;
+                        }
+                        if ((hasO && hasU) || (!hasO && !hasU && ((e.availableSides && e.availableSides.length >= 2) || (!e.availableSides && DFS_PLATFORMS.has(book))))) {
                             props.push({ ...base, direction: 'over', odds: e.over ?? null, oppOdds: e.under ?? null, hitRate: null });
                             props.push({ ...base, direction: 'under', odds: e.under ?? null, oppOdds: e.over ?? null, hitRate: null });
                             return;
@@ -14608,12 +14689,16 @@ function mlbModelMeta() {
                     // Goblin / Demon = "More"-only picks on PrizePicks/Underdog.
                     // Always alt-style — never the standard board, even when it's
                     // the only rung for the stat.
-                    if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
-                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? null, oppOdds: null, hitRate: oHR });
+                    if (DFS_PLATFORMS.has(extra.book) && providerIsAltDfsType(e.ppType)) {
+                        providerAltDfsSides(e).forEach(sd => props.push({ ...base, altLine: true, direction: sd, oneWay: true, ppKind: e.ppType, odds: (sd === 'over' ? e.over : e.under) ?? null, oppOdds: null, hitRate: sd === 'over' ? oHR : Math.max(2, 100 - oHR), ...(e._altOnly ? { altOnly: true } : {}) }));
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
-                    if (hasO && hasU) {
+                    if (e.availableSides && e.availableSides.length === 1 && !(hasO && hasU)) {   // provider offers ONE side of this rung only (e.g. a Pick6 higher rung): never fabricate the other
+                        const sd = e.availableSides[0]; props.push({ ...base, direction: sd, oneWay: true, ppKind: null, odds: (sd === 'over' ? extra.odds : extra.oppOdds) ?? null, oppOdds: null, hitRate: sd === 'over' ? oHR : Math.max(2, 100 - oHR) });
+                        return;
+                    }
+                    if ((hasO && hasU) || (!hasO && !hasU && ((e.availableSides && e.availableSides.length >= 2) || (!e.availableSides && DFS_PLATFORMS.has(extra.book))))) {
                         props.push({ ...base, direction: 'over', odds: extra.odds ?? null, oppOdds: extra.oppOdds ?? null, hitRate: oHR });
                         props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? null, oppOdds: extra.odds ?? null, hitRate: Math.max(2, 100 - oHR) });
                         return;
@@ -14658,6 +14743,7 @@ function mlbModelMeta() {
                         // each tab (or each book, in All Books) shows exactly
                         // what that book has posted.
                         if (!byBook[bk] || !byBook[bk].length) return;
+                        if (byBook[bk].every(e => e._ambiguousMain)) return;   // AMBIGUOUS_MAIN_LINE: no modeled prop; falls through to the provider-only rows
                         const useBook = bk, crossBook = false;
                         // Drop obvious bad data — e.g. a niche book listing a WR's
                         // "rush yards" at 43.5 when he averages ~1.
@@ -14826,7 +14912,7 @@ function mlbModelMeta() {
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
                 const pa = await fetchParlayPropsBulk('americanfootball_nfl', PARLAY_FB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -14861,6 +14947,11 @@ function mlbModelMeta() {
                     if (reason && _cov[reason] != null) _cov[reason]++;
                     if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; _cov.matched++; }
                 });
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {   // provider-first: a posted line for a name absent from the roster scan stays visible as provider-only (see bbProviderOnlySlot). Roster names that failed resolution (collision / team mismatch) are NOT eligible.
+                    if ((rosterCandidates[nn] || []).length) return;
+                    const ps = bbProviderOnlySlot(nn, byStat, 'nfl');
+                    if (ps) { linesByName[nn] = byStat; bySlot[nn] = ps; _cov.providerOnly = (_cov.providerOnly || 0) + 1; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
@@ -14887,7 +14978,7 @@ function mlbModelMeta() {
                 const NFL_DVP_ABBR = { WSH: 'WAS' };
                 const dvpByTeam = {};
                 if (backendUrl) {
-                    const oppAbbrs = [...new Set(matchedNames.map(nm => bySlot[nm].opponent).filter(Boolean))];
+                    const oppAbbrs = [...new Set(matchedNames.map(nm => bySlot[nm].opponent).filter(Boolean))];   // provider-only slots have no opponent
                     // Small sequential batches, not one Promise.all across the
                     // whole league — a full 32-team slate firing every request
                     // at once reproducibly crashed the backend's better-sqlite3
@@ -14929,7 +15020,7 @@ function mlbModelMeta() {
                     }
                 }
 
-                const glMap = await nflGamelogs(matchedNames.map(nm => bySlot[nm].id));
+                const glMap = await nflGamelogs(matchedNames.filter(nm => !bySlot[nm].providerOnly).map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _nflLedger = plLoadLedger('nfl', selectedDate);
                 const now = Date.now();
@@ -14937,7 +15028,7 @@ function mlbModelMeta() {
                 const built = [];
                 matchedNames.forEach(nm => {
                     const slot = bySlot[nm];
-                    const posKeys = nflPosKeys(slot.pos).filter(k => linesByName[nm][k]);
+                    const posKeys = slot.providerOnly ? [] : nflPosKeys(slot.pos).filter(k => linesByName[nm][k]);   // provider-only: position unknown -> nothing modeled, every row stays a real provider line
                     // Provider-first fallback fix (2026-09-24): this used to
                     // `return` (drop the player entirely) whenever they had
                     // real ParlayAPI rows but NONE of them mapped to a
@@ -15001,7 +15092,7 @@ function mlbModelMeta() {
                         opponentDefense: dvpByTeam[slot.opponent]
                             ? { ...dvpByTeam[slot.opponent], overall: slot.oppDef ? { rank: slot.oppDef.rank, ppg: slot.oppDef.paPerGame } : null }
                             : null,
-                        gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        gameTime: slot.gameTime, headshot: slot.headshot, status: slot.providerOnly ? null : 'ACTIVE', _providerOnlyPlayer: !!slot.providerOnly,
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: linesByName[nm], _isNfl: true, _detailLoaded: glRows.length > 0,
                         _seasonPerGame: perGameFor
@@ -15026,6 +15117,7 @@ function mlbModelMeta() {
             // Re-fetch one player's game log on modal open (covers a slate-build
             // gamelog fetch that failed) and refresh their windows in place.
             const fetchNflPlayerDetail = async (player) => {
+                if (player._providerOnlyPlayer) { setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'nfl' ? { ...p, _detailLoaded: true } : p)); return; }   // no ESPN identity -> no history to fetch
                 let glRows;
                 try {
                     glRows = await nflGamelogMulti(player.id);
@@ -15325,7 +15417,7 @@ function mlbModelMeta() {
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
                 const pa = await fetchParlayPropsBulk('americanfootball_ncaaf', PARLAY_FB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -15349,6 +15441,11 @@ function mlbModelMeta() {
                     if (reason && _cov[reason] != null) _cov[reason]++;
                     if (chosen) { linesByName[nn] = byStat; resolvedByNorm[nn] = chosen; _cov.matched++; }
                 });
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {   // provider-first (see bbProviderOnlySlot)
+                    if ((rosterCandidates[nn] || []).length) return;
+                    const ps = bbProviderOnlySlot(nn, byStat, 'ncaaf');
+                    if (ps) { linesByName[nn] = byStat; resolvedByNorm[nn] = ps; _cov.providerOnly = (_cov.providerOnly || 0) + 1; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
@@ -15358,7 +15455,7 @@ function mlbModelMeta() {
                 }
                 if (!matched.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no CFB lines matched this slate\'s roster scan (name join).'); return []; }
 
-                const glMap = await cfbGamelogs(matched.map(x => x.slot.id));
+                const glMap = await cfbGamelogs(matched.filter(x => !x.slot.providerOnly).map(x => x.slot.id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _cfbLedger = plLoadLedger('ncaaf', selectedDate);
                 const now = Date.now();
@@ -15369,7 +15466,7 @@ function mlbModelMeta() {
                     if (seenPlayer.has(slot.id)) return;
                     seenPlayer.add(slot.id);
                     const lines = linesByName[nn];
-                    const posKeys = nflPosKeys(slot.pos).filter(k => lines[k]);
+                    const posKeys = slot.providerOnly ? [] : nflPosKeys(slot.pos).filter(k => lines[k]);
                     // Provider-first fallback fix (2026-09-24) -- identical
                     // reasoning/fix as fetchNflPropLines' own copy of this
                     // exact line (see its comment): a real PrizePicks/etc.
@@ -15412,7 +15509,7 @@ function mlbModelMeta() {
                         id: slot.id, name: slot.name, sport: 'ncaaf', role: 'skill',
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
-                        oppDef: null, gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        oppDef: null, gameTime: slot.gameTime, headshot: slot.headshot, status: slot.providerOnly ? null : 'ACTIVE', _providerOnlyPlayer: !!slot.providerOnly,
                         statsByKey, gameLogByKey, stats: {}, gameLog: [],
                         _allLines: lines, _isCfb: true, _detailLoaded: glRows.length > 0,
                         _seasonPerGame: perGameFor, _cfbLineFor: lineFor   // the card reuses THIS window line so board and card build identical windows
@@ -15435,6 +15532,7 @@ function mlbModelMeta() {
             };
 
             const fetchCfbPlayerDetail = async (player) => {
+                if (player._providerOnlyPlayer) { setPlayersData(prev => prev.map(p => p.id === player.id && p.sport === 'ncaaf' ? { ...p, _detailLoaded: true } : p)); return; }
                 let glRows;
                 try { glRows = await cfbGamelogMulti(player.id); } catch (e) { return; }
                 if (!glRows.length) {
@@ -16105,6 +16203,25 @@ function mlbModelMeta() {
                 return { statsByKey, gameLogByKey };
             };
 
+            // Provider-first fallback (2026-10-08): a player a book really posted a line for, but who is absent from today's ESPN roster scan (new signing, two-way,
+            // roster lag), is NOT dropped. The real provider line is shown with no game history -> the engine fails closed (INSUFFICIENT_DATA); team / opponent are left
+            // null (the provider row names the two teams of the game, never which one the player is on). A name that IS on the roster but could not be resolved
+            // (collision / team mismatch) is not eligible: that rejection stays.
+            const bbProviderOnlySlot = (nn, byStat, sportTag) => {
+                let rep = null;
+                Object.values(byStat).some(byBook => Object.values(byBook).some(arr => arr.some(e => { if (e.playerRaw) { rep = e; return true; } return false; })));
+                if (!rep) return null;
+                const ms = Number.isFinite(rep.commenceTimeMs) ? rep.commenceTimeMs : null;
+                return {
+                    id: `prov:${sportTag}:${nn}`, name: providerPlayerBase(rep.playerRaw), pos: '', posRaw: '', headshot: '',
+                    team: null, teamId: null, opponent: null, oppTeamId: null, oppDef: null, oppRank: null,
+                    gameDow: ms != null ? new Date(ms).getDay() : null, b2b: null, isBackToBackTonight: false,
+                    gamePk: rep.eventId || null, isHome: false,
+                    gameTime: ms != null ? new Date(ms).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
+                    gameState: null, providerOnly: true
+                };
+            };
+
             // Build a player's props for ONE book from their consolidated lines.
             // Mirrors nflBuildProps (goblin/demon = More-only, standard two-way,
             // sportsbook N+ rung one-way, junk-line guard, alt ladder kept).
@@ -16134,14 +16251,18 @@ function mlbModelMeta() {
                         base.marketLine = _mktLine;
                         base.mktGap = Math.round((e.line - _mktLine) * 10) / 10;
                     }
-                    if (DFS_PLATFORMS.has(extra.book) && (e.ppType === 'goblin' || e.ppType === 'demon')) {
+                    if (DFS_PLATFORMS.has(extra.book) && providerIsAltDfsType(e.ppType)) {
                         // Alt-style pick, never the standard board — force altLine
                         // even when it's the only rung for this stat.
-                        props.push({ ...base, altLine: true, direction: 'over', oneWay: true, ppKind: e.ppType, odds: extra.odds ?? null, oppOdds: null, hitRate: oHR });
+                        providerAltDfsSides(e).forEach(sd => props.push({ ...base, altLine: true, direction: sd, oneWay: true, ppKind: e.ppType, odds: (sd === 'over' ? e.over : e.under) ?? null, oppOdds: null, hitRate: sd === 'over' ? oHR : Math.max(2, 100 - oHR), ...(e._altOnly ? { altOnly: true } : {}) }));
                         return;
                     }
                     const hasO = e.over != null, hasU = e.under != null;
-                    if (hasO && hasU) {
+                    if (e.availableSides && e.availableSides.length === 1 && !(hasO && hasU)) {   // provider offers ONE side of this rung only (e.g. a Pick6 higher rung): never fabricate the other
+                        const sd = e.availableSides[0]; props.push({ ...base, direction: sd, oneWay: true, ppKind: null, odds: (sd === 'over' ? extra.odds : extra.oppOdds) ?? null, oppOdds: null, hitRate: sd === 'over' ? oHR : Math.max(2, 100 - oHR) });
+                        return;
+                    }
+                    if ((hasO && hasU) || (!hasO && !hasU && ((e.availableSides && e.availableSides.length >= 2) || (!e.availableSides && DFS_PLATFORMS.has(extra.book))))) {
                         props.push({ ...base, direction: 'over', odds: extra.odds ?? null, oppOdds: extra.oppOdds ?? null, hitRate: oHR });
                         props.push({ ...base, direction: 'under', odds: extra.oppOdds ?? null, oppOdds: extra.odds ?? null, hitRate: Math.max(2, 100 - oHR) });
                         return;
@@ -16317,7 +16438,7 @@ function mlbModelMeta() {
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
                 const pa = await fetchParlayPropsBulk('basketball_nba', PARLAY_BB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -16335,13 +16456,18 @@ function mlbModelMeta() {
                     const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
                     if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
                 });
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {   // provider-first: a posted line for a player missing from the roster scan is kept (see bbProviderOnlySlot)
+                    if ((rosterCandidates[nn] || []).length) return;
+                    const ps = bbProviderOnlySlot(nn, byStat, 'nba');
+                    if (ps) { linesByName[nn] = byStat; bySlot[nn] = ps; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
                 const matchedNames = Object.keys(linesByName).filter(nm => bySlot[nm]);
                 if (!matchedNames.length) { setPropLineSource('sample'); setProplineError('ParlayAPI reached, but no NBA lines matched this slate\'s roster scan (name join).'); return []; }
 
-                const nbaIds = matchedNames.map(nm => bySlot[nm].id);
+                const nbaIds = matchedNames.filter(nm => !bySlot[nm].providerOnly).map(nm => bySlot[nm].id);
                 const glMap = await nbaEnrichOrebDreb(nbaIds, await nbaGamelogs(nbaIds));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _nbaLedger = plLoadLedger('nba', selectedDate);
@@ -16350,8 +16476,7 @@ function mlbModelMeta() {
                 const built = [];
                 matchedNames.forEach(nm => {
                     const slot = bySlot[nm];
-                    const keys = nbaAllKeys.filter(k => linesByName[nm][k]);
-                    if (!keys.length) return;
+                    if (!Object.keys(linesByName[nm]).length) return;   // provider-first: a player whose only lines are provider-only markets is still shown
                     const glRows = glMap[slot.id] || [];
                     const lineFor = {};
                     Object.keys(linesByName[nm]).forEach(k => {
@@ -16385,7 +16510,7 @@ function mlbModelMeta() {
                         id: slot.id, name: slot.name, sport: 'nba', role: 'skill',
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
-                        gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        gameTime: slot.gameTime, headshot: slot.headshot, status: slot.providerOnly ? null : 'ACTIVE', _providerOnlyPlayer: !!slot.providerOnly,
                         minutesTrend: nbaMinutesTrend(glRows), projMin: nbaProjMinutes(glRows),
                         oppDef: slot.oppDef || null, oppRank: slot.oppRank || null, gameDow: slot.gameDow,
                         b2b: slot.b2b || null, isBackToBackTonight: !!slot.isBackToBackTonight,
@@ -16701,7 +16826,7 @@ function mlbModelMeta() {
                     ? { lo: Math.min(..._kMs) - 2 * 864e5, hi: Math.max(..._kMs) + 2 * 864e5 }
                     : { lo: -Infinity, hi: Infinity };
                 const pa = await fetchParlayPropsBulk('basketball_wnba', PARLAY_BB_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 5, commenceWindow
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 5, commenceWindow
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -16719,6 +16844,11 @@ function mlbModelMeta() {
                     const { chosen } = resolvePlayerIdentity(candidates, gameTeamAbbrs);
                     if (chosen) { linesByName[nn] = byStat; bySlot[nn] = chosen; }
                 });
+                Object.entries(pa.byNorm).forEach(([nn, byStat]) => {   // provider-first (see bbProviderOnlySlot)
+                    if ((rosterCandidates[nn] || []).length) return;
+                    const ps = bbProviderOnlySlot(nn, byStat, 'wnba');
+                    if (ps) { linesByName[nn] = byStat; bySlot[nn] = ps; }
+                });
                 setParlayCount(pa.n);
                 nflConsolidate(linesByName);
 
@@ -16729,7 +16859,7 @@ function mlbModelMeta() {
                     return [];
                 }
 
-                const glMap = await wnbaGamelogs(matchedNames.map(nm => bySlot[nm].id));
+                const glMap = await wnbaGamelogs(matchedNames.filter(nm => !bySlot[nm].providerOnly).map(nm => bySlot[nm].id));
                 const wantBook = PLATFORM_BOOK[selectedPlatform] || 'prizepicks';
                 const _wnbaLedger = plLoadLedger('wnba', selectedDate);
                 const now = Date.now();
@@ -16737,8 +16867,7 @@ function mlbModelMeta() {
                 const built = [];
                 matchedNames.forEach(nm => {
                     const slot = bySlot[nm];
-                    const keys = nbaAllKeys.filter(k => linesByName[nm][k]);
-                    if (!keys.length) return;
+                    if (!Object.keys(linesByName[nm]).length) return;   // provider-first: a player whose only lines are provider-only markets is still shown
                     const glRows = glMap[slot.id] || [];
                     const lineFor = {};
                     Object.keys(linesByName[nm]).forEach(k => {
@@ -16772,7 +16901,7 @@ function mlbModelMeta() {
                         id: slot.id, name: slot.name, sport: 'wnba', role: 'skill',
                         position: slot.pos, team: slot.team, opponent: slot.opponent,
                         teamId: slot.teamId, oppTeamId: slot.oppTeamId, gamePk: slot.gamePk,
-                        gameTime: slot.gameTime, headshot: slot.headshot, status: 'ACTIVE',
+                        gameTime: slot.gameTime, headshot: slot.headshot, status: slot.providerOnly ? null : 'ACTIVE', _providerOnlyPlayer: !!slot.providerOnly,
                         minutesTrend: nbaMinutesTrend(glRows), projMin: nbaProjMinutes(glRows),
                         oppDef: slot.oppDef || null, oppRank: slot.oppRank || null, gameDow: slot.gameDow,
                         b2b: slot.b2b || null, isBackToBackTonight: !!slot.isBackToBackTonight,
@@ -16837,7 +16966,7 @@ function mlbModelMeta() {
                 // maxPages (5 for NBA/WNBA, etc.), or falls back to the
                 // unchanged default of 3 if it passes none at all.
                 const pa = await fetchParlayPropsBulk('icehockey_nhl', PARLAY_NHL_MKT, {
-                    books: PROPLINE_BOOK_PRIORITY.join(','), limit: 10000, maxPages: 20
+                    books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 20
                 }, isStale);
                 if (gone()) return [];
                 if (!pa) { setPropLineSource('sample'); setProplineError('ParlayAPI unreachable or failed this refresh — will retry automatically.'); return []; }
@@ -16877,8 +17006,10 @@ function mlbModelMeta() {
                 Object.values(pa.byNorm).forEach((byStat) => {
                     // ONE game per player (earliest upcoming), chosen deterministically; every line below is read only from
                     // rows of that game, so Over/Under/line/teams/start time can never come from different games.
-                    const nhlEvent = nhlPickPlayerEvent(byStat, Date.now());
-                    if (!nhlEvent) return;
+                    const nhlEvent0 = nhlPickPlayerEvent(byStat, Date.now());
+                    if (!nhlEvent0) return;
+                    nhlListPlayerEvents(byStat, Date.now(), nhlEvent0).forEach((nhlEvent, nhlEvIdx, nhlEvAll) => {
+                    const evSfx = nhlEvIdx === 0 ? '' : '@' + nhlEvent.key;   // the earliest game keeps the original ids; later games get a distinct, stable suffix
                     const playerRaw = nhlEvent.playerRaw, homeTeam = nhlEvent.homeTeam, awayTeam = nhlEvent.awayTeam, commenceMs = nhlEvent.commenceMs;
                     // Non-player market safety: real discovery confirmed some
                     // provider rows use a "player" field that's actually a
@@ -16956,12 +17087,19 @@ function mlbModelMeta() {
                         ? (team === homeTeam ? awayTeam : team === awayTeam ? homeTeam : null)
                         : null;
                     const oppEntry = (opponent && nhlOppTeams) ? (nhlOppTeams[opponent] || null) : null;
+                    // Collision-resistant card / prop identity (2026-10-08). The old key was nhlMatchKey = "initial.lastname", shared by distinct people ("N. Robertson") and by name variants,
+                    // which produced duplicate React keys and doubled cards. The key is now the RESOLVED real player_id (when there is one) plus the full normalized provider name -- two different
+                    // provider names can never share an id, one name always gets the same id, and the model join (nhlPlayerId / statsByStatKey) is untouched.
+                    const idKey = (resolvedPlayerId ? 'p' + resolvedPlayerId : 'x') + '~' + (providerSlug(providerPlayerBase(playerRaw)) || providerSlug(mk) || 'unknown');
 
+                    // Built as a function of the selected book (2026-10-08) so switching the platform tab (a single book <-> All Books) rebuilds THIS card -- same game, same model join --
+                    // instead of leaving the board built for whichever book was selected when it loaded. See the platform effect (`_nhlBuild`).
+                    const buildNhlProps = (wantBook) => {
                     const props = [];
                     Object.entries(byStat).forEach(([statKey, byBook]) => {
                         // FAIL CLOSED: requested book only (ALL_BOOKS walks the fixed priority list), one game, main line by rule.
                         // No cross-book fallback, no provider-order pick, no alternate standing in for the main line.
-                        const sel = nhlResolveBookLine(byBook, { wantBook, allBooksId: ALL_BOOKS, priority: PROPLINE_BOOK_PRIORITY, dfsBooks: DFS_PLATFORMS, eventKey: nhlEvent.key });
+                        const sel = nhlResolveBookLine(byBook, { wantBook, allBooksId: ALL_BOOKS, priority: PROVIDER_BOOK_ORDER, dfsBooks: DFS_PLATFORMS, eventKey: nhlEvent.key });
                         const pr = sel.entry;
                         if (!pr) return;
                         // `model` is the frozen v2 value for THIS player vs THIS opponent: the materialized value, with the opponent
@@ -16980,7 +17118,7 @@ function mlbModelMeta() {
                             // actually clicked even if a background refresh
                             // re-orders player.props afterward, instead of
                             // drifting to whatever now sits at that index.
-                            id: `${mk || playerRaw}:${statKey}`,
+                            id: `${idKey}${evSfx}:${statKey}`,
                             statKey, line: pr.line, over: pr.over, under: pr.under, book: sel.book, mainLineBasis: sel.reason,
                             period: pr.period || 'FULL', projectionType: pr.projectionType || null,
                             eventId: pr.eventId || null, rawMarket,
@@ -17012,11 +17150,17 @@ function mlbModelMeta() {
                             opponentAdjusted: !!(oppAdj && oppAdj.adjusted),
                         });
                     });
-                    if (!props.length) return;
+                    return props;
+                    };
+                    const props = buildNhlProps(wantBook);
+                    // A card with no line for the SELECTED book is still kept (hidden by the board filter while its props are empty) as long as ANY book offers it, so a later platform switch
+                    // can rebuild it; a player with no line anywhere is dropped exactly as before.
+                    if (!props.length && !buildNhlProps(ALL_BOOKS).length) return;
                     built.push({
-                        id: `nhl:${mk || playerRaw}`, name: playerRaw, sport: 'nhl', role: 'skill',
+                        id: `nhl:${idKey}${evSfx}`, name: playerRaw, sport: 'nhl', role: 'skill',
                         team, opponent,
-                        gameTime: Number.isFinite(commenceMs) ? new Date(commenceMs).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null,
+                        gameTime: Number.isFinite(commenceMs) ? new Date(commenceMs).toLocaleString('en-US', nhlEvAll.length > 1 ? { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } : { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null,   // two games: the date is shown so the cards stay distinguishable
+                        eventId: nhlEvent.key, gameCommenceMs: Number.isFinite(commenceMs) ? commenceMs : null,
                         // Real NHL.com headshot CDN, keyed by the real
                         // resolved player_id (confirmed live, 2026-09-29:
                         // https://assets.nhle.com/mugs/nhl/latest/{id}.png)
@@ -17035,13 +17179,15 @@ function mlbModelMeta() {
                         // what keeps a combo/unresolved card's prop-pill from ever
                         // getting a click handler at all (see NhlPlayerCard).
                         nhlPlayerId: resolvedPlayerId,
-                        props, _isNhl: true,
+                        props, _isNhl: true, _nhlBuild: buildNhlProps,
                     });
+                    });   // end per-event
                 });
 
                 markFresh();
-                setPropLineSource(built.length ? 'live' : 'sample');
-                setProplineError(built.length ? null : 'ParlayAPI reached but produced no NHL props for this slate.');
+                const _nhlAny = built.some(p => p.props.length > 0);
+                setPropLineSource(_nhlAny ? 'live' : 'sample');
+                setProplineError(_nhlAny ? null : 'ParlayAPI reached but produced no NHL props for this slate.');
                 return built;
             };
 
@@ -21541,7 +21687,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 const cardIdxById = selectedPropId != null ? cardProps.findIndex(p => p.id === selectedPropId) : -1;
                 const cardIdx = cardIdxById >= 0 ? cardIdxById : (cardProps.length ? Math.min(firstCatIdx, cardProps.length - 1) : 0);
                 const cardProp = cardProps[cardIdx];
-                const cStats = (cardProp && player.statsByKey && player.statsByKey[cardProp.statKey]) || player.stats || {};
+                const cStats = stripSeededWindows((cardProp && player.statsByKey && player.statsByKey[cardProp.statKey]) || player.stats || {});   // placeholder windows never display a hit rate
                 const cLog = (cardProp && player.gameLogByKey && player.gameLogByKey[cardProp.statKey]) || player.gameLog || [];
                 const dirUnder = !!(cardProp && cardProp.direction === 'under');
                 const hr = (x) => (x == null ? null : (dirUnder ? 100 - x : x));
@@ -21580,7 +21726,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                 // compute the numbers above.
                 const tabMeta = cStats[selectedPropTab] || {};
                 const windowLabel = { last5: 'Last 5', last10: 'Last 10', last15: 'Last 15', last20: 'Last 20', trueSeason: 'Season' }[selectedPropTab]
-                    || (selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}` : selectedPropTab);
+                    || (selectedPropTab === 'vsOpp' ? `Vs ${player.opponent || 'Opp'}` : selectedPropTab);
 
                 return (
                     <div className="player-card">
@@ -21631,7 +21777,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                             </React.Fragment>}
                             teamInfo={<React.Fragment>
                                     <span className="team">{player.team}</span>
-                                    <span className="opponent"> vs {player.opponent}</span>
+                                    {player.opponent && <span className="opponent"> vs {player.opponent}</span>}
                                     {(player.sport === 'nba' || player.sport === 'wnba') && player.projMin != null && (
                                         <span className="opponent" title="Projected minutes tonight (weighted L5/L10/L20)"> · ~{player.projMin} min</span>
                                     )}
@@ -21736,6 +21882,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                     <span className={`prop-pill-dir ${prop.direction}`}>{prop.direction === 'under' ? 'UNDER' : 'OVER'}</span> {prop.type}
                                                     {prop.ppKind === 'goblin' && <span className="pp-kind goblin" title="PrizePicks Goblin — easier line, smaller payout. Over only.">👺 GOBLIN</span>}
                                                     {prop.ppKind === 'demon' && <span className="pp-kind demon" title="PrizePicks Demon — harder line, bigger payout. Over only.">😈 DEMON</span>}
+                                                    {prop.ppKind && prop.ppKind !== 'goblin' && prop.ppKind !== 'demon' && prop.ppKind !== 'standard' && <span className="pp-kind altvalue" title={`${providerLineTypeLabel(prop.ppKind)} — a non-standard line type exactly as labelled by ${bookLabel(prop.book) || 'the provider'}.`}>{providerLineTypeLabel(prop.ppKind).toUpperCase()}</span>}
                                                     {prop.crossBook && <span className="pp-kind cross" title={prop.lineSource}>NOT ON {(prop.book && PLATFORM_BOOK[selectedPlatform]) ? (platforms.find(p=>p.id===selectedPlatform)||{}).name : 'this site'}</span>}
                                                     {prop.altLine && !prop.ppKind && <span className="prop-pill-alt">ALT</span>}
                                                     {prop.plusEV && prop.plusEV.eligible && <span className="pp-kind plusev" title={`PrizePicks +EV — line ${prop.plusEV.prizePicksLine} vs market median ${prop.plusEV.marketMedianLine} (${prop.plusEV.sportsbookCount} books), BeatsEdge projects ${prop.plusEV.modelProjection}. A market-price-value signal, independent of Grade/Prime.`}>💰 +EV</span>}
@@ -22020,7 +22167,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         Line: {formatProviderLine(activeProp.line)}
                                                         {typeof activeProp.odds === 'number' && <> ({activeProp.odds > 0 ? '+' : ''}{activeProp.odds})</>}
                                                         {' · '}{bookLabel(activeProp.book) || activeProp.lineSource}
-                                                        {activeProp.ppKind && <> · {activeProp.ppKind === 'demon' ? '😈 Demon' : '👺 Goblin'}</>}
+                                                        {activeProp.ppKind && <> · {activeProp.ppKind === 'demon' ? '😈 Demon' : activeProp.ppKind === 'goblin' ? '👺 Goblin' : providerLineTypeLabel(activeProp.ppKind)}</>}
                                                     </div>
                                                     {_insufficientHistory ? (
                                                         <div title="No game history exists for this stat, so BeatsEdge withholds every model output. Missing is unknown, not zero.">
@@ -22028,7 +22175,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                         </div>
                                                     ) : (
                                                         <div title="This is a real provider line, but BeatsEdge doesn't have a research model for this market yet — no probability, projection, edge, or grade is invented for it.">
-                                                            <strong>Model not supported for this market yet.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — BeatsEdge simply has no research formula for "{activeProp.type}" yet.
+                                                            {activeProp.lineStatus === 'LINE_FLAGGED'
+                                                                ? <React.Fragment><strong>Line flagged — not modeled.</strong> This is a real, live provider prop (line, source and line type above are exact), but it sits far from the sportsbook market ({activeProp.flagReason}), so BeatsEdge shows it without a projection, probability or grade.</React.Fragment>
+                                                                : activeProp.lineStatus === 'AMBIGUOUS_MAIN_LINE'
+                                                                    ? <React.Fragment><strong>Main line not identified — not modeled.</strong> This is a real, live provider prop (line, source and line type above are exact). The provider posts several equally-valid lines for "{activeProp.type}" and names no single main line, so none is picked and no projection, probability or grade is shown.</React.Fragment>
+                                                                    : <React.Fragment><strong>Model not supported for this market yet.</strong> This is a real, live provider prop — line, source, and DFS type above are exact — BeatsEdge simply has no research formula for "{activeProp.type}" yet.</React.Fragment>}
                                                         </div>
                                                     )}
                                                 </div>
@@ -22057,7 +22208,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             <optgroup key={dir} label={dir === 'over' ? 'OVER' : 'UNDER'}>
                                                                 {opts.map(({ p, idx }) => (
                                                                     <option key={p.id || idx} value={p.id || idx}>
-                                                                        {p.direction === 'under' ? 'U' : 'O'} {p.type} {p.line}{p.ppKind === 'goblin' ? ' (Goblin)' : p.ppKind === 'demon' ? ' (Demon)' : p.crossBook ? ' (not on ' + p.book + ')' : p.altLine ? ' (alt)' : ''}
+                                                                        {p.direction === 'under' ? 'U' : 'O'} {p.type} {p.line}{p.ppKind === 'goblin' ? ' (Goblin)' : p.ppKind === 'demon' ? ' (Demon)' : p.ppKind ? ' (' + providerLineTypeLabel(p.ppKind) + ')' : p.crossBook ? ' (not on ' + p.book + ')' : p.altLine ? ' (alt)' : ''}
                                                                     </option>
                                                                 ))}
                                                             </optgroup>
@@ -22113,7 +22264,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                                     : activeProp.ppKind === 'demon'
                                                                         ? `😈 PrizePicks Demon — harder line, boosted payout. Over only (no under on PrizePicks). ${activeProp.lineSource}`
                                                             : activeProp.lineSource
-                                                                ? `🟢 Real line — ${activeProp.lineSource}`
+                                                                ? `🟢 Real line — ${activeProp.lineSource}${activeProp.ppKind ? ' · ' + providerLineTypeLabel(activeProp.ppKind) + ' line type' : ''}${activeProp.lineStatus === 'AMBIGUOUS_MAIN_LINE' ? ' · main line could not be identified' : ''}${activeProp.lineStatus === 'LINE_FLAGGED' ? ' · flagged, not modeled: ' + activeProp.flagReason : ''}`
                                                                 : (activeProp.isProjection
                                                                     ? (activeProp.type === 'Pitcher Fantasy Score'
                                                                         ? '📊 Model projection — PropLine posts no fantasy-score line; this is our PrizePicks-scoring estimate (out +1, K +3, ER −3, W +6, QS +4) off the real game log'
@@ -23032,8 +23183,9 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                             title={`Hit Rate${cardProp ? ` — ${cardProp.type} ${dirUnder ? 'Under' : 'Over'} ${formatProviderLine(cardProp.line)}` : ''}`}
                                             headline={headline}
                                             bars={bars}
-                                            note={
-                                                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                            note={(!bars.length && headline == null)
+                                                ? <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No game-log history exists for this stat, so no hit rate is shown.</div>
+                                                : <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                                                     <div style={{ fontWeight: 600 }}>{useGl && oppVals.length >= 4 ? `Hit rate vs ${player.opponent} (${oppVals.length}g)` : `${dirUnder ? 'Under' : 'Over'} rate — last ${Math.min(glv.length, 40)} games`}</div>
                                                     <div style={{ fontSize: '0.8rem' }}>Share of games {dirUnder ? 'at or below' : 'above'} {cardProp ? cardProp.line : 'this line'}, straight from the game log.</div>
                                                 </div>
@@ -23042,7 +23194,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                 })()}
 
                                 <WindowTabs
-                                    tabs={[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent}`]]}
+                                    tabs={[['last5', 'L5'], ['last10', 'L10'], ['last15', 'L15'], ['last20', 'L20'], ['trueSeason', 'Season'], ['vsOpp', `Vs ${player.opponent || 'Opp'}`]]}
                                     selected={selectedPropTab} onSelect={setSelectedPropTab} />
                                 {tabMeta.complete === false && (
                                     <div className="stats-insufficient">{windowLabel} — {tabMeta.availableGames} game{tabMeta.availableGames === 1 ? '' : 's'} available</div>
@@ -23102,7 +23254,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                     // values the stats-summary panel above just used — one games
                                     // array drives both, so they can never disagree.
                                     const chartWindowLabel = selectedPropTab === 'trueSeason' ? 'Season'
-                                        : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent}`
+                                        : selectedPropTab === 'vsOpp' ? `Vs ${player.opponent || 'Opp'}`
                                         : `Last ${shownGames.length}`;
                                     // Sport/role-aware, real-value-only participation label for one
                                     // game-log row `g` — architected so a future sport (e.g. Soccer,
@@ -23675,7 +23827,7 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                     // dropped here -- not rendered as an empty/placeholder
                     // card. Mock/sample-fallback players are untouched (their
                     // own separate, already-honest labeling system).
-                    .filter(p => p._mock || !LIVE_PIPELINE_SPORTS.has(p.sport) || (Array.isArray(p.props) && p.props.length > 0))
+                    .filter(p => p._mock || (!LIVE_PIPELINE_SPORTS.has(p.sport) && !p._isNhl) || (Array.isArray(p.props) && p.props.length > 0))
                     .filter(p => statFilter === 'all' || (Array.isArray(p.props) && p.props.some(pr => pr.type === statFilter && !pr.altLine)))
                     .map(p => ({
                         p, g: playerBestGrade(p, statFilter),

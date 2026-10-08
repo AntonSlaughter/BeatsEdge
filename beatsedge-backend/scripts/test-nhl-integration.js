@@ -25,9 +25,9 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'BeatsEdge.html'), 'utf8
   check('fetchParlayPropsBulk generic default maxPages is UNCHANGED at 3 (no global increase)',
     /const maxPages = \(opts && opts\.maxPages\) \|\| 3;/.test(html));
   check('NHL\'s own call site passes an explicit higher maxPages (20), not the generic default',
-    /fetchParlayPropsBulk\('icehockey_nhl', PARLAY_NHL_MKT, \{\s*books: PROPLINE_BOOK_PRIORITY\.join\(','\), limit: 10000, maxPages: 20/.test(html));
+    /fetchParlayPropsBulk\('icehockey_nhl', PARLAY_NHL_MKT, \{\s*books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 20/.test(html));
   check('NBA\'s own call site still passes its own maxPages (5), unaffected by the NHL change',
-    /fetchParlayPropsBulk\('basketball_nba', PARLAY_BB_MKT, \{\s*books: PROPLINE_BOOK_PRIORITY\.join\(','\), limit: 10000, maxPages: 5/.test(html));
+    /fetchParlayPropsBulk\('basketball_nba', PARLAY_BB_MKT, \{\s*books: PARLAY_FETCH_BOOKS, limit: 10000, maxPages: 5/.test(html));
 
   // ---------- PAGINATION EXHAUSTION, not just a page cap ----------
   // This exact mechanism is SHARED, unmodified code already used and
@@ -57,7 +57,7 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'BeatsEdge.html'), 'utf8
 
   // ---------- mktMap function-support is additive, not a behavior change for other sports ----------
   check('the known-market lookup supports function-valued mktMap entries (NHL) while staying string-compatible (everyone else)',
-    /const mktEntry = mktMap\[row\.market_key\];\s*const known = typeof mktEntry === 'function' \? mktEntry\(row\) : mktEntry;/.test(html));
+    /const mktEntry = mktMap\[row\.market_key\];\s*const mapped = typeof mktEntry === 'function' \? mktEntry\(row\) : mktEntry;/.test(html));
 
   // ---------- PERIOD SAFETY: FULL-game models never attach to P1 props ----------
   check('P1 shots_on_goal_1st_period never reuses the FULL-game model (Node classifier)',

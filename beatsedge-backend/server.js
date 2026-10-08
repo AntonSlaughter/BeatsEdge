@@ -47,6 +47,7 @@ app.use(cors({
 // POST (see /api/snapshots). Everything else is tiny; the limit is just a cap.
 app.use(express.json({ limit: '16mb' }));
 
+app.use('/api', require('./routes/siteStatus').createSiteStatusRouter());   // POST /api/site-telemetry, GET /api/site-status (no DB, no provider call)
 app.use('/api', apiRoutes);
 
 app.get('/', (req, res) => {
@@ -55,6 +56,8 @@ app.get('/', (req, res) => {
     status: 'running',
     endpoints: [
       'GET /api/health',
+      'GET /api/site-status (provider / main-line completeness + freshness; client-reported, no secrets)',
+      'POST /api/site-telemetry (browser reports beatsedge-site-telemetry/1; validated + rate limited)',
       'GET /api/data-health (non-sensitive DB path/persistence/row-count status)',
       'GET /api/data-sources/health (provider status/cooldown for the ParlayAPI/PropLine passthroughs — no keys)',
       'GET /api/defense/overall/:sport/:season/:team',
