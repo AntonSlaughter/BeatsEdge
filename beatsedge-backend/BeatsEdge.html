@@ -2942,6 +2942,57 @@
         .upgrade-note { font-size: 0.74rem; color: var(--text-muted); margin-top: 0.7rem; line-height: 1.5; text-align: center; }
         @media (max-width: 560px) { .upgrade-cols { grid-template-columns: 1fr; } }
 
+
+        /* ── Ask BeatsEdge (Phase 3B): prop explanation panel + site assistant. Uses the existing tokens; no new palette. ── */
+        .ask-be { margin: 0 0 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); }
+        .ask-be-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; background: transparent; border: 0; color: var(--text-primary); font: inherit; cursor: pointer; text-align: left; border-radius: 10px; }
+        .ask-be-toggle:hover { background: var(--bg-raised); }
+        .ask-be-toggle:focus-visible, .ask-be-chip:focus-visible, .ask-be-send:focus-visible, .ask-be-fab:focus-visible, .ask-be-close:focus-visible, .ask-be-input:focus-visible { outline: 2px solid var(--info-blue); outline-offset: 2px; }
+        .ask-be-toggle-title { font-family: var(--font-display); font-weight: 600; }
+        .ask-be-toggle-hint { color: var(--text-secondary); font-size: 0.78rem; }
+        .ask-be-body, .ask-be-dock-body { padding: 0.25rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.7rem; }
+        .ask-be-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .ask-be-chip { border: 1px solid var(--border-color); background: var(--bg-raised); color: var(--text-secondary); border-radius: 999px; padding: 0.3rem 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; }
+        .ask-be-chip:hover:not(:disabled), .ask-be-chip.active { border-color: var(--accent-red); color: var(--text-primary); }
+        .ask-be-chip.selected { border-style: dashed; }
+        .ask-be-chip:disabled, .ask-be-send:disabled, .ask-be-retry:disabled { opacity: 0.5; cursor: not-allowed; }
+        .ask-be-form { display: flex; gap: 0.5rem; }
+        .ask-be-input { flex: 1; min-width: 0; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 8px; padding: 0.45rem 0.65rem; font: inherit; font-size: 0.85rem; }
+        .ask-be-send { background: var(--accent-red); border: 0; color: #fff; border-radius: 8px; padding: 0.45rem 0.9rem; font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+        .ask-be-retry { margin-left: 0.75rem; padding: 0.15rem 0.6rem; background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 6px; font: inherit; font-size: 0.78rem; cursor: pointer; }
+        .ask-be-note { font-size: 0.74rem; color: var(--text-muted); line-height: 1.45; }
+        .ask-be-loading { font-size: 0.82rem; color: var(--text-secondary); }
+        .ask-be-error { font-size: 0.82rem; color: var(--danger-red); border-left: 3px solid var(--danger-red); padding: 0.35rem 0.6rem; background: rgba(255,68,54,0.07); border-radius: 4px; }
+        .ask-be-result { display: flex; flex-direction: column; gap: 0.6rem; }
+        .ask-be-notice { font-size: 0.74rem; padding: 0.4rem 0.6rem; border-radius: 6px; line-height: 1.4; }
+        .ask-be-notice.info { background: rgba(255,255,255,0.03); color: var(--text-secondary); }
+        .ask-be-notice.warn { background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35); color: var(--text-primary); }
+        .ask-be-refusal { font-size: 0.84rem; color: var(--text-primary); background: var(--bg-raised); border-radius: 8px; padding: 0.6rem 0.8rem; line-height: 1.5; }
+        .ask-be-block { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
+        .ask-be-block-title { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.35rem; }
+        .ask-be-block.support .ask-be-block-title { color: var(--success-green); }
+        .ask-be-block.oppose .ask-be-block-title { color: var(--danger-red); }
+        .ask-be-block.warn .ask-be-block-title { color: var(--warning-yellow); }
+        .ask-be-block ul { margin: 0; padding-left: 1.1rem; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; }
+        .ask-be-rows { display: grid; gap: 0.25rem; }
+        .ask-be-row { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.84rem; padding: 0.25rem 0.5rem; border-radius: 6px; background: var(--bg-raised); }
+        .ask-be-row-label { color: var(--text-secondary); flex-shrink: 0; }
+        .ask-be-row-value { color: var(--text-primary); text-align: right; }
+        .ask-be-row.probability { border-left: 3px solid var(--info-blue); }
+        .ask-be-row.confluence { border-left: 3px dashed var(--text-muted); }
+        .ask-be-line { font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5; margin: 0 0 0.3rem; }
+        .ask-be-sports { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .ask-be-sport { font-size: 0.72rem; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--border-color); color: var(--text-secondary); }
+        .ask-be-sport.ok { border-color: rgba(52,211,153,0.5); color: var(--success-green); }
+        .ask-be-sport.note, .ask-be-sport.stale { border-color: rgba(245,166,35,0.5); color: var(--warning-yellow); }
+        .ask-be-sport.bad { border-color: rgba(255,68,54,0.5); color: var(--danger-red); }
+        .ask-be-sport.unknown { color: var(--text-muted); border-style: dashed; }
+        .ask-be-fab { position: fixed; right: 16px; bottom: 16px; z-index: 2100; background: var(--bg-raised); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 999px; padding: 0.55rem 1rem; font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: 0 6px 24px rgba(0,0,0,0.45); }
+        .ask-be-fab:hover { border-color: var(--accent-red); }
+        .ask-be-dock { position: fixed; right: 16px; bottom: 16px; z-index: 2100; width: min(440px, calc(100vw - 32px)); max-height: min(80vh, 680px); display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
+        .ask-be-dock-head { display: flex; justify-content: space-between; align-items: center; padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-color); }
+        .ask-be-dock-body { overflow-y: auto; padding-top: 0.75rem; }
+        .ask-be-close { background: transparent; border: 0; color: var(--text-secondary); font-size: 1.3rem; line-height: 1; cursor: pointer; padding: 0 0.25rem; }
     </style>
 </head>
 <body>
@@ -6894,6 +6945,239 @@ function mlbModelMeta() {
                     </div>
                 </div>
             );
+        }
+        // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+        // ASK BEATSEDGE (Phase 3B). UI for POST /api/ai/explain-prop and POST /api/ai/site-question. The page NEVER recalculates, estimates or invents a model value here: it sends the selected prop, its
+        // provider identity and the engine's own calculateEdgeScore output, and shows what the backend returns. One play per request (never a board). Model evidence is CLIENT-REPORTED (this page's engine)
+        // and site telemetry is CLIENT-REPORTED (browsers report what they fetched): both are labelled as such; missing / stale telemetry is never shown as healthy.
+        // The pure region below is unit-tested in Node (scripts/test-ai-ui.js); the components after it are thin JSX over aiViewModel().
+        // <<AI-UI-BEGIN>>
+        const AI_UI = { MAX_Q: 300, TIMEOUT_MS: 20000, TTL_MS: 60000, MAX_ENTRIES: 40, MAX_BODY_CHARS: 60000 };
+        const aiNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+        const aiStr = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max || 80) : null);
+        // The request body for ONE play. Whitelisted fields only: never player.props (the board), never other stats' windows, never probSteps / backtest internals.
+        function aiBuildSelection(player, prop, edge) {
+            if (!player || !prop) return null;
+            const mv = prop.move && typeof prop.move === 'object' ? { from: aiNum(prop.move.from), to: aiNum(prop.move.to), delta: aiNum(prop.move.delta), open: aiNum(prop.move.open), openDelta: aiNum(prop.move.openDelta), moveCount: aiNum(prop.move.moveCount), priceOnly: !!prop.move.priceOnly } : null;
+            const sel = {
+                sport: aiStr(player.sport, 12),
+                player: { id: player.id != null ? String(player.id).slice(0, 60) : null, name: aiStr(player.name, 60), team: aiStr(player.team, 12), position: aiStr(player.position, 12), status: aiStr(player.status, 16), opponent: aiStr(player.opponent, 12), isHomeTonight: typeof player.isHomeTonight === 'boolean' ? player.isHomeTonight : undefined, projMin: aiNum(player.projMin) },
+                prop: { statKey: aiStr(prop.statKey, 90), type: aiStr(prop.type, 60), line: aiNum(prop.line), direction: prop.direction === 'under' ? 'under' : 'over', book: aiStr(prop.book, 32), odds: aiNum(prop.odds), oppOdds: aiNum(prop.oppOdds), oneWay: prop.oneWay === true, eventId: aiStr(prop.eventId, 80), homeTeam: aiStr(prop.homeTeam, 40), awayTeam: aiStr(prop.awayTeam, 40),
+                    commenceTimeMs: aiNum(prop.commenceTimeMs), period: aiStr(prop.period, 12), lineSource: aiStr(prop.lineSource, 60), marketLine: aiNum(prop.marketLine), mktGap: aiNum(prop.mktGap), altLine: prop.altLine === true, crossBook: prop.crossBook === true, ppKind: aiStr(prop.ppKind, 24),
+                    modelSupported: prop.modelSupported === false ? false : undefined, modelState: aiStr(prop.modelState, 24) || undefined, modelStateReason: aiStr(prop.modelStateReason, 160), lineStatus: aiStr(prop.lineStatus, 24), flagReason: aiStr(prop.flagReason, 140), marketClass: aiStr(prop.marketClass, 24), move: mv },
+                edge: null, windows: null
+            };
+            if (edge && typeof edge === 'object' && prop.modelSupported !== false) {
+                const f = (x) => (x && typeof x === 'object' ? { key: aiStr(x.key, 40), name: aiStr(x.name, 50), supports: x.supports === true ? true : x.supports === false ? false : null, detail: aiStr(x.detail, 160), label: aiStr(x.label, 80) } : null);
+                const hr = (x) => (x && typeof x === 'object' ? { pick: aiNum(x.pick), over: aiNum(x.over), games: aiNum(x.games) } : null);
+                sel.edge = { projection: aiNum(edge.projection), edge: aiNum(edge.edge), edgeSignalPct: aiNum(edge.edgeSignalPct), modelProb: aiNum(edge.modelProb), modelProbPct: aiNum(edge.modelProbPct), grade: aiStr(edge.grade, 4), finalGrade: aiStr(edge.finalGrade, 4), prime: edge.prime === true, confidence: aiNum(edge.confidence), thinData: edge.thinData === true,
+                    totalFactors: aiNum(edge.totalFactors), greenCount: aiNum(edge.greenCount), rankingEligible: edge.rankingEligible === false ? false : undefined, gradePolicy: aiStr(edge.gradePolicy, 40), modelState: aiStr(edge.modelState, 24) || undefined, modelStateReason: aiStr(edge.modelStateReason, 160), insufficientData: edge.insufficientData === true,
+                    factors: (Array.isArray(edge.factors) ? edge.factors : []).slice(0, 24).map(f).filter(Boolean), context: (Array.isArray(edge.context) ? edge.context : []).slice(0, 8).map(f).filter(Boolean),
+                    hitRates: edge.hitRates && typeof edge.hitRates === 'object' ? { season: hr(edge.hitRates.season), last10: hr(edge.hitRates.last10), last5: hr(edge.hitRates.last5), vsOpp: hr(edge.hitRates.vsOpp) } : null, hitRatesSource: aiStr(edge.hitRatesSource, 24),
+                    modelMeta: edge.modelMeta && typeof edge.modelMeta === 'object' ? { modelVersion: aiStr(edge.modelMeta.modelVersion, 60), state: aiStr(edge.modelMeta.state, 20) } : null };
+            }
+            const w = player.statsByKey && prop.statKey ? player.statsByKey[prop.statKey] : null;
+            if (w && typeof w === 'object') { const win = (x) => (x && typeof x === 'object' && aiNum(x.avg) != null && aiNum(x.games) ? { avg: x.avg, games: x.games, seeded: x.seeded === true } : null); sel.windows = { season: win(w.season), last10: win(w.last10), last5: win(w.last5), vsOpp: win(w.vsOpp) }; }
+            return sel;
+        }
+        const aiSelectionKey = (sel) => (sel ? [sel.sport, sel.player && (sel.player.id || sel.player.name), sel.prop && sel.prop.statKey, sel.prop && sel.prop.direction, sel.prop && sel.prop.book, sel.prop && sel.prop.line, sel.prop && sel.prop.eventId || ''].join('|') : '');
+        const aiCleanQuestion = (q) => String(q == null ? '' : q).replace(/\s+/g, ' ').trim().slice(0, AI_UI.MAX_Q);
+        const aiRequestKey = (kind, sel, q) => kind + '|' + (kind === 'prop' ? aiSelectionKey(sel) : (sel ? 'site:' + aiSelectionKey(sel) : 'site')) + '|' + aiCleanQuestion(q).toLowerCase();
+        // Module-level store: PlayerCard / modal components are re-created on every App render, so panel state (answers, open / closed, in-flight) cannot live in component state.
+        const _ai = { entries: new Map(), inflight: new Map(), open: new Set(), last: new Map(), listeners: new Set(), current: null };
+        const aiNotify = () => { _ai.listeners.forEach(fn => { try { fn(); } catch (e) { /* a listener must never break the store */ } }); };
+        const aiSubscribe = (fn) => { _ai.listeners.add(fn); return () => _ai.listeners.delete(fn); };
+        const aiEntry = (key) => _ai.entries.get(key) || null;
+        const aiIsPanelOpen = (selKey) => _ai.open.has(selKey);
+        const aiSetPanelOpen = (selKey, on) => { if (on) _ai.open.add(selKey); else _ai.open.delete(selKey); aiNotify(); };
+        const aiLastQuestion = (selKey) => _ai.last.get(selKey) || null;
+        const aiSetCurrentSelection = (sel) => { const k = aiSelectionKey(sel); if (!_ai.current || _ai.current.key !== k) { _ai.current = sel ? { key: k, sel } : null; aiNotify(); } };
+        const aiClearCurrentSelection = (key) => { if (_ai.current && _ai.current.key === key) { _ai.current = null; aiNotify(); } };
+        const aiCurrentSelection = () => (_ai.current ? _ai.current.sel : null);
+        const aiBusyForSelection = (selKey) => { for (const k of _ai.inflight.keys()) if (k.indexOf('prop|' + selKey + '|') === 0) return true; return false; };
+        const aiResetStore = () => { _ai.entries.clear(); _ai.inflight.clear(); _ai.open.clear(); _ai.last.clear(); _ai.current = null; };
+        // Plain-language error classes. Raw server text is never shown (only a whitelisted status).
+        function aiClassifyFailure(httpStatus, body, networkError) {
+            if (networkError) return networkError === 'timeout' ? { code: 'TIMEOUT', message: 'The BeatsEdge backend took too long to answer. Try again in a moment.', retryable: true } : { code: 'UNREACHABLE', message: 'Could not reach the BeatsEdge backend. Check "Your Backend" in Data Sources, then try again.', retryable: true };
+            if (httpStatus === 404) return { code: 'NOT_AVAILABLE', message: 'This backend does not have the Ask BeatsEdge endpoints yet.', retryable: false };
+            if (httpStatus === 401 || httpStatus === 403) return { code: 'NOT_AUTHORIZED', message: 'The backend declined this request (access restricted).', retryable: false };
+            if (httpStatus === 429) return { code: 'RATE_LIMITED', message: 'Too many questions in a short time. Wait a minute and try again.', retryable: true };
+            if (httpStatus === 413) return { code: 'TOO_LARGE', message: 'That request was too large to send.', retryable: false };
+            if (httpStatus === 400) { const errs = body && Array.isArray(body.errors) ? body.errors.slice(0, 3).map(e => String(e).replace(/[^\w .,'()\-\/]/g, '').slice(0, 80)).join('; ') : ''; return { code: 'INVALID_REQUEST', message: 'The backend could not use this selection' + (errs ? ' (' + errs + ')' : '') + '.', retryable: false }; }
+            if (httpStatus >= 500) return { code: 'SERVER_ERROR', message: 'The BeatsEdge backend hit an error. Try again shortly.', retryable: true };
+            return { code: 'BAD_RESPONSE', message: 'The backend returned something unreadable.', retryable: true };
+        }
+        // aiAsk: ONE request per (kind, selection, question). A repeat of an in-flight question returns the same promise; a fresh answer (< TTL) is reused instead of re-requesting.
+        function aiAsk(args) {
+            const kind = args.kind === 'site' ? 'site' : 'prop'; const q = aiCleanQuestion(args.question); const sel = args.selection || null; const now = args.now || Date.now; const fetchImpl = args.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+            const key = aiRequestKey(kind, sel, q); const selKey = kind === 'prop' ? aiSelectionKey(sel) : 'site';
+            const setEntry = (e) => { _ai.entries.set(key, e); if (_ai.entries.size > AI_UI.MAX_ENTRIES) { const old = [..._ai.entries.keys()].find(k => !_ai.inflight.has(k) && k !== key); if (old) _ai.entries.delete(old); } aiNotify(); return e; };
+            _ai.last.set(selKey, q); if (!q) return Promise.resolve(setEntry({ status: 'error', error: { code: 'EMPTY_QUESTION', message: 'Type a question first.', retryable: false }, at: now() }));
+            if (_ai.inflight.has(key)) return _ai.inflight.get(key);
+            const cached = _ai.entries.get(key); if (cached && cached.status === 'done' && !args.force && now() - cached.at < AI_UI.TTL_MS) { aiNotify(); return Promise.resolve(cached); }
+            const base = String(args.backendUrl || '').replace(/\/+$/, ''); if (!base) return Promise.resolve(setEntry({ status: 'error', error: { code: 'NO_BACKEND', message: 'Set "Your Backend" in Data Sources to use Ask BeatsEdge.', retryable: false }, at: now() }));
+            if (!fetchImpl) return Promise.resolve(setEntry({ status: 'error', error: aiClassifyFailure(0, null, 'network'), at: now() }));
+            if (kind === 'prop' && (!sel || !sel.prop)) return Promise.resolve(setEntry({ status: 'error', error: { code: 'NO_SELECTION', message: 'No prop is selected.', retryable: false }, at: now() }));
+            const payload = JSON.stringify(kind === 'prop' ? { question: q, selection: sel } : (sel ? { question: q, selection: sel } : { question: q }));
+            if (payload.length > AI_UI.MAX_BODY_CHARS) return Promise.resolve(setEntry({ status: 'error', error: aiClassifyFailure(413, null, null), at: now() }));
+            setEntry({ status: 'loading', at: now() });
+            const ctl = typeof AbortController === 'function' ? new AbortController() : null; const timer = ctl ? setTimeout(() => ctl.abort(), args.timeoutMs || AI_UI.TIMEOUT_MS) : null;
+            const p = (async () => {
+                try {
+                    const res = await fetchImpl(base + (kind === 'prop' ? '/api/ai/explain-prop' : '/api/ai/site-question'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, signal: ctl ? ctl.signal : undefined });
+                    let body = null; try { body = await res.json(); } catch (e) { body = null; }
+                    if (!res.ok || !body || typeof body !== 'object') return setEntry({ status: 'error', error: aiClassifyFailure(res.ok ? 200 : res.status, body, null), at: now() });
+                    return setEntry({ status: 'done', data: body, at: now() });
+                } catch (e) { return setEntry({ status: 'error', error: aiClassifyFailure(0, null, e && e.name === 'AbortError' ? 'timeout' : 'network'), at: now() }); }
+                finally { if (timer) clearTimeout(timer); _ai.inflight.delete(key); aiNotify(); }
+            })();
+            _ai.inflight.set(key, p); return p;
+        }
+        // ---- view-model: turns a backend response into display sections (all text is the backend's own; nothing is computed or estimated here) ----
+        const AI_ORIGIN_NOTICE = "Model values here were reported by this page's engine (client-reported). The BeatsEdge server checked them for consistency but did not recompute or verify them.";
+        const AI_STATE_NOTICE = "This play has no BeatsEdge model output. Its model state was reported by this page and checked (not verified) by the server; only the provider's real line is available.";
+        const AI_TELEMETRY_NOTICE = 'Site telemetry is client-reported (browsers report what they fetched). It is not authoritative server monitoring.';
+        const AI_FIELD_NAMES = { 'play.provider.movement': 'Line movement', 'research.usageVolume': 'Usage / volume', 'model.outputs': 'Model outputs', 'model.projection': 'Projection', 'model.probability': 'Probability', 'model.edge': 'Edge', 'model.grade': 'Grade', 'model.confluence': 'Factor confluence', 'history.windows': 'Game-log windows', 'history.hitRates': 'Hit-rate windows', 'play.opponent': 'Opponent', 'play.provider.line': 'Provider line' };
+        function aiPrettyLine(line) {
+            const s = String(line); const m = /^([A-Za-z_.]+): /.exec(s); if (!m) return s; const code = m[1]; let name = AI_FIELD_NAMES[code];
+            if (!name) { const last = code.replace(/^research\./, '').split('.').pop(); name = last.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase(); name = name.charAt(0).toUpperCase() + name.slice(1); }
+            return name + ': ' + s.slice(m[0].length);
+        }
+        const aiSplitLine = (line) => { const s = String(line); const i = s.indexOf(': '); return i > 0 && i < 40 ? { label: s.slice(0, i), value: s.slice(i + 2) } : { label: null, value: s }; };
+        const AI_FLAG_TEXT = { PROVIDER_ERRORS: 'provider errors were reported', TRUNCATED_UNRESOLVED: 'the data was truncated and not fully recovered', STANDARD_NOT_RETURNED: 'some Standard lines were not returned by the provider', AMBIGUOUS_MAIN_LINES: 'some main lines are ambiguous', IDENTITY_FAILURES: 'some player or event identities could not be resolved', STALE_REPORT: 'the telemetry report is stale', EXPIRED_REPORT: 'the telemetry report is expired' };
+        function aiTelemetryNotices(freshness, reported, flags) {
+            const out = [];
+            if (reported === false || freshness === 'NO_DATA') out.push({ level: 'warn', text: 'No current site telemetry for this sport: data completeness is unknown (not healthy).' });
+            else if (freshness === 'STALE' || freshness === 'EXPIRED') out.push({ level: 'warn', text: 'The site telemetry for this sport is ' + String(freshness).toLowerCase() + ': data completeness is unknown (not healthy).' });
+            (flags || []).filter(f => AI_FLAG_TEXT[f] && f !== 'STALE_REPORT' && f !== 'EXPIRED_REPORT').forEach(f => out.push({ level: 'warn', text: 'Client-reported: ' + AI_FLAG_TEXT[f] + '.' }));
+            out.push({ level: 'info', text: AI_TELEMETRY_NOTICE }); return out;
+        }
+        function aiViewModel(kind, data) {
+            const vm = { kind, status: data && data.status, aiGenerated: !!(data && data.answer && data.answer.aiGenerated), mode: null, answerLines: [], refusal: null, modelRows: [], supporting: [], opposing: [], missing: [], history: [], recorded: [], dataQuality: [], play: [], notices: [], sports: [], ignored: [], hasModel: false };
+            if (!data || typeof data !== 'object') return vm;
+            const txt = (data.answer && typeof data.answer.text === 'string') ? data.answer.text : ''; const lines = (arr) => (Array.isArray(arr) ? arr.map(String) : []);
+            vm.mode = vm.aiGenerated ? 'AI' : 'DETERMINISTIC';
+            if (kind === 'site') {
+                vm.answerLines = txt.split('\n').map(s => s.trim()).filter(Boolean); vm.sports = (Array.isArray(data.sports) ? data.sports : []).map(s => ({ sport: String(s.sport || '').toUpperCase(), reported: s.reported === true, freshness: s.freshness || 'NO_DATA', flags: Array.isArray(s.flags) ? s.flags : [] }));
+                const rep = vm.sports.filter(s => s.reported); vm.notices.push({ level: 'info', text: AI_TELEMETRY_NOTICE });
+                if (!rep.length) vm.notices.push({ level: 'warn', text: 'No current telemetry exists, so nothing here can be confirmed healthy.' });
+                else { if (rep.some(s => s.freshness !== 'FRESH')) vm.notices.push({ level: 'warn', text: 'Some telemetry is stale or expired: treat those sports as unknown, not healthy.' }); const miss = vm.sports.filter(s => !s.reported).length; if (miss) vm.notices.push({ level: 'info', text: miss + ' sport(s) have no current report: completeness is unknown, not confirmed.' }); }
+                if (data.status === 'INSUFFICIENT_EVIDENCE') vm.notices.push({ level: 'info', text: 'Insufficient evidence: BeatsEdge will not guess.' });
+            } else {
+                const ev = (data.evidence && data.evidence.sections) || {}; const s = String(data.status || '');
+                vm.hasModel = !!(data.model && data.model.hasOutputs); vm.notices.push({ level: 'info', text: vm.hasModel ? AI_ORIGIN_NOTICE : AI_STATE_NOTICE });
+                if ((data.integrity && Array.isArray(data.integrity.issues) && data.integrity.issues.length) || (data.integrity && data.integrity.outputsDropped)) { vm.ignored = (data.integrity.issues || []).slice(0, 6).map(i => String(i.field || '').slice(0, 40) + ': ' + String(i.issue || '').slice(0, 100)); vm.notices.push({ level: 'warn', text: 'Some supplied values failed validation and were ignored (never repaired or estimated).' }); }
+                if (data.dataQuality) aiTelemetryNotices(data.dataQuality.freshness, data.dataQuality.reported, data.dataQuality.flags).forEach(n => vm.notices.push(n));
+                if (String(data.intent || '').indexOf('SITE_') === 0 || s === 'DETERMINISTIC_ANSWER' || s === 'INSUFFICIENT_EVIDENCE') { vm.answerLines = txt.split('\n').map(x => x.trim()).filter(Boolean); vm.mode = 'DETERMINISTIC'; return vm; }
+                if (s === 'NO_MODEL_EVIDENCE' || s === 'RESERVED' || s === 'NO_CONTEXT') vm.refusal = txt;
+                (ev.MODEL || []).forEach(l => { const p = aiSplitLine(l); if (!p.label) return; const kindRow = /^Model Probability$/i.test(p.label) ? 'probability' : /^Factor Confluence$/i.test(p.label) ? 'confluence' : 'plain'; if (!/^Reason$/i.test(p.label) || !vm.hasModel) vm.modelRows.push({ label: p.label, value: p.value, kind: kindRow }); });
+                vm.supporting = lines(ev.SUPPORTING_EVIDENCE).map(aiPrettyLine); vm.opposing = lines(ev.RISK_OPPOSING_EVIDENCE).map(aiPrettyLine); vm.missing = lines(ev.UNAVAILABLE_DATA).map(aiPrettyLine); vm.history = lines(ev.HISTORY).filter(l => l !== 'unavailable'); vm.recorded = lines(ev.RECORDED_RESULTS); vm.dataQuality = lines(ev.DATA_QUALITY); vm.play = lines(ev.PLAY);
+                if (!vm.hasModel) { vm.supporting = []; vm.opposing = []; }
+                if (vm.aiGenerated) vm.answerLines = txt.split('\n').map(x => x.trim()).filter(Boolean);
+                else if (s === 'REJECTED_BY_GUARDRAILS' || s === 'PROVIDER_ERROR' || s === 'PROVIDER_LIMITED' || s === 'REQUEST_TOO_LARGE') vm.notices.push({ level: 'info', text: 'The AI summary was unavailable for this question, so the deterministic evidence is shown instead.' });
+                else vm.notices.push({ level: 'info', text: 'Deterministic summary of the real evidence. No AI provider is needed or used.' });
+                if (vm.aiGenerated) vm.notices.push({ level: 'info', text: 'AI-written summary, checked against the evidence. The model values above are BeatsEdge\'s own and are not changed by the AI.' });
+            }
+            return vm;
+        }
+        // <<AI-UI-END>>
+        const AI_PROP_QUESTIONS = [['Why is this a good play?', 'Why favorable?'], ['Why might this be a bad play?', 'Why unfavorable?'], ['What is the biggest risk?', 'Biggest risk'], ['Explain the edge', 'Explain edge'], ['Explain the probability', 'Explain probability'], ['Explain the grade', 'Explain grade'], ["Why isn't this prop modeled?", "Why isn't it modeled?"]];
+        const AI_SITE_QUESTIONS = [['Are PrizePicks Standard lines available?', 'PrizePicks Standard lines'], ['Which sports have incomplete data?', 'Incomplete sports'], ['Are there provider-only or ambiguous listings, and which sports have incomplete data?', 'Provider-only props'], ['Any provider errors or truncation?', 'Errors & truncation'], ['How fresh is the data?', 'Data freshness'], ['Why is a player missing from the board?', 'A missing player']];
+        function AskBeatsEdgeResult({ vm }) {
+            const List = ({ title, items, tone }) => (items && items.length ? (
+                <div className={'ask-be-block' + (tone ? ' ' + tone : '')}><div className="ask-be-block-title">{title}</div><ul>{items.map((l, i) => <li key={i}>{l}</li>)}</ul></div>) : null);
+            return (
+                <div className="ask-be-result" aria-live="polite">
+                    {vm.notices.map((n, i) => <div key={i} className={'ask-be-notice ' + n.level}>{n.text}</div>)}
+                    {vm.ignored.length > 0 && <div className="ask-be-block warn"><div className="ask-be-block-title">Ignored values</div><ul>{vm.ignored.map((l, i) => <li key={i}>{l}</li>)}</ul></div>}
+                    {vm.refusal && <div className="ask-be-refusal">{vm.refusal}</div>}
+                    {vm.kind === 'prop' && vm.modelRows.length > 0 && (
+                        <div className="ask-be-block">
+                            <div className="ask-be-block-title">{vm.hasModel ? 'Model values (BeatsEdge engine)' : 'Model state'}</div>
+                            <div className="ask-be-rows">
+                                {vm.modelRows.map((r, i) => (
+                                    <div key={i} className={'ask-be-row ' + r.kind}>
+                                        <span className="ask-be-row-label">{r.kind === 'confluence' ? 'Factor confluence' : r.label}</span>
+                                        <span className="ask-be-row-value">{r.value}</span>
+                                    </div>))}
+                            </div>
+                            {vm.modelRows.some(r => r.kind === 'confluence') && <div className="ask-be-note">Factor confluence counts how many available research factors point the same way. It is <strong>not</strong> the model probability{vm.modelRows.some(r => r.kind === 'probability') ? ' shown above' : ''}.</div>}
+                        </div>)}
+                    {vm.answerLines.length > 0 && <div className="ask-be-block"><div className="ask-be-block-title">{vm.aiGenerated ? 'Summary' : 'Answer'}</div>{vm.answerLines.map((l, i) => <p key={i} className="ask-be-line">{l}</p>)}</div>}
+                    {vm.kind === 'site' && vm.sports.length > 0 && (
+                        <div className="ask-be-sports">{vm.sports.map(s => {
+                            const incomplete = s.flags.indexOf('PROVIDER_ERRORS') >= 0 || s.flags.indexOf('TRUNCATED_UNRESOLVED') >= 0; const tone = !s.reported ? 'unknown' : (s.freshness !== 'FRESH' ? 'stale' : (incomplete ? 'bad' : (s.flags.length ? 'note' : 'ok')));
+                            return <span key={s.sport} className={'ask-be-sport ' + tone} title={s.reported ? 'Client-reported: ' + s.freshness + (s.flags.length ? ' - ' + s.flags.join(', ').toLowerCase().replace(/_/g, ' ') : '') : 'No current report: unknown, not healthy'}>{s.sport} · {!s.reported ? 'unknown' : (s.freshness !== 'FRESH' ? s.freshness.toLowerCase() : (incomplete ? 'incomplete' : (s.flags.length ? 'notes' : 'ok')))}</span>;
+                        })}</div>)}
+                    <List title="Supporting factors" items={vm.supporting} tone="support" />
+                    <List title="Opposing factors & risks" items={vm.opposing} tone="oppose" />
+                    <List title="Real history" items={vm.history} />
+                    <List title="Recorded results" items={vm.recorded} />
+                    <List title="Data quality" items={vm.dataQuality} tone="warn" />
+                    <List title="Missing information" items={vm.missing} tone="missing" />
+                </div>);
+        }
+        function AskBeatsEdgePanel({ player, prop, edge, backendUrl }) {
+            const selection = aiBuildSelection(player, prop, edge); const selKey = aiSelectionKey(selection); const [, bump] = React.useState(0); const [draft, setDraft] = React.useState('');
+            React.useEffect(() => aiSubscribe(() => bump(n => n + 1)), []);
+            React.useEffect(() => { aiSetCurrentSelection(selection); return () => aiClearCurrentSelection(selKey); }, [selKey]);
+            const open = aiIsPanelOpen(selKey); const lastQ = aiLastQuestion(selKey); const entry = lastQ ? aiEntry(aiRequestKey('prop', selection, lastQ)) : null; const busy = aiBusyForSelection(selKey) || (entry && entry.status === 'loading');
+            const ask = (q) => { if (!busy) aiAsk({ backendUrl, kind: 'prop', question: q, selection }); };
+            const vm = entry && entry.status === 'done' ? aiViewModel('prop', entry.data) : null;
+            return (
+                <div className="ask-be">
+                    <button type="button" className="ask-be-toggle" aria-expanded={open} onClick={() => aiSetPanelOpen(selKey, !open)}>
+                        <span className="ask-be-toggle-title">🧠 Ask BeatsEdge</span>
+                        <span className="ask-be-toggle-hint">{open ? 'Hide' : 'Explain this play from the real evidence'} {open ? '▴' : '▾'}</span>
+                    </button>
+                    {open && (
+                        <div className="ask-be-body">
+                            <div className="ask-be-chips">
+                                {AI_PROP_QUESTIONS.map(([q, label]) => <button key={q} type="button" className={'ask-be-chip' + (lastQ === q ? ' active' : '')} disabled={busy} onClick={() => ask(q)}>{label}</button>)}
+                            </div>
+                            <form className="ask-be-form" onSubmit={(e) => { e.preventDefault(); const q = aiCleanQuestion(draft); if (q) { ask(q); setDraft(''); } }}>
+                                <input className="ask-be-input" type="text" maxLength={AI_UI.MAX_Q} value={draft} placeholder="Ask about this play…" aria-label="Ask BeatsEdge about this play" onChange={(e) => setDraft(e.target.value)} />
+                                <button type="submit" className="ask-be-send" disabled={busy || !aiCleanQuestion(draft)}>Ask</button>
+                            </form>
+                            {!lastQ && <div className="ask-be-note">Answers come from this play's real evidence only: the engine output, real game-log history and the provider line. Nothing is estimated.</div>}
+                            {entry && entry.status === 'loading' && <div className="ask-be-loading" role="status">Checking the evidence…</div>}
+                            {entry && entry.status === 'error' && (
+                                <div className="ask-be-error" role="alert">{entry.error.message}{entry.error.retryable && lastQ ? <button type="button" className="ask-be-retry" disabled={busy} onClick={() => aiAsk({ backendUrl, kind: 'prop', question: lastQ, selection, force: true })}>Retry</button> : null}</div>)}
+                            {vm && <AskBeatsEdgeResult vm={vm} />}
+                        </div>)}
+                </div>);
+        }
+        function AskBeatsEdgeAssistant({ backendUrl }) {
+            const [open, setOpen] = React.useState(false); const [draft, setDraft] = React.useState(''); const [, bump] = React.useState(0);
+            React.useEffect(() => aiSubscribe(() => bump(n => n + 1)), []);
+            React.useEffect(() => { if (!open) return undefined; const onKey = (e) => { if (e.key === 'Escape') setOpen(false); }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, [open]);
+            const cur = aiCurrentSelection(); const lastQ = aiLastQuestion('site'); const usedSel = lastQ && cur && /\b(this|selected)\b.{0,20}\b(prop|play|line)\b|modeled/i.test(lastQ) ? cur : null;
+            const entry = lastQ ? aiEntry(aiRequestKey('site', usedSel, lastQ)) : null; const busy = !!entry && entry.status === 'loading';
+            const ask = (q, withSel) => { if (!busy) aiAsk({ backendUrl, kind: 'site', question: q, selection: withSel ? cur : null }); };
+            const vm = entry && entry.status === 'done' ? aiViewModel('site', entry.data) : null; const selLabel = cur && cur.player && cur.prop ? (cur.player.name + ' · ' + (cur.prop.type || cur.prop.statKey) + ' ' + cur.prop.line) : null;
+            return (
+                <div className="ask-be-assistant">
+                    {!open && <button type="button" className="ask-be-fab" aria-label="Open Ask BeatsEdge assistant" onClick={() => setOpen(true)}>🧠 Ask BeatsEdge</button>}
+                    {open && (
+                        <div className="ask-be-dock" role="dialog" aria-label="Ask BeatsEdge">
+                            <div className="ask-be-dock-head"><strong>🧠 Ask BeatsEdge</strong><button type="button" className="ask-be-close" aria-label="Close" onClick={() => setOpen(false)}>×</button></div>
+                            <div className="ask-be-dock-body">
+                                <div className="ask-be-note">Site questions are answered from client-reported telemetry only. It carries counts, not player names, so BeatsEdge cannot say why one specific player is missing. For a prop, open it and use Ask BeatsEdge there.</div>
+                                <div className="ask-be-chips">
+                                    {AI_SITE_QUESTIONS.map(([q, label]) => <button key={q} type="button" className={'ask-be-chip' + (lastQ === q ? ' active' : '')} disabled={busy} onClick={() => ask(q, false)}>{label}</button>)}
+                                    {selLabel && <button type="button" className="ask-be-chip selected" disabled={busy} title={selLabel} onClick={() => ask("Why isn't this selected prop modeled?", true)}>Why isn't the open prop modeled?</button>}
+                                </div>
+                                <form className="ask-be-form" onSubmit={(e) => { e.preventDefault(); const q = aiCleanQuestion(draft); if (q) { ask(q, /\b(this|selected)\b.{0,20}\b(prop|play|line)\b|modeled/i.test(q)); setDraft(''); } }}>
+                                    <input className="ask-be-input" type="text" maxLength={AI_UI.MAX_Q} value={draft} placeholder="Ask about site data, books or coverage…" aria-label="Ask BeatsEdge a question about the site" onChange={(e) => setDraft(e.target.value)} />
+                                    <button type="submit" className="ask-be-send" disabled={busy || !aiCleanQuestion(draft)}>Ask</button>
+                                </form>
+                                {entry && entry.status === 'loading' && <div className="ask-be-loading" role="status">Checking the telemetry…</div>}
+                                {entry && entry.status === 'error' && (
+                                    <div className="ask-be-error" role="alert">{entry.error.message}{entry.error.retryable && lastQ ? <button type="button" className="ask-be-retry" disabled={busy} onClick={() => aiAsk({ backendUrl, kind: 'site', question: lastQ, selection: usedSel, force: true })}>Retry</button> : null}</div>)}
+                                {vm && <AskBeatsEdgeResult vm={vm} />}
+                            </div>
+                        </div>)}
+                </div>);
         }
         // Placeholder windows (nflSeedWindows / mlbSeedWindows, flagged `seeded: true`) carry an ESTIMATED hitRate -- and, with 0 games, an avg / median / range -- that is NOT history.
         // They are blanked before anything is displayed (2026-10-08): no valid history = no hit rate. Real (unseeded) windows are returned untouched, by reference.
@@ -22282,6 +22566,11 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
                                                             </div>
                                                         )}
                                                         {activeProp.move && activeProp.move.open != null && activeProp.move.open !== activeProp.move.to && (
+                                {cardProp && (() => {
+                                    // Ask BeatsEdge (Phase 3B): sends THIS exact prop, its provider identity and the engine's OWN calculateEdgeScore output (never recomputed or altered here) to POST /api/ai/explain-prop.
+                                    const _askEdge = cardProp.modelSupported === false ? null : calculateEdgeScore(player, cardProp);
+                                    return <ErrorBoundary name="AskBeatsEdge" resetKey={cardProp.id}><AskBeatsEdgePanel player={player} prop={cardProp} edge={_askEdge} backendUrl={backendUrl} /></ErrorBoundary>;
+                                })()}
                                                             <div className="edge-prop-line" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                                                                 📈 First seen today at <strong style={{ color: 'var(--text-secondary)' }}>{activeProp.move.open}</strong>
                                                                 {activeProp.move.moveCount > 1 ? ` · ${activeProp.move.moveCount} moves so far` : ''}
@@ -24633,4 +24922,4 @@ PG,UTA,150,26.3,149,47.0,83,87.1,150,3.9,150,6.5,35,8.6,139,2.2,142,0.7,62,3.3,3
         ReactDOM.render(<App />, document.getElementById('root'));
     </script>
 </body>
-</html>
+</html>                    <ErrorBoundary name="AskBeatsEdgeAssistant" resetKey="assistant"><AskBeatsEdgeAssistant backendUrl={backendUrl} /></ErrorBoundary>
