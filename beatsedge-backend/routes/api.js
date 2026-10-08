@@ -877,10 +877,12 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
       return res.status(result.status).type(result.contentType || 'application/json').send(result.body);
     };
 
-    const hit = parlayCache.get(cacheKey);
+    // A caller may bypass the response cache (the page's user-triggered direct book check sends Cache-Control: no-cache); the fresh result is still stored.
+    const bypassCache = /no-cache/i.test(String(req.headers['cache-control'] || ''));
+    const hit = bypassCache ? null : parlayCache.get(cacheKey);
     if (hit) return sendResult(hit, 'HIT');
 
-    const existing = parlayCache.getInFlight(cacheKey);
+    const existing = bypassCache ? null : parlayCache.getInFlight(cacheKey);
     if (existing) {
       parlayCache.recordCoalesced();
       try {

@@ -40,7 +40,7 @@ app.use(cors({
   exposedHeaders: [
     'x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count',
     'x-result-degraded', 'x-credits-cost', 'x-credits-remaining', 'x-rate-limit-remaining', 'x-rate-limit-reset',
-    'x-request-id', 'retry-after'
+    'x-request-id', 'retry-after', 'x-cache'
   ]
 }));
 // 16mb ceiling so the client can push a full slate of prop snapshots in one
