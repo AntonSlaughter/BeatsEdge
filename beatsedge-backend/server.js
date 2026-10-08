@@ -47,7 +47,10 @@ app.use(cors({
 // POST (see /api/snapshots). Everything else is tiny; the limit is just a cap.
 app.use(express.json({ limit: '16mb' }));
 
-app.use('/api', require('./routes/siteStatus').createSiteStatusRouter());   // POST /api/site-telemetry, GET /api/site-status (no DB, no provider call)
+const siteStatusRouter = require('./routes/siteStatus').createSiteStatusRouter();   // POST /api/site-telemetry, GET /api/site-status (no DB, no provider call)
+app.use('/api', siteStatusRouter);
+app.use('/api', require('./routes/ai').createAiRouter({ store: siteStatusRouter.store }));   // POST /api/ai/explain-prop, POST /api/ai/site-question, GET /api/ai/status (deterministic unless a server-side provider is configured)
+app.use(['/api/ai', '/api/site-telemetry'], require('./routes/ai').jsonErrorHandler);   // malformed / oversize JSON -> a short JSON 400 / 413, never an HTML stack trace
 app.use('/api', apiRoutes);
 
 app.get('/', (req, res) => {
@@ -58,6 +61,9 @@ app.get('/', (req, res) => {
       'GET /api/health',
       'GET /api/site-status (provider / main-line completeness + freshness; client-reported, no secrets)',
       'POST /api/site-telemetry (browser reports beatsedge-site-telemetry/1; validated + rate limited)',
+      'POST /api/ai/explain-prop (selected-prop explanation from validated evidence; deterministic when no AI provider is configured)',
+      'POST /api/ai/site-question (read-only site intelligence from client-reported telemetry)',
+      'GET /api/ai/status (is an AI provider configured; never returns credentials)',
       'GET /api/data-health (non-sensitive DB path/persistence/row-count status)',
       'GET /api/data-sources/health (provider status/cooldown for the ParlayAPI/PropLine passthroughs — no keys)',
       'GET /api/defense/overall/:sport/:season/:team',

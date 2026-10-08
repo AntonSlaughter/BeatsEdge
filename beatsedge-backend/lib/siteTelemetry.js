@@ -61,7 +61,8 @@ function createStore(opts) {
     SPORT_KEYS.forEach(sp => { const e = latest[sp]; if (!e) { sports[sp] = { freshness: 'NO_DATA', reported: false }; return; } any = true;
       const fr = freshnessOf(e.receivedAt); if (fr === 'EXPIRED' || (fr === 'STALE' && worst === 'FRESH')) worst = fr;
       const srcs = Object.entries(e.report.bySportSource).map(([k, v]) => ({ source: k.split('|')[1], fetchStatus: v.fetchStatus, rawRows: v.rawRows, playerPropRows: v.playerPropRows, mainLineGroups: v.mainLineGroups, mainLinesRetained: v.mainLinesRetained,
-        mainLineRetentionPct: v.mainLineGroups ? Math.round(1000 * v.mainLinesRetained / v.mainLineGroups) / 10 : null, altOnlyGroups: v.altOnlyGroups, providerStandardNotReturned: v.providerStandardNotReturned, ambiguousMainLines: v.ambiguousMainLines, unmappedMarkets: v.unmappedMarkets,
+        mainLineRetentionPct: v.mainLineGroups ? Math.round(1000 * v.mainLinesRetained / v.mainLineGroups) / 10 : null, altOnlyGroups: v.altOnlyGroups, providerStandardNotReturned: v.providerStandardNotReturned, standardPresentGroups: v.standardPresentGroups, ambiguousMainLines: v.ambiguousMainLines, unmappedMarkets: v.unmappedMarkets,
+        routedMarketRows: v.routedMarketRows, playerIdentityFailures: v.playerIdentityFailures, eventIdentityFailures: v.eventIdentityFailures,
         truncatedResponses: v.truncatedResponses, providerErrors: v.providerErrors, lineTypes: v.lineTypes }));
       const sum = (k) => srcs.reduce((a, s) => a + (s[k] || 0), 0);
       sports[sp] = { reported: true, freshness: fr, generatedAt: e.report.generatedAt, receivedAt: new Date(e.receivedAt).toISOString(), ageSeconds: Math.round((t - e.receivedAt) / 1000), fetchStatus: e.report.fetchStatus, fetchMode: e.report.fetchMode,
