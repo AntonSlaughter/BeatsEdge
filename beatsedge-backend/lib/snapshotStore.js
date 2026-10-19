@@ -21,6 +21,7 @@
 // but misconfigured, the process fails to start at all.
 
 const { SNAPSHOTS_DB_PATH } = require('./dataPaths');
+const schemaCatalog = require('./schemaCatalog');
 
 const TURSO_URL = process.env.TURSO_DATABASE_URL || '';
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || '';
@@ -305,6 +306,24 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_npla_player ON nhl_provider_line_archive(player_raw, market_key_raw)`
 ];
 
+// Extension points for the Turso boot check (lib/schemaCatalog.js). Anything the Turso path does AFTER the schema statements to bring an existing database up to
+// date MUST be listed here, otherwise the read-only check cannot see that it is pending and would skip it:
+//   SCHEMA_MIGRATION_STATEMENTS  additive migrations (e.g. 'ALTER TABLE prop_snapshots ADD COLUMN x TEXT'); applied to the EXPECTED catalog, so a database that
+//                                lacks the column is reported as not ready and goes through the full path below.
+//   SCHEMA_RETIRED_INDEXES       indexes a migration drops; if one still exists the database is reported as not ready.
+// Both are empty at this commit: the Turso path has no migration beyond the CREATE ... IF NOT EXISTS statements.
+const SCHEMA_MIGRATION_STATEMENTS = [];
+const SCHEMA_RETIRED_INDEXES = [];
+
+// Bounded, chunked batch writes (batchWrite below). One chunk is ONE round trip and ONE short write transaction on Turso, instead of one round trip per row
+// inside a transaction that stays open (and holds the database's single write lock) for the whole pass. The cap is shared by every caller in this process, so
+// six sports archiving at once still keep at most SNAPSHOT_WRITE_CONCURRENCY write transactions open.
+const WRITE_CHUNK_ROWS = Math.max(1, Number(process.env.SNAPSHOT_WRITE_CHUNK) || 200);
+const WRITE_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_WRITE_CONCURRENCY) || 2);
+let _writeActive = 0, _writeMax = 0, _writeChunks = 0; const _writeWaiters = [];
+async function acquireWriteSlot() { if (_writeActive < WRITE_CONCURRENCY) { _writeActive++; if (_writeActive > _writeMax) _writeMax = _writeActive; return; } await new Promise(r => _writeWaiters.push(r)); /* the releasing caller handed its slot over */ }
+function releaseWriteSlot() { const next = _writeWaiters.shift(); if (next) next(); else _writeActive--; }
+
 // ── SQLite implementation (local dev / default) ─────────────────────────
 function createSqliteImpl() {
   const Database = require('better-sqlite3');
@@ -389,6 +408,12 @@ function createSqliteImpl() {
     },
     async verifyReady() {
       db.prepare(`SELECT 1 FROM prop_snapshots LIMIT 1`).get();
+    },
+    // One chunk of { sql, args } statements, atomically (same contract as the Turso batch).
+    async batch(statements) {
+      db.exec('BEGIN');
+      try { for (const s of statements) db.prepare(s.sql).run(...(s.args || [])); db.exec('COMMIT'); }
+      catch (e) { db.exec('ROLLBACK'); throw e; }
     }
   };
 }
@@ -398,16 +423,41 @@ function createTursoImpl() {
   const { createClient } = require('@libsql/client');
   const client = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN });
 
-  // Schema init is fire-and-forget-safe here (CREATE TABLE/INDEX IF NOT
-  // EXISTS) but must complete before any query runs -- every method below
+  // Schema init must complete before any query runs -- every method below
   // awaits this promise first.
+  //
+  // Boot used to execute every CREATE ... IF NOT EXISTS statement here, one round trip each. Those are writing statements even when they change nothing, so a
+  // booting instance queued behind any open write transaction (see batchWrite) and could wait out the 300 s response timeout. Now the database is first
+  // checked with two READ queries (lib/schemaCatalog.js): every table, column and index the statements would create must already be there. If so, nothing
+  // is written and boot continues. If anything is missing -- or this server cannot introspect -- the full statement list below runs exactly as before, so
+  // readiness is never weaker than before. A network failure is not "work to do": it is rethrown unchanged (the server's readiness guard then refuses to
+  // start, as it always did).
+  // A SQL error answered BY the server (code SQLITE_* / SQL_*, which libSQL wraps with a `cause`) is not a network failure; a refused / reset / timed-out connection is.
+  const NET_RE = /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|EPIPE|socket|other side closed|network|timed? ?out/i;
+  const isNetworkFailure = (e) => { if (!e || /^SQL/i.test(String(e.code || ''))) return false; for (let x = e, i = 0; x && i < 4; x = x.cause, i++) { if (x instanceof TypeError || NET_RE.test(String(x.message || '') + ' ' + String(x.code || ''))) return true; } return false; };
   let schemaReady = null;
   async function ensureSchema() {
     if (!schemaReady) {
       schemaReady = (async () => {
+        const t0 = Date.now(); let verdict = null;
+        try {
+          verdict = await schemaCatalog.verify(async (sql) => (await client.execute(sql)).rows.map(r => ({ ...r })), SCHEMA_STATEMENTS,
+            { migrationStatements: SCHEMA_MIGRATION_STATEMENTS, mustNotExist: SCHEMA_RETIRED_INDEXES });
+        } catch (e) {
+          if (isNetworkFailure(e)) throw e;
+          console.log('[snapshotStore] read-only schema check unavailable (' + String(e && e.message).slice(0, 160) + '); applying the schema statements');
+        }
+        if (verdict && verdict.ok) {
+          console.log('[snapshotStore] schema verified read-only in ' + (Date.now() - t0) + ' ms (' + verdict.counts.tables + ' tables, ' + verdict.counts.columns + ' columns, ' + verdict.counts.indexes + ' indexes); no DDL issued'
+            + (verdict.drift.length ? '; ' + verdict.drift.length + ' non-blocking difference(s), first: ' + verdict.drift[0] : ''));
+          return;
+        }
+        if (verdict) console.log('[snapshotStore] schema check found work to do (missing tables: ' + (verdict.missingTables.join(',') || 'none') + '; columns: ' + (verdict.missingColumns.join(',') || 'none') + '; indexes: ' + (verdict.missingIndexes.join(',') || 'none') + '; retired indexes still present: ' + (verdict.unexpectedIndexes.join(',') || 'none') + '); applying the schema statements');
+        const t1 = Date.now();
         for (const stmt of SCHEMA_STATEMENTS) {
           await client.execute(stmt);
         }
+        console.log('[snapshotStore] applied ' + SCHEMA_STATEMENTS.length + ' schema statements in ' + (Date.now() - t1) + ' ms');
       })();
     }
     return schemaReady;
@@ -443,6 +493,11 @@ function createTursoImpl() {
     async verifyReady() {
       await ensureSchema();
       await client.execute(`SELECT 1`);
+    },
+    // One chunk of { sql, args } statements in ONE round trip and ONE short write transaction (all or nothing).
+    async batch(statements) {
+      await ensureSchema();
+      await client.batch(statements.map(s => ({ sql: s.sql, args: s.args || [] })), 'write');
     }
   };
 }
@@ -463,6 +518,20 @@ async function query(sql, params = []) { return getImpl().query(sql, params); }
 async function queryOne(sql, params = []) { const rows = await getImpl().query(sql, params); return rows[0]; }
 async function run(sql, params = []) { return getImpl().run(sql, params); }
 async function transaction(asyncFn) { return getImpl().transaction(asyncFn); }
+// Chunked, bounded batch write of { sql, args } statements. Chunks of one call are written IN ORDER (so the rows keep the order a sequential loop would have
+// given them); each chunk is atomic; every chunk takes a slot from the process-wide cap before it starts. If a chunk fails, no later chunk is started and the
+// error is rethrown with `rowsCommitted` = rows of the earlier chunks that ARE committed. A caller that dedupes against what is stored (the provider-line
+// archives do: they read the latest row per identity before writing) simply continues from there on its next pass -- nothing is duplicated, nothing is lost.
+async function batchWrite(statements, { chunkSize = WRITE_CHUNK_ROWS } = {}) {
+  const impl = getImpl(); let committed = 0, chunks = 0;
+  for (let i = 0; i < statements.length; i += chunkSize) {
+    const chunk = statements.slice(i, i + chunkSize);
+    await acquireWriteSlot();
+    try { await impl.batch(chunk); _writeChunks++; } catch (e) { e.rowsCommitted = committed; throw e; } finally { releaseWriteSlot(); }
+    committed += chunk.length; chunks++;
+  }
+  return { count: committed, chunks };
+}
 // Throws (does not resolve to false / an error object) if the configured
 // backend is unreachable or missing its schema -- callers (server.js at
 // startup) are expected to let this crash the process rather than catch it
@@ -470,7 +539,9 @@ async function transaction(asyncFn) { return getImpl().transaction(asyncFn); }
 async function verifyReady() { return getImpl().verifyReady(); }
 
 module.exports = {
-  backend, query, queryOne, run, transaction, verifyReady, SCHEMA_STATEMENTS,
+  backend, query, queryOne, run, transaction, batchWrite, verifyReady, SCHEMA_STATEMENTS,
+  // Test/diagnostic view of the shared write cap (highest number of chunks in flight at once, chunks written).
+  _writeStats: () => ({ limit: WRITE_CONCURRENCY, chunkRows: WRITE_CHUNK_ROWS, maxActive: _writeMax, chunks: _writeChunks }),
   // Local-only raw handle, for the handful of existing callers (tests) that
   // want it directly. Only valid to call on the sqlite backend -- callers
   // must check `backend === 'sqlite'` first, exactly like every other

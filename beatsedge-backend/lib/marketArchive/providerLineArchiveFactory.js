@@ -145,11 +145,12 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
     if (toInsert.length) {
       const cols = Object.keys(toInsert[0]);
       const placeholders = cols.map(() => '?').join(',');
-      await store.transaction(async (exec) => {
-        for (const row of toInsert) {
-          await exec(`INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders})`, cols.map(c => row[c]));
-        }
-      });
+      const sql = `INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders})`;
+      // Same statements, same order, still INSERT-only -- but written in chunks (store.batchWrite): each chunk is one round trip and one short write
+      // transaction, with a process-wide cap on how many are open at once. The previous form held ONE write transaction open for the whole pass, one
+      // round trip per row (minutes on Turso), which blocked every other writer and the booting instance's schema statements. If a chunk fails, the
+      // earlier chunks stay committed and the next pass's latest-row lookup (above) sees them, so nothing is duplicated or lost.
+      await store.batchWrite(toInsert.map(row => ({ sql, args: cols.map(c => row[c]) })));
     }
     return { inserted: toInsert.length, unchanged };
   }
