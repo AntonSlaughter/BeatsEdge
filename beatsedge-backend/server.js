@@ -50,7 +50,8 @@ app.use(express.json({ limit: '16mb' }));
 const siteStatusRouter = require('./routes/siteStatus').createSiteStatusRouter();   // POST /api/site-telemetry, GET /api/site-status (no DB, no provider call)
 app.use('/api', siteStatusRouter);
 app.use('/api', require('./routes/ai').createAiRouter({ store: siteStatusRouter.store }));   // POST /api/ai/explain-prop, POST /api/ai/site-question, GET /api/ai/status (deterministic unless a server-side provider is configured)
-app.use(['/api/ai', '/api/site-telemetry'], require('./routes/ai').jsonErrorHandler);   // malformed / oversize JSON -> a short JSON 400 / 413, never an HTML stack trace
+app.use('/api', require('./routes/betaAdapters').createBetaRouter());   // POST /api/nhl/beta/blocked-shots: probability-only BETA, INACTIVE unless BETA_NHL_BLOCKED_SHOTS=1 (otherwise { enabled: false }, no data touched)
+app.use(['/api/ai', '/api/site-telemetry', '/api/nhl/beta'], require('./routes/ai').jsonErrorHandler);   // malformed / oversize JSON -> a short JSON 400 / 413, never an HTML stack trace
 app.use('/api', apiRoutes);
 
 app.get('/', (req, res) => {

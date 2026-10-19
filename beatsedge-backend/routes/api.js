@@ -730,6 +730,21 @@ router.get('/nhl/player-history/:playerId', async (req, res) => {
   }
 });
 
+// GET /api/nhl/player-participation/:playerId
+// Read-only participation FACTS for each final team game of one resolved NHL player (lib/nhlParticipation.js): stored row present, team box complete, bracketed by his own rows.
+// The page classifies them (played / DNP / unresolved); nothing is inferred here and nothing is written.
+router.get('/nhl/player-participation/:playerId', async (req, res) => {
+  const { playerId } = req.params;
+  if (!/^\d+$/.test(String(playerId))) return res.status(400).json({ error: 'playerId must be a real numeric NHL player_id.' });
+  try {
+    const { getPlayerParticipation } = require('../lib/nhlParticipation');
+    const out = await getPlayerParticipation(playerId);
+    res.json({ playerId, source: 'BeatsEdge (stored nhl_player_box box scores + api-web.nhle.com club schedule)', games: out.games, failures: out.failures, noHistory: !!out.noHistory });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/mlb/probable-pitcher/:team?date=YYYY-MM-DD
 // Real "who's actually pitching against this team tonight" — closes the
 // gap that previously left batter matchups on sample data by default.
