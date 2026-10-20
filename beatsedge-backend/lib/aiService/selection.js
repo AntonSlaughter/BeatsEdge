@@ -56,7 +56,9 @@ function validateSelection(raw) {
   }
   // ---- historical windows (only real ones; seeded placeholders are never accepted) ----
   let windows = null; if (raw.windows && typeof raw.windows === 'object' && !Array.isArray(raw.windows)) { windows = {}; WINDOWS.forEach(w => { const x = raw.windows[w]; windows[w] = x && typeof x === 'object' && x.seeded !== true && finite(x.avg, -1e4, 1e4) != null && finite(x.games, 1, 5000) != null ? { avg: x.avg, games: x.games } : null; }); if (!WINDOWS.some(w => windows[w])) windows = null; }
-  const input = { sport, player: Object.assign({}, player, windows ? { statsByKey: { [statKey]: { season: windows.season || { avg: null, games: 0 }, last10: windows.last10 || undefined, last5: windows.last5 || undefined, vsOpp: windows.vsOpp || undefined } } } : {}), prop, edge };
+  const availability = require('./availability').validateAvailability(raw.availability);   // 2026-10-19: injury status with source + time and the absent teammates (client-reported, whitelisted)
+  const freshness = require('./availability').validateFreshness(raw.dataFreshness);   // 2026-10-20: STALE = the lines were retained after a failed provider refresh (client-reported; only STALE is accepted)
+  const input = { sport, availability, freshness, player: Object.assign({}, player, windows ? { statsByKey: { [statKey]: { season: windows.season || { avg: null, games: 0 }, last10: windows.last10 || undefined, last5: windows.last5 || undefined, vsOpp: windows.vsOpp || undefined } } } : {}), prop, edge };
   return { ok: true, input, integrity: { evidenceOrigin: 'CLIENT_REPORTED_ENGINE_OUTPUT', note: 'The BeatsEdge engine runs in the browser; the server validated and sanitized what it sent but did not recompute it.', issues, sanitized, outputsDropped } };
 }
 module.exports = { validateSelection, SPORTS, SPORT_KEY };
