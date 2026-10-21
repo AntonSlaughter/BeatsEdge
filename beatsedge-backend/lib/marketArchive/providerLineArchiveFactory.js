@@ -2,15 +2,38 @@
 // archive factory (Gap 2/5). Extracts the EXACT SAME identity/dedup/
 // insert/query logic that lib/nbaProviderLineArchive.js and
 // lib/wnbaProviderLineArchive.js each already implement independently --
-// this module is used ONLY to add MLB/NFL/NCAAF, which currently have no
-// equivalent archive at all. The existing NBA/WNBA modules are left
-// completely untouched (zero behavior change, zero regression risk to
-// already-collecting-real-data production code) -- see the Market
-// Archive Hardening report for why duplicating this pattern once more
-// (rather than also migrating NBA/WNBA onto this factory) was the
-// deliberately lower-risk choice.
+// this module was first used ONLY to add MLB/NFL/NCAAF, which had no
+// equivalent archive at all, with the NBA/WNBA modules deliberately left
+// alone (lower regression risk at the time). 2026-10-21: their LIVE-CAPTURE
+// entry point (archiveFromRawParlayResponse) now runs through this factory
+// as well -- the per-row implementation they kept ran two Turso round trips
+// per row with no limit on concurrent passes and exhausted the 512 MiB
+// instance's heap (docs/HEAP_EXHAUSTION_2026-10-21.md). Their per-row
+// recordObservation / lineHistory / summary stay in their own modules.
 
 const store = require('../snapshotStore');
+
+// Process-wide cap on archive PASSES running at once, shared by every sport. A pass holds the parsed response, one normalized row per
+// eligible row and the lookup result at the same time (tens of MB for a 10,000-row page); five sports refreshing together used to run five
+// passes at once on top of the response cache. Passes are background work (the response is already sent), so they simply take turns.
+// ARCHIVE_PASS_CONCURRENCY overrides it (>= 1).
+// A pass that is waiting for the slot still holds its response text (tens of MB for a 10,000-row page, and it stays alive after the response cache evicts it), so the number
+// that may wait is bounded too (ARCHIVE_PASS_MAX_WAITING, default 4, >= 0). Beyond it a pass is skipped and logged -- the next refresh re-reads the same lines and the
+// changed/unchanged rule records whatever moved, so no stored row is ever altered; only an intermediate movement between two refreshes can go unrecorded, and only under a burst.
+const PASS_CONCURRENCY = Math.max(1, Math.floor(Number(process.env.ARCHIVE_PASS_CONCURRENCY)) || 1);
+const _mw = process.env.ARCHIVE_PASS_MAX_WAITING;
+const PASS_MAX_WAITING = _mw !== undefined && _mw !== '' && Number.isFinite(Number(_mw)) ? Math.max(0, Math.floor(Number(_mw))) : 4;
+let _passActive = 0, _passMax = 0, _passRun = 0, _passSkipped = 0; const _passWaiters = [];
+async function withPassSlot(fn, onBusy) {
+  if (_passActive >= PASS_CONCURRENCY && _passWaiters.length >= PASS_MAX_WAITING) {
+    _passSkipped++; console.warn(`[archive] pass skipped: ${_passActive} running and ${_passWaiters.length} already waiting (${_passSkipped} skipped since start); the next refresh re-reads the same lines`);
+    return onBusy();
+  }
+  if (_passActive < PASS_CONCURRENCY) { _passActive++; if (_passActive > _passMax) _passMax = _passActive; }
+  else await new Promise(r => _passWaiters.push(r));   // the releasing pass hands its slot over, so _passActive is unchanged
+  try { _passRun++; return await fn(); }
+  finally { const next = _passWaiters.shift(); if (next) next(); else _passActive--; }
+}
 
 const str = (x) => (x == null ? null : String(x));
 const num = (x) => (x == null || x === '' || Number.isNaN(Number(x)) ? null : Number(x));
@@ -33,8 +56,10 @@ function sourceTypeFor(book) {
  * @param {string} sport lowercase sport key used as the `sport` column value AND to build the default table name
  * @param {RegExp} propsPathRegex matches the upstream passthrough path for this sport's props endpoint
  * @param {string} [tableName] defaults to `${sport}_provider_line_archive`
+ * @param {(row: object) => string} [semanticsFor] semantics_status for one raw provider row (default: always 'CONFIRMED')
+ * @param {{maxPending?: number}} [serialize] opt in to ONE pass at a time with up to `maxPending` waiting (default off: the in-flight guard below, which drops a body that arrives while a pass runs)
  */
-function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
+function createProviderLineArchive({ sport, propsPathRegex, tableName, semanticsFor, serialize }) {
   const TABLE = tableName || `${sport}_provider_line_archive`;
 
   function normalize(obs) {
@@ -107,9 +132,12 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
     if (!eventIds.length) return map;
     const placeholders = eventIds.map(() => '?').join(',');
     const partitionCols = IDENTITY_COLS.join(', ');
+    // Only the columns the comparison below reads (identityKeyOf -> IDENTITY_COLS, differs -> CHANGE_FIELDS). The lookup used to be SELECT *, which also pulled every stored
+    // row's raw_json (~1 KB of text each) for EVERY identity of the batch's events into memory for the length of the pass; nothing reads it.
+    const lookupCols = [...new Set([...IDENTITY_COLS, ...CHANGE_FIELDS])].join(', ');
     const sql = `
-      SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY ${partitionCols} ORDER BY captured_at DESC) AS _rn
+      SELECT ${lookupCols} FROM (
+        SELECT ${lookupCols}, ROW_NUMBER() OVER (PARTITION BY ${partitionCols} ORDER BY captured_at DESC) AS _rn
         FROM ${TABLE}
         WHERE sport IS ? AND event_id IN (${placeholders})
       ) WHERE _rn = 1
@@ -197,7 +225,9 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
 
   function isPropsPath(upstreamPath) { return propsPathRegex.test(upstreamPath || ''); }
 
-  async function _archiveFromRawParlayResponseImpl(bodyText) {
+  // One pass, run when it gets a turn in the process-wide slot (withPassSlot above).
+  function _archiveFromRawParlayResponseImpl(bodyText) { return withPassSlot(() => _runPass(bodyText), () => ({ archived: 0, applicable: true, skippedBusy: true })); }
+  async function _runPass(bodyText) {
     let rows;
     try {
       rows = JSON.parse(bodyText);
@@ -214,7 +244,11 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
     // Same eligibility filter and same normalize() call as before -- only
     // the LOOKUP strategy below changes (batched instead of per-row).
     const candidates = [];
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      // Hand the event loop back every 1,000 rows: normalizing a 10,000-row page in one go is a ~100 ms stall here and several times that on the 0.1 vCPU instance, during which no
+      // other request (health check, board load, AI) is served. (JSON.parse above is a single call and cannot be sliced.)
+      if (i > 0 && i % 1000 === 0) await new Promise(r => setImmediate(r));
       if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
       eligible++;
       const lastUpdate = row.last_update || null;
@@ -231,17 +265,20 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
           source: row.bookmaker, sourceType: sourceTypeFor(row.bookmaker),
           projectionType: row.projection_type || null, oddsType: row.odds_type || null, side: row.side || null,
           line: row.line, overPrice: row.over_price ?? null, underPrice: row.under_price ?? null,
-          projectionMetadata: null, raw: row, semanticsStatus: 'CONFIRMED',
+          projectionMetadata: null, raw: row, semanticsStatus: semanticsFor ? semanticsFor(row) : 'CONFIRMED',
         }));
       } catch (e) { skipped++; failedCount++; }
     }
+    // The parsed payload is not needed any more (every candidate carries its own raw_json text); drop it before the database round trips so a slow pass does not keep
+    // two copies of the whole response alive.
+    const totalRows = rows.length; rows = null;
     // Batched: one SELECT (scoped to this batch's own event_ids) instead of
     // one per candidate row, then one transaction for every changed row --
     // see recordNormalizedBatch's own comment for the full rationale.
     const { inserted, unchanged } = await recordNormalizedBatch(candidates);
     const skippedForLog = skipped - failedCount + unchanged;
-    console.log(`[${sport}-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
-    return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
+    console.log(`[${sport}-archive] captured=${totalRows} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
+    return { archived: inserted, applicable: true, unchanged, skipped, totalRows };
   }
 
   // In-flight guard: this factory is one instance per sport, so this
@@ -253,8 +290,27 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
   // guard -- never changes which rows get archived, only prevents two
   // passes from ever overlapping.
   let _inFlight = null;
+  // Opt-in serialized mode ({ serialize: { maxPending } }) -- used by the NBA and WNBA archives, whose boards arrive as many page/market responses within seconds of each other and
+  // whose rows must not be lost the way the in-flight guard above loses them. ONE pass runs at a time; up to maxPending more wait, holding nothing but the response text (the same
+  // string the response cache already owns -- the body is parsed only when its turn comes, so waiting costs no extra copy). A response that would exceed maxPending is skipped and
+  // logged: the next refresh re-reads the same lines and the dedupe records whatever changed, so no stored row is ever altered and the memory held is bounded.
+  const maxPending = serialize ? Math.max(0, Number(serialize.maxPending) || 3) : 0;
+  const _waiting = []; let _running = false; let _skippedBusy = 0;
+  async function _pump() {
+    if (_running) return; _running = true;
+    try { while (_waiting.length) { const job = _waiting.shift(); try { job.resolve(await _archiveFromRawParlayResponseImpl(job.bodyText)); } catch (e) { job.reject(e); } } }
+    finally { _running = false; }
+  }
+  function _archiveSerialized(bodyText) {
+    if (_waiting.length >= maxPending) {
+      _skippedBusy++; console.warn(`[${sport}-archive] pass skipped: one is running and ${_waiting.length} are already waiting (${_skippedBusy} skipped since start); the next refresh re-reads the same lines`);
+      return Promise.resolve({ archived: 0, applicable: true, skippedBusy: true });
+    }
+    return new Promise((resolve, reject) => { _waiting.push({ bodyText, resolve, reject }); _pump(); });
+  }
   async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
     if (!isPropsPath(upstreamPath)) return { archived: 0, applicable: false };
+    if (serialize) return _archiveSerialized(bodyText);
     if (_inFlight) return _inFlight;
     _inFlight = _archiveFromRawParlayResponseImpl(bodyText).finally(() => { _inFlight = null; });
     return _inFlight;
@@ -267,4 +323,6 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName }) {
   };
 }
 
-module.exports = { createProviderLineArchive, DFS_SOURCES, SPORTSBOOK_SOURCES, sourceTypeFor };
+// Diagnostic view of the shared pass slot: the cap, how many passes hold it now, the most that ever did, how many have run, how many wait.
+const passStats = () => ({ limit: PASS_CONCURRENCY, maxWaiting: PASS_MAX_WAITING, active: _passActive, maxActive: _passMax, passesRun: _passRun, skipped: _passSkipped, waiting: _passWaiters.length });
+module.exports = { createProviderLineArchive, DFS_SOURCES, SPORTSBOOK_SOURCES, sourceTypeFor, passStats };

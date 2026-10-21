@@ -83,7 +83,17 @@ const MAX_ENTRIES = 800;
 // covers every sport's board simultaneously cached, including a couple
 // of paginated pages each; it only refuses to let a pathological run of
 // many large pages pile up unbounded.
-const MAX_CACHE_BYTES = 96 * 1024 * 1024;
+//
+// CORRECTION (2026-10-21, docs/HEAP_EXHAUSTION_2026-10-21.md): the arithmetic above budgets against the instance's 512 MB of RAM, but what bounds a Node process is
+// its V8 heap limit, which on that instance is only ~254 MB (every logged "JavaScript heap out of memory" is at ~253 MB), and the cached bodies are counted at what they
+// occupy in the heap (byteSizeOf above), not as UTF-8. The budget is therefore a quarter of the actual heap limit, capped at the old 96 MB: ~63 MB on the 512 MiB
+// instance, 96 MB wherever the heap limit is larger. PARLAY_CACHE_MAX_MB overrides it (a smaller cache only costs extra upstream calls after the TTL).
+const HEAP_LIMIT = require('v8').getHeapStatistics().heap_size_limit;
+const MAX_CACHE_BYTES = (() => {
+  const fromEnv = Number(process.env.PARLAY_CACHE_MAX_MB);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return Math.floor(fromEnv * 1024 * 1024);
+  return Math.min(96 * 1024 * 1024, Math.floor(HEAP_LIMIT * 0.25));
+})();
 
 // How often the reaper below sweeps for entries that expired but were
 // never naturally re-requested (and so never hit get()'s own lazy
@@ -100,11 +110,13 @@ let totalBytes = 0;
 
 const counters = { hits: 0, misses: 0, coalesced: 0, evictions: 0, byteEvictions: 0, expiredSwept: 0, sets: 0 };
 
-// Real UTF-8 byte length of the response body -- what actually gets
-// retained in the V8 heap, not the UTF-16 code-unit count .length would
-// give (which undercounts anything with multi-byte characters).
+// What the response body actually occupies in the V8 heap -- the quantity MAX_CACHE_BYTES has to bound. This used to be the body's UTF-8 byte length, which is NOT what V8
+// holds: a string is stored at one byte per character only while every character is <= U+00FF; a single character above that (the "ć" in Dončić / Jokić, which is in nearly every
+// NBA / NHL / MLB board) makes the WHOLE string two bytes per character. A "96 MB" budget could therefore pin up to ~190 MB of a ~254 MB heap (docs/HEAP_EXHAUSTION_2026-10-21.md).
+const NON_LATIN1 = /[^\x00-\xff]/;   // any character above U+00FF
 function byteSizeOf(entry) {
-  return entry && typeof entry.body === 'string' ? Buffer.byteLength(entry.body, 'utf8') : 0;
+  if (!entry || typeof entry.body !== 'string') return 0;
+  return NON_LATIN1.test(entry.body) ? entry.body.length * 2 : entry.body.length;
 }
 
 function removeEntry(key) {
@@ -123,10 +135,17 @@ function removeEntry(key) {
 // process stays alive (the real server already stays alive via its own
 // HTTP listener regardless; a one-off script or test that merely
 // requires this module should still be able to exit naturally).
+let _lastLoggedSets = 0;
 const sweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of cache) {
     if (now >= entry.expiresAt) { removeEntry(key); counters.expiredSwept++; }
+  }
+  // One line per sweep while the cache has held anything since the last one (silent when idle): what the V8 heap holds against its limit, so that the memory problem in
+  // docs/HEAP_EXHAUSTION_2026-10-21.md (or a regression of it) shows in the logs and not only in the instance's RSS graph, which cannot tell heap from native memory.
+  if (cache.size > 0 || counters.sets !== _lastLoggedSets) {
+    _lastLoggedSets = counters.sets; const m = process.memoryUsage(); const mb = (n) => Math.round(n / 1048576);
+    console.log(`[mem] heapUsed=${mb(m.heapUsed)}MB of limit ${mb(HEAP_LIMIT)}MB rss=${mb(m.rss)}MB; parlayCache ${cache.size} entries ${mb(totalBytes)}MB of ${mb(MAX_CACHE_BYTES)}MB`);
   }
 }, SWEEP_INTERVAL_MS);
 if (typeof sweepTimer.unref === 'function') sweepTimer.unref();

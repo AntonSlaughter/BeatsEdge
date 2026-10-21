@@ -15,6 +15,7 @@
 // silently ignored. This module is what closes that gap.
 
 const store = require('./snapshotStore');
+const { createProviderLineArchive } = require('./marketArchive/providerLineArchiveFactory');
 
 const str = (x) => (x == null ? null : String(x));
 const num = (x) => (x == null || x === '' || Number.isNaN(Number(x)) ? null : Number(x));
@@ -135,72 +136,15 @@ function sourceTypeFor(book) {
   return null;
 }
 
+// Live capture entry point (called from routes/api.js for every NBA props response). It used to be a sequential loop here: for EVERY row one SELECT (latest stored row for the
+// identity) and, when changed, one INSERT -- two Turso round trips per row (~77 ms each on Render), with NO limit on how many such passes ran at once. A 3,000-row page took
+// ~4.5 minutes, the board refreshes every 2 minutes, and each running pass kept its whole parsed response and every normalized row alive, so the heap grew by roughly one page per
+// pass until the process died with "JavaScript heap out of memory" (see docs/HEAP_EXHAUSTION_2026-10-21.md). It now runs through the same batched implementation the MLB / NFL / NCAAF /
+// NHL archives use (lib/marketArchive/providerLineArchiveFactory.js): ONE lookup query per pass, changed rows written in chunks, one pass at a time with a small bounded queue.
+// What is stored does not change: same table, same identity, same changed/unchanged rule (CHANGE_FIELDS), INSERT-only, same columns and values, same log line.
+const _live = createProviderLineArchive({ sport: 'nba', propsPathRegex: NBA_PROPS_PATH_RE, serialize: { maxPending: 3 } });
 async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
-  if (!isNbaPropsPath(upstreamPath)) return { archived: 0, applicable: false };
-  let rows;
-  try {
-    rows = JSON.parse(bodyText);
-    if (!Array.isArray(rows)) {
-      // Phase 2I-Q observability fix: this used to return silently with no
-      // log line at all -- a malformed-but-non-throwing response would
-      // vanish with zero trace anywhere. Never logs bodyText itself (could
-      // contain arbitrarily-shaped upstream data); only the fixed reason.
-      console.warn('[nba-archive] archive error: non-array response body');
-      return { archived: 0, applicable: true, error: 'non-array response body' };
-    }
-  } catch (e) {
-    console.warn('[nba-archive] archive error: unparseable response body:', e.message);
-    return { archived: 0, applicable: true, error: 'unparseable response body: ' + e.message };
-  }
-  const capturedAt = Date.now();
-  let inserted = 0, unchanged = 0, skipped = 0;
-  // Phase 2I-Q observability fix: parallel counters for the single summary
-  // log line below -- see lib/wnbaProviderLineArchive.js's identical
-  // comment for the full reasoning. Never changes any existing counter's
-  // value/meaning or any row's written/skipped outcome.
-  let eligible = 0, failedCount = 0;
-  for (const row of rows) {
-    if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
-    eligible++;
-    const lastUpdate = row.last_update || null;
-    const lastUpdateMs = lastUpdate ? Date.parse(lastUpdate) : NaN;
-    const ageSeconds = Number.isFinite(lastUpdateMs) ? (capturedAt - lastUpdateMs) / 1000 : null;
-    try {
-      const r = await recordObservation({
-        capturedAt, providerLastUpdate: lastUpdate, ageSeconds,
-        sport: 'nba', eventId: row.event_id,
-        homeTeam: row.home_team || null, awayTeam: row.away_team || null,
-        commenceTime: row.commence_time || null, gameStatus: row.game_status || null,
-        playerRaw: row.player,
-        playerId: row.player_id != null ? String(row.player_id) : null,
-        marketKeyRaw: row.market_key,
-        // Row already carries these directly -- see Phase 2I-Q fix applied
-        // to lib/wnbaProviderLineArchive.js; this module never had the
-        // stale null-hardcode to begin with.
-        marketLabel: row.market || null, period: row.period || null,
-        source: row.bookmaker, sourceType: sourceTypeFor(row.bookmaker),
-        projectionType: row.projection_type || null,
-        oddsType: row.odds_type || null,
-        side: row.side || null,
-        line: row.line, overPrice: row.over_price ?? null, underPrice: row.under_price ?? null,
-        projectionMetadata: null,
-        raw: row,
-        // No NBA-specific semantics audit has been run yet (the WNBA
-        // unresolved-markets set is a WNBA-specific finding from Phase
-        // 2I-G/H and is never reused here for a different sport's market
-        // registry) -- every NBA row is CONFIRMED as supplied until an
-        // equivalent NBA audit is done.
-        semanticsStatus: 'CONFIRMED',
-      });
-      if (r.inserted) inserted++; else unchanged++;
-    } catch (e) {
-      skipped++;
-      failedCount++;
-    }
-  }
-  const skippedForLog = skipped - failedCount + unchanged;
-  console.log(`[nba-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
-  return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
+  return _live.archiveFromRawParlayResponse(upstreamPath, bodyText);
 }
 
 module.exports = {

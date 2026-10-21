@@ -10,6 +10,7 @@
 // so a future capture cron job works unmodified in either environment.
 
 const store = require('./snapshotStore');
+const { createProviderLineArchive } = require('./marketArchive/providerLineArchiveFactory');
 
 const str = (x) => (x == null ? null : String(x));
 const num = (x) => (x == null || x === '' || Number.isNaN(Number(x)) ? null : Number(x));
@@ -215,80 +216,14 @@ function sourceTypeFor(book) {
 // the response to the caller) and records every WNBA row. Never called for
 // any other sport's path. Never touches req.query (so the apiKey, which
 // lives only there, never reaches this function at all).
+// Same change as lib/nbaProviderLineArchive.js (see the comment there and docs/HEAP_EXHAUSTION_2026-10-21.md): the per-row, unbounded, concurrent pass is replaced by the shared batched,
+// serialized implementation. The one WNBA-specific rule is kept exactly: the three markets whose semantics Phase 2I-G/H found unresolved are stored as SEMANTICS_UNRESOLVED.
+const _live = createProviderLineArchive({
+  sport: 'wnba', propsPathRegex: WNBA_PROPS_PATH_RE, serialize: { maxPending: 3 },
+  semanticsFor: (row) => (KNOWN_SEMANTICS_UNRESOLVED_MARKETS.has(row.market_key) ? 'SEMANTICS_UNRESOLVED' : 'CONFIRMED'),
+});
 async function archiveFromRawParlayResponse(upstreamPath, bodyText) {
-  if (!isWnbaPropsPath(upstreamPath)) return { archived: 0, applicable: false };
-  let rows;
-  try {
-    rows = JSON.parse(bodyText);
-    if (!Array.isArray(rows)) {
-      // Phase 2I-Q observability fix: this used to return silently with no
-      // log line at all -- a malformed-but-non-throwing response would
-      // vanish with zero trace anywhere. Never logs bodyText itself (could
-      // contain arbitrarily-shaped upstream data); only the fixed reason.
-      console.warn('[wnba-archive] archive error: non-array response body');
-      return { archived: 0, applicable: true, error: 'non-array response body' };
-    }
-  } catch (e) {
-    console.warn('[wnba-archive] archive error: unparseable response body:', e.message);
-    return { archived: 0, applicable: true, error: 'unparseable response body: ' + e.message };
-  }
-  const capturedAt = Date.now();
-  let inserted = 0, unchanged = 0, skipped = 0;
-  // Phase 2I-Q observability fix: parallel counters for the single summary
-  // log line below. Never change any existing counter's value/meaning or
-  // any row's written/skipped outcome -- these only re-tally the SAME
-  // decisions the loop below already makes, split into the categories
-  // requested (`eligible`/`failed` didn't exist as separate concepts
-  // before; `skipped` here intentionally also folds in `unchanged`, since
-  // an unchanged repeat-poll is exactly the kind of "existing skip
-  // condition" being asked for, distinct from a genuine write failure).
-  let eligible = 0, failedCount = 0;
-  for (const row of rows) {
-    if (!row || !row.event_id || !row.player || !row.market_key || !row.bookmaker || row.line == null) { skipped++; continue; }
-    eligible++;
-    const lastUpdate = row.last_update || null;
-    const lastUpdateMs = lastUpdate ? Date.parse(lastUpdate) : NaN;
-    const ageSeconds = Number.isFinite(lastUpdateMs) ? (capturedAt - lastUpdateMs) / 1000 : null;
-    try {
-      const r = await recordObservation({
-        capturedAt, providerLastUpdate: lastUpdate, ageSeconds,
-        sport: 'wnba', eventId: row.event_id,
-        homeTeam: row.home_team || null, awayTeam: row.away_team || null,
-        commenceTime: row.commence_time || null, gameStatus: row.game_status || null,
-        // Preserved EXACTLY as ParlayAPI supplied it -- no normalization,
-        // no suffix stripping, no identity resolution against any roster.
-        playerRaw: row.player,
-        playerId: row.player_id != null ? String(row.player_id) : null,
-        marketKeyRaw: row.market_key,
-        // Phase 2I-Q fix: the raw ParlayAPI row already carries both of
-        // these directly (row.market / row.period, confirmed against live
-        // captures -- e.g. {"market":"Points","period":"Q1"}), so no
-        // client-side BeatsEdge.html lookup table needs to be duplicated
-        // here after all. The prior version of this code assumed they
-        // required PARLAY_BB_MKT/PERIOD_MARKET_MAP and hardcoded null,
-        // which silently dropped period identity for every archived row --
-        // exactly the field Phase I's real-line period-market matching
-        // depends on. Preserved exactly as supplied, never inferred.
-        marketLabel: row.market || null, period: row.period || null,
-        source: row.bookmaker, sourceType: sourceTypeFor(row.bookmaker),
-        // Preserved EXACTLY as supplied -- never inferred from line size.
-        projectionType: row.projection_type || null,
-        oddsType: row.odds_type || null,
-        side: row.side || null,
-        line: row.line, overPrice: row.over_price ?? null, underPrice: row.under_price ?? null,
-        projectionMetadata: null,
-        raw: row,
-        semanticsStatus: KNOWN_SEMANTICS_UNRESOLVED_MARKETS.has(row.market_key) ? 'SEMANTICS_UNRESOLVED' : 'CONFIRMED',
-      });
-      if (r.inserted) inserted++; else unchanged++;
-    } catch (e) {
-      skipped++;
-      failedCount++;
-    }
-  }
-  const skippedForLog = skipped - failedCount + unchanged;
-  console.log(`[wnba-archive] captured=${rows.length} eligible=${eligible} written=${inserted} skipped=${skippedForLog} failed=${failedCount}`);
-  return { archived: inserted, applicable: true, unchanged, skipped, totalRows: rows.length };
+  return _live.archiveFromRawParlayResponse(upstreamPath, bodyText);
 }
 
 module.exports = {
