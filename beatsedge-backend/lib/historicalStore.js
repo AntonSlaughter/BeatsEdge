@@ -426,8 +426,15 @@ function createTursoImpl() {
   async function ensureSchema() {
     if (!schemaReady) {
       schemaReady = (async () => {
+        // Read first (lib/schemaCatalog.js, the same check lib/snapshotStore.js uses): every CREATE ... IF NOT EXISTS is a WRITING statement even when it changes nothing,
+        // so while Turso refuses writes (quota used up, production 2026-10-22) running them made every historical READ fail too. If the database already has everything the
+        // statements would create, no DDL is issued; if anything is missing, or the check itself cannot run, the full statement list runs exactly as before.
+        let verdict = null;
+        try { verdict = await require('./schemaCatalog').verify(async (sql) => (await client.execute(sql)).rows.map(r => ({ ...r })), SCHEMA_STATEMENTS); }
+        catch (e) { /* introspection unavailable: fall through to the statements below */ }
+        if (verdict && verdict.ok) return;
         for (const stmt of SCHEMA_STATEMENTS) await client.execute(stmt);
-      })();
+      })().catch((e) => { schemaReady = null; throw e; });   // a failure is not cached: once Turso accepts the statements again, the next call succeeds without a restart
     }
     return schemaReady;
   }
@@ -477,6 +484,11 @@ function createTursoImpl() {
     async verifyReady() {
       await ensureSchema();
       await client.execute(`SELECT 1`);
+      // ensureSchema() no longer issues DDL when the schema already exists, so it can no longer notice Turso refusing writes (quota used up, production 2026-10-22). This status feeds
+      // /api/data-health and the startup log only (never a query), so re-run ONE no-op CREATE TABLE IF NOT EXISTS: it changes no row, but it is a writing statement, so Turso answers
+      // BLOCKED while writes are refused -- the same honest "connected=false, error=BLOCKED" report as before, while reads and /api/health keep working.
+      const probe = SCHEMA_STATEMENTS.find(s => /^\s*CREATE TABLE IF NOT EXISTS ingest_log\b/i.test(s));
+      if (probe) await client.execute(probe);
       return { ok: true, backend: 'turso' };
     },
   };

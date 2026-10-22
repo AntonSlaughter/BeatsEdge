@@ -1,5 +1,13 @@
 const express = require('express');
 const router = express.Router();
+// Express 4 does not catch a rejected promise returned by an async handler, and Node 22 treats an unhandled rejection as fatal: one failing await (for example Turso
+// refusing a query once the account's quota is used up) used to kill the whole server (production incident 2026-10-22). Every async handler registered below now
+// forwards a rejection to the error handler at the bottom of this file instead. Handlers that already catch their own errors behave exactly as before.
+for (const verb of ['get', 'post']) {
+  const register = router[verb].bind(router);
+  router[verb] = (path, ...handlers) => register(path, ...handlers.map(h => (typeof h === 'function' && h.constructor && h.constructor.name === 'AsyncFunction')
+    ? (req, res, next) => h(req, res, next).catch(next) : h));
+}
 const { fetchLeagueDefenseStats } = require('../lib/statsProxy');
 const { fetchProbablePitchers } = require('../lib/mlbProxy');
 const { getDefenseByPositionAsync, getTeamAdvancedStatsAsync, getNflDefenseByPositionAsync } = require('../lib/historicalQueries');
@@ -42,8 +50,11 @@ const newsImpact = require('../lib/newsImpact');
 // GET /api/health — quick check this is alive (also what wakes a sleeping
 // Render free instance, and what BeatsEdge.html can ping before relying on it)
 router.get('/health', async (req, res) => {
-  const lastIngest = await historicalStore.queryOne(`SELECT * FROM ingest_log ORDER BY ran_at DESC LIMIT 1`);
-  res.json({ ok: true, lastIngest: lastIngest || null });
+  // "Alive" must not depend on the historical database: if it cannot be read (unreachable, or Turso blocking queries), the server is still up and says so.
+  let lastIngest = null, historical = 'ok';
+  try { lastIngest = await historicalStore.queryOne(`SELECT * FROM ingest_log ORDER BY ran_at DESC LIMIT 1`) || null; }
+  catch (e) { historical = 'unavailable'; }
+  res.json({ ok: true, lastIngest, ...(historical === 'ok' ? {} : { historical }) });
 });
 
 // GET /api/data-health — non-sensitive database/storage status: where the
@@ -1182,6 +1193,13 @@ router.get('/news', async (req, res) => {
   );
   const status = articles.length ? 'ok' : (thisPassFailed ? 'source_unavailable' : 'empty');
   res.json({ status, sport: sport || 'all', count: articles.length, articles, ingest: ingestReports });
+});
+
+// Last stop for an async handler that rejected (see the guard at the top of this file): a short JSON 500, never a crash and never a stack trace.
+router.use((err, req, res, next) => {
+  console.error('[api] route failed:', req.method, req.path, '-', String(err && err.message || err).slice(0, 200));
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'internal error' });
 });
 
 module.exports = router;
