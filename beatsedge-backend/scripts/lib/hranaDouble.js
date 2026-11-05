@@ -15,6 +15,8 @@ function startHranaDouble({ file, rttMs = 0, ddlTakesWriteLock = true, rejectPra
   // Turso's "quota exceeded" state (observed in production 2026-10-22): every WRITING statement -- INSERT / UPDATE / DELETE and also a no-op CREATE ... IF NOT EXISTS -- is refused
   // with code BLOCKED; reads still work. Switchable at runtime (setBlockWrites) so a test can model "the schema exists, then the quota runs out".
   let blocked = !!blockWrites;
+  // 2026-11-05: Turso now refuses READS as well ("BLOCKED: SQL read/write operations are forbidden"). setBlockAll(true) refuses every statement; default off, so the writes-only model above is unchanged.
+  let blockedAll = false; let allRefused = 0;
   const main = new DatabaseSync(file); main.exec('PRAGMA journal_mode = WAL');
   const stats = { requests: 0, batchRequests: 0, execRequests: 0, transactions: 0, lockWaits: [], maxQueued: 0, writeTxHeldMs: [], ddlStatements: 0, inflightBatch: 0, maxInflightBatch: 0 };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -30,6 +32,7 @@ function startHranaDouble({ file, rttMs = 0, ddlTakesWriteLock = true, rejectPra
 
   async function runStmt(stream, stmt) {
     const sql = stmt.sql !== undefined && stmt.sql !== null ? stmt.sql : stream.sqls.get(stmt.sql_id); const args = (stmt.args || []).map(bind); const conn = stream.conn; const tk = txKind(sql);
+    if (blockedAll) { allRefused++; const e = new Error('Operation was blocked: SQL read/write operations are forbidden (do you need to upgrade your plan?)'); e.code = 'BLOCKED'; throw e; }
     if (blocked && (tk === 'begin-write' || (tk === null && !isRead(sql)))) { const e = new Error('Operation was blocked: SQL write operations are forbidden (writes are blocked, do you need to upgrade your plan?)'); e.code = 'BLOCKED'; throw e; }
     if (tk === 'begin-write') { if (stream.inTx) throw new Error('cannot start a transaction within a transaction'); stream.heldSince = await lockWrite('tx'); stream.holdsLock = true; conn.exec('BEGIN IMMEDIATE'); stream.inTx = true; stats.transactions++; return { cols: [], rows: [], affected_row_count: 0 }; }
     if (tk === 'begin-read') { conn.exec('BEGIN'); stream.inTx = true; return { cols: [], rows: [], affected_row_count: 0 }; }
@@ -83,7 +86,7 @@ function startHranaDouble({ file, rttMs = 0, ddlTakesWriteLock = true, rejectPra
     req.on('end', async () => { stats.requests++; try { if (rttMs) await sleep(rttMs); if (req.url !== '/v2/pipeline') { res.statusCode = 404; return res.end(); } const out = await pipeline(JSON.parse(buf)); if (rttMs) await sleep(Math.round(rttMs / 4)); res.statusCode = out.status; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(out.json)); } catch (e) { res.statusCode = 500; res.end(JSON.stringify({ message: String(e && e.message) })); } });
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
-    url: 'http://127.0.0.1:' + server.address().port, stats, db: main, isWriteLocked: () => held, failNextBatchAfter: (n) => { failAfter = n; }, setBlockWrites: (b) => { blocked = !!b; },
+    url: 'http://127.0.0.1:' + server.address().port, stats, db: main, isWriteLocked: () => held, failNextBatchAfter: (n) => { failAfter = n; }, setBlockWrites: (b) => { blocked = !!b; }, setBlockAll: (b) => { blockedAll = !!b; }, refusedWhileBlockedAll: () => allRefused,
     close: () => new Promise((r) => { for (const s of streams.values()) { try { s.conn.close(); } catch (e) { /* ignore */ } } try { main.close(); } catch (e) { /* ignore */ } server.close(() => r()); server.closeAllConnections && server.closeAllConnections(); }),
   })));
 }

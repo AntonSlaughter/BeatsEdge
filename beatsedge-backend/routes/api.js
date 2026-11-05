@@ -22,6 +22,9 @@ const nbaHist = require('../lib/nbaHistDb');
 const wnbaPeriodGamelogs = require('../lib/wnbaPeriodGamelogs');
 const dataSourceHealth = require('../lib/dataSourceHealth');
 const parlayCache = require('../lib/parlayCache');
+const providerBudget = require('../lib/providerBudget');
+const httpEncoding = require('../lib/httpEncoding');
+const resourceMetrics = require('../lib/resourceMetrics');
 const wnbaProviderLineArchive = require('../lib/wnbaProviderLineArchive');
 const nbaProviderLineArchive = require('../lib/nbaProviderLineArchive');
 // Market Archive Hardening (Gap 2/5) -- same fire-and-forget archiving
@@ -54,7 +57,9 @@ router.get('/health', async (req, res) => {
   let lastIngest = null, historical = 'ok';
   try { lastIngest = await historicalStore.queryOne(`SELECT * FROM ingest_log ORDER BY ran_at DESC LIMIT 1`) || null; }
   catch (e) { historical = 'unavailable'; }
-  res.json({ ok: true, lastIngest, ...(historical === 'ok' ? {} : { historical }) });
+  // Snapshot storage in a Turso quota block (lib/snapshotStore.js's breaker): the server is up and serving, but snapshot / archive writes are paused. Reported, not hidden.
+  const snap = require('../lib/snapshotStore').blockedState();
+  res.json({ ok: true, lastIngest, ...(historical === 'ok' ? {} : { historical }), ...(snap.blocked ? { snapshotStorage: 'blocked', snapshotStorageRetryAt: snap.retryAt } : {}) });
 });
 
 // GET /api/data-health — non-sensitive database/storage status: where the
@@ -895,26 +900,85 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
 
     const cacheKey = parlayCache.cacheKeyFor(upstreamPath, req.query);
 
-    const sendResult = (result, cacheHeader) => {
+    // Credit budget, board mode (lib/providerBudget.js): a sport's /props requests form one BOARD. When no whole board is affordable (and none is in progress) the sport is refused as a whole,
+    // cache hits included, because a cached part of a board next to refused parts would be a partial board that looks complete (the page shows its green LIVE pill for it).
+    const boardScope = (/^v1\/sports\/([^/]+)\/props\/?$/.exec(upstreamPath) || [])[1] || null;
+    if (boardScope) {
+      const blocked = providerBudget.blockedFor(provider, boardScope);
+      if (blocked) {
+        logOncePerMinute(provider + ':board:' + boardScope, `[data-source] ${provider} ${boardScope} board refused by the credit budget (${blocked.reason}: ${blocked.detail}); retry in ~${blocked.retryAfterSeconds}s`);
+        resourceMetrics.inc('parlay.boardBlocked'); resourceMetrics.inc('parlay.boardBlocked.' + blocked.reason);
+        res.set('Retry-After', String(blocked.retryAfterSeconds)); res.set('x-credit-budget', 'board-denied');
+        return res.status(503).json({
+          status: 'unavailable',
+          reason: `${provider} credit budget reached (${blocked.reason}): no complete ${boardScope} board can be loaded now. No upstream call was made and no part of the board is served from cache, so a partial board cannot be mistaken for a complete one.`,
+          detail: blocked.detail,
+          retryAfterSeconds: blocked.retryAfterSeconds
+        });
+      }
+    }
+
+    // Sends a result. A 2xx body that lives in the response cache is sent with a strong ETag (answering If-None-Match with 304 and no body) and, when the caller accepts
+    // it, as a brotli / gzip body that is compressed ONCE per cache entry and reused (lib/parlayCache.js encodedBody). Anything else (errors, bodies not in the cache) is
+    // sent as before; the global compression middleware in server.js still compresses those when large.
+    const sendResult = async (result, cacheHeader, opts = {}) => {
       extraPassthroughHeaders.forEach(h => {
         if (result.headers && result.headers[h] != null) res.set(h, result.headers[h]);
       });
       res.set('x-cache', cacheHeader);
-      return res.status(result.status).type(result.contentType || 'application/json').send(result.body);
+      if (opts.headers) for (const [k, v] of Object.entries(opts.headers)) res.set(k, String(v));
+      const type = result.contentType || 'application/json';
+      const ok2xx = result.status >= 200 && result.status < 300;
+      const entry = ok2xx ? (opts.entry || parlayCache.peek(cacheKey)) : null;
+      if (entry) {
+        const enc = httpEncoding.acceptedEncoding(req);
+        res.vary('Accept-Encoding');
+        res.set('Cache-Control', 'private, no-cache');   // the URL carries the caller's key: never a shared cache; browsers may keep it but must revalidate (a 304 costs no body)
+        res.set('ETag', `"${parlayCache.etagFor(entry)}${enc ? '-' + enc : ''}"`);
+        res.status(result.status);
+        if (req.fresh) { httpEncoding.note({ notModified: true }); resourceMetrics.inc('http.notModified'); return res.status(304).end(); }
+        if (enc && String(entry.body).length >= httpEncoding.MIN_BYTES) {
+          try {
+            const buf = await parlayCache.encodedBody(cacheKey, entry, enc);
+            if (!entry._rawBytes) entry._rawBytes = Buffer.byteLength(entry.body);
+            httpEncoding.note({ before: entry._rawBytes, after: buf.length, fromCache: cacheHeader !== 'MISS' });
+            res.set('Content-Encoding', enc);
+            return res.type(type).send(buf);
+          } catch (e) { resourceMetrics.inc('http.encodeErrors'); /* fall through: send the plain body */ }
+        }
+      }
+      return res.status(result.status).type(type).send(result.body);
+    };
+
+    // The last good board, clearly labelled, for when the provider cannot be asked (cooling down, over budget) or answered with a failure. Returns true if it answered.
+    // Never used for 401/403 (a rejected key must stay visible) or for a fresh/live result.
+    const respondStale = async (reason, extraHeaders = {}) => {
+      const st = parlayCache.getStale(cacheKey);
+      if (!st) return false;
+      resourceMetrics.inc('parlay.staleServed'); resourceMetrics.inc('parlay.staleServed.' + reason.replace(/[^a-z0-9]+/gi, '-').toLowerCase());
+      await sendResult(st.entry, 'STALE', { entry: st.entry, headers: { 'x-data-age-seconds': st.ageSeconds, 'x-stale-reason': reason, ...extraHeaders } });
+      return true;
+    };
+    const failsOver = (status) => status === 429 || status >= 500;
+    // Answers with a finished upstream result: a failure the stale board can cover is covered; everything else is sent as it came.
+    const respond = async (result, label) => {
+      if (failsOver(result.status) && await respondStale('upstream-' + result.status)) return;
+      return sendResult(result, label);
     };
 
     // A caller may bypass the response cache (the page's user-triggered direct book check sends Cache-Control: no-cache); the fresh result is still stored.
     const bypassCache = /no-cache/i.test(String(req.headers['cache-control'] || ''));
     const hit = bypassCache ? null : parlayCache.get(cacheKey);
-    if (hit) return sendResult(hit, 'HIT');
+    if (hit) { resourceMetrics.inc('parlay.cacheHit'); return sendResult(hit, 'HIT', { entry: hit }); }
 
     const existing = bypassCache ? null : parlayCache.getInFlight(cacheKey);
     if (existing) {
       parlayCache.recordCoalesced();
       try {
         const result = await existing;
-        return sendResult(result, 'COALESCED');
+        return respond(result, 'COALESCED');
       } catch (err) {
+        if (await respondStale('upstream-unreachable')) return;
         return res.status(502).json({ error: `${provider} unreachable: ` + err.message });
       }
     }
@@ -922,6 +986,8 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
     if (!dataSourceHealth.isEligible(provider)) {
       const health = dataSourceHealth.getHealth(provider);
       logOncePerMinute(provider, `[data-source] ${provider} in cooldown until ${health.cooldownUntil} -- short-circuiting without calling upstream`);
+      resourceMetrics.inc('parlay.cooldownShortCircuit');
+      if (await respondStale('cooldown', { 'x-cooldown-until': health.cooldownUntil || '' })) return;
       return res.status(503).json({
         status: 'unavailable',
         reason: `${provider} is cooling down after repeated failures (${health.status})`,
@@ -929,11 +995,32 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
       });
     }
 
+    // Credit budget (lib/providerBudget.js): checked only here, i.e. only for a request that would otherwise cost an upstream call.
+    const budget = providerBudget.admit(provider, boardScope);
+    if (!budget.allowed) {
+      logOncePerMinute(provider + ':budget', `[data-source] ${provider} upstream call refused by the credit budget (${budget.reason}: ${budget.detail}); retry in ~${budget.retryAfterSeconds}s`);
+      resourceMetrics.inc('parlay.budgetDenied'); resourceMetrics.inc('parlay.budgetDenied.' + budget.reason);
+      if (await respondStale('budget-' + budget.reason)) return;
+      res.set('Retry-After', String(budget.retryAfterSeconds));
+      res.set('x-credit-budget', budget.reason === 'overshoot' ? 'board-aborted' : (budget.reason.startsWith('board') ? 'board-denied' : 'denied'));   // 'board-aborted' = the hard stop hit while a board was loading: that refresh is incomplete
+      return res.status(503).json({
+        status: 'unavailable',
+        reason: `${provider} credit budget reached (${budget.reason}); no upstream call was made`,
+        detail: budget.detail,
+        retryAfterSeconds: budget.retryAfterSeconds
+      });
+    }
+
     const doFetch = (async () => {
       const qs = new URLSearchParams(req.query).toString();
       const url = `https://${host}/${upstreamPath}${qs ? '?' + qs : ''}`;
+      resourceMetrics.inc('parlay.upstreamCalls');
       const upstream = await fetch(url, { headers: { Accept: 'application/json' } });
       const body = await upstream.text();
+      // The call reached the provider and was answered: it counts against the budget (by the provider's own x-credits-cost when sent, otherwise the documented assumption).
+      providerBudget.record(provider, { status: upstream.status, headers: upstream.headers }, Date.now(), boardScope);
+      resourceMetrics.inc('parlay.upstreamBytes', body.length);
+      resourceMetrics.inc('parlay.upstream.' + (upstream.status >= 200 && upstream.status < 300 ? '2xx' : upstream.status >= 500 ? '5xx' : upstream.status === 429 ? '429' : '4xx'));
 
       if (upstream.status === 429) {
         const retryAfterSeconds = parseRetryAfterSeconds(upstream.headers.get('retry-after'));
@@ -996,15 +1083,18 @@ function makeCachedParlayPassthrough(provider, host, extraPassthroughHeaders = [
 
     parlayCache.setInFlight(cacheKey, doFetch);
 
+    let result;
     try {
-      const result = await doFetch;
-      return sendResult(result, 'MISS');
+      result = await doFetch;
     } catch (err) {
       const kind = /timeout|abort/i.test(err.message) ? 'timeout' : 'temporarilyUnavailable';
       dataSourceHealth.recordFailure(provider, { kind, reason: err.message });
       console.log(`[data-source] ${provider} unreachable (${kind}: ${err.message})`);
+      resourceMetrics.inc('parlay.upstream.unreachable');
+      if (await respondStale('upstream-unreachable')) return;
       return res.status(502).json({ error: `${provider} unreachable: ` + err.message });
     }
+    return respond(result, 'MISS');
   };
 }
 
@@ -1069,6 +1159,29 @@ router.get('/data-sources/health', (req, res) => {
       { provider: 'mlbstatsapi', note: 'fetched directly by the browser, not proxied through this backend' },
       { provider: 'balldontlie', note: 'fetched directly by the browser, not proxied through this backend' }
     ]
+  });
+});
+
+// GET /api/resource-metrics — what this process has spent since it started: provider credits (measured by the provider's own x-credits-cost header where sent, otherwise
+// the stated assumption), response-cache hits / misses / stale answers, the upstream credit budget, compression and 304 savings, the archive's latest-row cache (database
+// lookups avoided), snapshot-storage operations and the Turso quota-block breaker, and the boot-job gate decisions. Counts and timestamps only: no keys, no request URLs,
+// no cached bodies, no row contents. Per process, so it resets on a restart (the provider's own x-credits-remaining, in `provider.budget`, is the persistent figure).
+router.get('/resource-metrics', (req, res) => {
+  const snapshotStore = require('../lib/snapshotStore');
+  const { passStats, latestCacheStats } = require('../lib/marketArchive/providerLineArchiveFactory');
+  const mb = (n) => Math.round(n / 1048576 * 10) / 10;
+  const m = process.memoryUsage();
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    generatedAt: new Date().toISOString(),
+    uptimeSeconds: resourceMetrics.uptimeSeconds(),
+    memory: { heapUsedMB: mb(m.heapUsed), rssMB: mb(m.rss) },
+    provider: { name: 'parlayapi', health: dataSourceHealth.getHealth('parlayapi'), budget: providerBudget.stats('parlayapi'), cache: parlayCache.stats() },
+    http: httpEncoding.stats(),
+    archive: { passes: passStats(), latestCache: latestCacheStats() },
+    storage: snapshotStore.stats(),
+    startupJobs: require('../lib/startupJobs').decisions(),
+    counters: resourceMetrics.snapshot()
   });
 });
 

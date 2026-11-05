@@ -324,6 +324,24 @@ let _writeActive = 0, _writeMax = 0, _writeChunks = 0; const _writeWaiters = [];
 async function acquireWriteSlot() { if (_writeActive < WRITE_CONCURRENCY) { _writeActive++; if (_writeActive > _writeMax) _writeMax = _writeActive; return; } await new Promise(r => _writeWaiters.push(r)); /* the releasing caller handed its slot over */ }
 function releaseWriteSlot() { const next = _writeWaiters.shift(); if (next) next(); else _writeActive--; }
 
+// ── Turso quota-block handling (RESOURCE OPTIMIZATION 2026-11-05, docs/RESOURCE_OPTIMIZATION_2026-11-05.md) ─────────────────────
+// When the Turso account's row quota is used up the service answers every statement with an error like "BLOCKED: SQL read/write operations are forbidden (do you need to
+// upgrade your plan?)". That is not a broken configuration and a restart cannot fix it, yet the startup check used to treat it as fatal: the process exited, Render restarted it,
+// the check ran again (more refused reads, and a fall-through to schema WRITES that could only be refused too) -- a crash loop (production 2026-11-05) that also kept the
+// provider passthrough down. isQuotaBlocked() recognises that error; the Turso implementation below then (a) stops asking for TURSO_BLOCKED_BACKOFF_MS (default 5 min) instead of
+// issuing a refused statement per request, and (b) is retried automatically afterwards, so no restart is needed once the quota is back. Other failures (bad URL, bad token,
+// unreachable network) are NOT quota blocks and keep their previous, fatal-at-startup handling.
+const BLOCKED_RE = /\bBLOCKED\b|operations are forbidden|upgrade your plan|quota (exceeded|exhausted|used)/i;
+function isQuotaBlocked(err) {
+  for (let x = err, i = 0; x && i < 5; x = x.cause, i++) { if (x.code === 'STORAGE_BLOCKED' || BLOCKED_RE.test(String(x.message || '') + ' ' + String(x.code || ''))) return true; }
+  return false;
+}
+const BLOCK_BACKOFF_MS = Math.max(500, Number(process.env.TURSO_BLOCKED_BACKOFF_MS) || 5 * 60_000);   // (the low floor exists for tests; the default is 5 minutes)
+const _blocked = { until: 0, since: null, lastMessage: null, shortCircuited: 0, blockedErrors: 0, recoveries: 0 };
+const _ops = { queries: 0, rowsReturned: 0, runs: 0, batchStatements: 0, transactions: 0 };
+function blockedState() { return { blocked: Date.now() < _blocked.until, retryAt: _blocked.until ? new Date(_blocked.until).toISOString() : null, since: _blocked.since, lastMessage: _blocked.lastMessage, backoffMs: BLOCK_BACKOFF_MS, shortCircuited: _blocked.shortCircuited, blockedErrors: _blocked.blockedErrors, recoveries: _blocked.recoveries }; }
+function stats() { return { backend: USE_TURSO ? 'turso' : 'sqlite', ..._ops, ...blockedState() }; }
+
 // ── SQLite implementation (local dev / default) ─────────────────────────
 function createSqliteImpl() {
   const Database = require('better-sqlite3');
@@ -435,6 +453,30 @@ function createTursoImpl() {
   // A SQL error answered BY the server (code SQLITE_* / SQL_*, which libSQL wraps with a `cause`) is not a network failure; a refused / reset / timed-out connection is.
   const NET_RE = /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|EPIPE|socket|other side closed|network|timed? ?out/i;
   const isNetworkFailure = (e) => { if (!e || /^SQL/i.test(String(e.code || ''))) return false; for (let x = e, i = 0; x && i < 4; x = x.cause, i++) { if (x instanceof TypeError || NET_RE.test(String(x.message || '') + ' ' + String(x.code || ''))) return true; } return false; };
+  // Quota-block circuit breaker: while Turso is known to be refusing statements, fail fast instead of sending one refused statement per request; retry after the backoff.
+  function guard() {
+    if (Date.now() < _blocked.until) {
+      _blocked.shortCircuited++;
+      const e = new Error('snapshot storage is refusing queries (Turso BLOCKED: quota used up); not retried until ' + new Date(_blocked.until).toISOString());
+      e.code = 'STORAGE_BLOCKED';
+      throw e;
+    }
+  }
+  function noteFailure(e) {
+    if (!isQuotaBlocked(e) || (e && e.code === 'STORAGE_BLOCKED')) return;
+    if (!_blocked.since) _blocked.since = new Date().toISOString();
+    _blocked.until = Date.now() + BLOCK_BACKOFF_MS; _blocked.blockedErrors++; _blocked.lastMessage = String(e && e.message || e).slice(0, 200);
+    console.error('[snapshotStore] Turso refused a statement (quota BLOCKED); pausing snapshot storage requests for ' + Math.round(BLOCK_BACKOFF_MS / 1000) + ' s, then retrying automatically');
+  }
+  function noteSuccess() {
+    if (_blocked.since) { console.log('[snapshotStore] Turso is accepting statements again (was blocked since ' + _blocked.since + ')'); _blocked.since = null; _blocked.until = 0; _blocked.lastMessage = null; _blocked.recoveries++; }
+  }
+  async function guarded(fn) {
+    guard();
+    try { const r = await fn(); noteSuccess(); return r; }
+    catch (e) { noteFailure(e); throw e; }
+  }
+
   let schemaReady = null;
   async function ensureSchema() {
     if (!schemaReady) {
@@ -445,6 +487,7 @@ function createTursoImpl() {
             { migrationStatements: SCHEMA_MIGRATION_STATEMENTS, mustNotExist: SCHEMA_RETIRED_INDEXES });
         } catch (e) {
           if (isNetworkFailure(e)) throw e;
+          if (isQuotaBlocked(e)) throw e;   // a refused READ is not "this server cannot introspect": falling through to the schema WRITES could only be refused too
           console.log('[snapshotStore] read-only schema check unavailable (' + String(e && e.message).slice(0, 160) + '); applying the schema statements');
         }
         if (verdict && verdict.ok) {
@@ -458,46 +501,60 @@ function createTursoImpl() {
           await client.execute(stmt);
         }
         console.log('[snapshotStore] applied ' + SCHEMA_STATEMENTS.length + ' schema statements in ' + (Date.now() - t1) + ' ms');
-      })();
+      })().catch((e) => { schemaReady = null; throw e; });   // a failure is not cached: once Turso answers again, the next call succeeds without a restart
     }
     return schemaReady;
   }
 
   return {
     async query(sql, params = []) {
-      await ensureSchema();
-      const rs = await client.execute({ sql, args: params });
-      return rs.rows.map(r => ({ ...r })); // libSQL rows are proxy objects; plain-object them
+      return guarded(async () => {
+        await ensureSchema();
+        const rs = await client.execute({ sql, args: params });
+        _ops.queries++; _ops.rowsReturned += rs.rows.length;
+        return rs.rows.map(r => ({ ...r })); // libSQL rows are proxy objects; plain-object them
+      });
     },
     async run(sql, params = []) {
-      await ensureSchema();
-      const rs = await client.execute({ sql, args: params });
-      return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid };
+      return guarded(async () => {
+        await ensureSchema();
+        const rs = await client.execute({ sql, args: params });
+        _ops.runs++;
+        return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid };
+      });
     },
     async transaction(asyncFn) {
-      await ensureSchema();
-      const tx = await client.transaction('write');
-      const exec = async (sql, params = []) => {
-        const rs = await tx.execute({ sql, args: params });
-        return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid };
-      };
-      try {
-        const result = await asyncFn(exec);
-        await tx.commit();
-        return result;
-      } catch (e) {
-        await tx.rollback();
-        throw e;
-      }
+      return guarded(async () => {
+        await ensureSchema();
+        const tx = await client.transaction('write');
+        _ops.transactions++;
+        const exec = async (sql, params = []) => {
+          const rs = await tx.execute({ sql, args: params });
+          return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid };
+        };
+        try {
+          const result = await asyncFn(exec);
+          await tx.commit();
+          return result;
+        } catch (e) {
+          await tx.rollback();
+          throw e;
+        }
+      });
     },
     async verifyReady() {
-      await ensureSchema();
-      await client.execute(`SELECT 1`);
+      return guarded(async () => {
+        await ensureSchema();
+        await client.execute(`SELECT 1`);
+      });
     },
     // One chunk of { sql, args } statements in ONE round trip and ONE short write transaction (all or nothing).
     async batch(statements) {
-      await ensureSchema();
-      await client.batch(statements.map(s => ({ sql: s.sql, args: s.args || [] })), 'write');
+      return guarded(async () => {
+        await ensureSchema();
+        await client.batch(statements.map(s => ({ sql: s.sql, args: s.args || [] })), 'write');
+        _ops.batchStatements += statements.length;
+      });
     }
   };
 }
@@ -540,6 +597,8 @@ async function verifyReady() { return getImpl().verifyReady(); }
 
 module.exports = {
   backend, query, queryOne, run, transaction, batchWrite, verifyReady, SCHEMA_STATEMENTS,
+  // Quota-block handling (see the section above): classify an error, and report the breaker / operation counters (counts only).
+  isQuotaBlocked, blockedState, stats,
   // Test/diagnostic view of the shared write cap (highest number of chunks in flight at once, chunks written).
   _writeStats: () => ({ limit: WRITE_CONCURRENCY, chunkRows: WRITE_CHUNK_ROWS, maxActive: _writeMax, chunks: _writeChunks }),
   // Local-only raw handle, for the handful of existing callers (tests) that

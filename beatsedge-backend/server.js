@@ -40,9 +40,15 @@ app.use(cors({
   exposedHeaders: [
     'x-result-has-more', 'x-next-offset', 'x-result-truncated', 'x-result-truncated-hint', 'x-result-row-count',
     'x-result-degraded', 'x-credits-cost', 'x-credits-remaining', 'x-rate-limit-remaining', 'x-rate-limit-reset',
-    'x-request-id', 'retry-after', 'x-cache'
+    'x-request-id', 'retry-after', 'x-cache',
+    // Set only on a STALE answer (the last good board, served when the provider cannot be asked): how old it is and why.
+    'x-data-age-seconds', 'x-stale-reason', 'x-cooldown-until',
+    // Set on a credit-budget refusal: board-denied (no complete board is affordable, the whole sport is refused) or board-aborted (the hard stop hit mid-board).
+    'x-credit-budget'
   ]
 }));
+// gzip / brotli for large JSON (lib/httpEncoding.js; zlib only, no new dependency). The cached ParlayAPI passthrough pre-encodes its own bodies and is skipped here.
+app.use(require('./lib/httpEncoding').middleware());
 // 16mb ceiling so the client can push a full slate of prop snapshots in one
 // POST (see /api/snapshots). Everything else is tiny; the limit is just a cap.
 app.use(express.json({ limit: '16mb' }));
@@ -105,15 +111,33 @@ app.get('/', (req, res) => {
 // crashes the process on purpose (see lib/snapshotStore.js's header) rather
 // than letting the app come up "healthy" with snapshot storage quietly
 // broken.
+//
+// ONE exception (2026-11-05): a Turso QUOTA block ("BLOCKED: SQL read/write operations are forbidden (do you need to upgrade your plan?)"). That is not a broken configuration
+// and no restart can fix it, but treating it as fatal produced a crash loop (100+ restarts, production 2026-11-05) in which every boot re-issued the refused reads and the
+// provider passthrough was down for everyone. The server now starts in DEGRADED mode: it says so loudly, everything that does not need the snapshot database keeps working
+// (the cached provider passthrough, /api/health, the historical routes that can still read), snapshot / archive writes fail fast (lib/snapshotStore.js's circuit breaker) instead of
+// being retried per request, and storage is re-verified on a timer so it recovers by itself when the quota returns. Every OTHER failure (bad URL / token, unreachable network,
+// missing schema that cannot be created) is unchanged: fatal, exit 1.
 (async () => {
+  let snapshotStore = null;
   try {
-    const snapshotStore = require('./lib/snapshotStore');
+    snapshotStore = require('./lib/snapshotStore');
     await snapshotStore.verifyReady();
     console.log(`[startup] snapshot storage ready (backend=${snapshotStore.backend})`);
   } catch (err) {
-    console.error('[startup] FATAL: snapshot storage is not reachable —', err.message);
-    console.error('[startup] Refusing to start with broken snapshot storage. Check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.');
-    process.exit(1);
+    if (snapshotStore && typeof snapshotStore.isQuotaBlocked === 'function' && snapshotStore.isQuotaBlocked(err)) {
+      console.error('[startup] WARNING: snapshot storage (Turso) is refusing queries because its quota is used up —', err.message);
+      console.error('[startup] Starting in DEGRADED mode instead of exiting: snapshot / archive writes are paused, everything else keeps serving. Storage is re-checked automatically.');
+      const recheck = async () => {
+        try { await snapshotStore.verifyReady(); console.log('[startup] snapshot storage is ready again (quota block lifted)'); }
+        catch (e) { setTimeout(recheck, Math.max(60_000, Number(process.env.TURSO_BLOCKED_BACKOFF_MS) || 5 * 60_000)).unref(); }
+      };
+      setTimeout(recheck, Math.max(60_000, Number(process.env.TURSO_BLOCKED_BACKOFF_MS) || 5 * 60_000)).unref();
+    } else {
+      console.error('[startup] FATAL: snapshot storage is not reachable —', err.message);
+      console.error('[startup] Refusing to start with broken snapshot storage. Check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.');
+      process.exit(1);
+    }
   }
 
   app.listen(PORT, () => {
@@ -177,7 +201,10 @@ async function runNflPipeline(label) {
     if (stdout) console.log(`[${label}] NFL recompute output:`, stdout.trim());
   } catch (err) {
     console.error(`[${label}] NFL recompute failed:`, err.stderr || err.message);
+    return;
   }
+  // Both steps finished: record it (ingest_log, notes 'NFL: ...') so the boot-time gate (lib/startupJobs.js) knows this pipeline ran. The NFL scripts write no ingest_log row of their own.
+  await require('./lib/startupJobs').recordCompleted('nfl', `completed (${label}) ${new Date().toISOString().slice(0, 10)}`);
 }
 
 // Only pull the NBA history if it's missing or stale (fresh Render deploys
@@ -227,19 +254,30 @@ async function refreshNbaHistoryIfStale(label) {
   }
 })();
 
+// RESOURCE OPTIMIZATION (2026-11-05): each of these used to run on EVERY boot, which on a free-tier instance that sleeps when idle is every wake-up. They are now gated by
+// lib/startupJobs.js: a job runs at boot only if its last completed run (ingest_log) is older than STARTUP_JOB_MIN_AGE_HOURS (default 20; 0 = the old always-run behaviour) or
+// it has never run, and is skipped when that history cannot be read. The 06:00 UTC cron above is not gated. refreshNbaHistoryIfStale already had its own staleness check.
 if (!process.env.SKIP_STARTUP_JOBS) {
   setTimeout(async () => {
-    console.log('[startup] Running initial NBA update pass...');
-    await runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
+    const startupJobs = require('./lib/startupJobs');
+    const gate = async (job, label) => {
+      const d = await startupJobs.decide(job);
+      console.log(`[startup] ${label}: ${d.run ? 'running' : 'skipped'} — ${d.reason}`);
+      return d.run;
+    };
 
-    console.log('[startup] Running initial MLB update pass...');
-    await runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
-
-    console.log('[startup] Running initial NHL update pass...');
-    await runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
-
-    console.log('[startup] Running initial NFL ingest + DvP recompute...');
-    await runNflPipeline('startup');
+    if (await gate('nba', 'NBA initial update pass')) {
+      await runNightlyUpdate().catch(err => console.error('[startup] NBA initial update failed:', err));
+    }
+    if (await gate('mlb', 'MLB initial update pass')) {
+      await runMlbNightlyUpdate().catch(err => console.error('[startup] MLB initial update failed:', err));
+    }
+    if (await gate('nhl', 'NHL initial update pass')) {
+      await runNhlNightlyUpdate().catch(err => console.error('[startup] NHL initial update failed:', err));
+    }
+    if (await gate('nfl', 'NFL ingest + DvP recompute')) {
+      await runNflPipeline('startup');
+    }
 
     await refreshNbaHistoryIfStale('startup');
   }, 10_000);

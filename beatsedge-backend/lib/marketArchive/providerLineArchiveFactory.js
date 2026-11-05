@@ -42,6 +42,29 @@ const jsonOf = (x) => { try { return x == null ? null : JSON.stringify(x); } cat
 const IDENTITY_COLS = ['sport', 'event_id', 'player_raw', 'market_key_raw', 'source', 'projection_type', 'period', 'side'];
 const CHANGE_FIELDS = ['line', 'over_price', 'under_price', 'provider_last_update', 'game_status', 'market_label'];
 
+// RESOURCE OPTIMIZATION (2026-11-05, docs/RESOURCE_OPTIMIZATION_2026-11-05.md).
+//
+// 1. Latest-row cache. Every pass used to ask the database for the latest stored row of EVERY identity of EVERY event on the board it had just read (a window function
+//    over all stored rows of those events), and the page's one refresh produces ~36 upstream responses -> ~36 such scans, each reading the event's whole stored history.
+//    That scan is the measured driver of Turso rows READ. The latest row per identity is now loaded from the database ONCE per event (per process, and again after
+//    ARCHIVE_LATEST_CACHE_TTL_MS, default 6 h) and kept in memory as a compact fingerprint of the CHANGE_FIELDS; later passes compare against memory. What counts as a
+//    change, what an identity is, and what is written are untouched: the same rows are inserted, INSERT-only, in the same order. The cache is updated only AFTER a write
+//    succeeds, and any failed write, or a write made outside a pass (recordObservation), drops the affected events so they are re-read from the database.
+//    ARCHIVE_LATEST_CACHE_MAX (default 60000 identities across one sport's table; 0 turns the cache off = the previous behaviour) bounds the memory; whole events are
+//    evicted, oldest first, so an event is never half cached.
+// 2. ARCHIVE_LAST_UPDATE_IS_CHANGE (default 1 = unchanged). Set to 0 and a row whose ONLY difference from the stored latest row is the provider's own `last_update`
+//    timestamp is not written. Measured on the local WNBA archive (13,939 rows): 21.9 % of rows are last_update-only, 55.5 % are real line / price changes, 22.4 % are
+//    first observations (MLB sample: 0 % last_update-only). It stays 1 because a stored row's provider_last_update / age_seconds are what freshness checks read; flipping
+//    it is a decision about the archive's contents, not a free optimization.
+const _cacheMaxEnv = process.env.ARCHIVE_LATEST_CACHE_MAX;
+const LATEST_CACHE_MAX = _cacheMaxEnv !== undefined && _cacheMaxEnv !== '' && Number.isFinite(Number(_cacheMaxEnv)) && Number(_cacheMaxEnv) >= 0 ? Math.floor(Number(_cacheMaxEnv)) : 60000;
+const LATEST_CACHE_TTL_MS = Math.max(1000, Number(process.env.ARCHIVE_LATEST_CACHE_TTL_MS) || 6 * 3600_000);   // (the 1 s floor exists for tests)
+const LAST_UPDATE_IS_CHANGE = process.env.ARCHIVE_LAST_UPDATE_IS_CHANGE !== '0';
+const COMPARED_FIELDS = LAST_UPDATE_IS_CHANGE ? CHANGE_FIELDS : CHANGE_FIELDS.filter(f => f !== 'provider_last_update');
+// Exact, type-tagged fingerprint of the compared fields: two rows have equal fingerprints iff no compared field differs (null and undefined are the same, as in differs()).
+const fpOf = (row) => COMPARED_FIELDS.map(f => { const v = row[f]; return v == null ? '\u0000' : (typeof v === 'number' ? 'n' + v : 's' + v); }).join('\u0001');
+const _registry = [];   // every factory's cache stats, for GET /api/resource-metrics
+
 const DFS_SOURCES = new Set(['prizepicks', 'underdog', 'sleeper']);
 const SPORTSBOOK_SOURCES = new Set(['fanduel', 'draftkings', 'betmgm', 'betrivers', 'caesars', 'pinnacle', 'bovada']);
 function sourceTypeFor(book) {
@@ -97,7 +120,18 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
     return rows[0] || null;
   }
 
-  function differs(a, b) { return CHANGE_FIELDS.some(f => (a[f] ?? null) !== (b[f] ?? null)); }
+  function differs(a, b) { return COMPARED_FIELDS.some(f => (a[f] ?? null) !== (b[f] ?? null)); }
+
+  // Latest-row cache (see the header comment above): eventId -> { loadedAt, ids: Map(identityKey -> fingerprint) }. Map insertion order is the LRU order.
+  const latest = new Map(); let latestIdentities = 0;
+  const cstat = { batches: 0, eventsFromMemory: 0, eventsLoaded: 0, dbLookups: 0, dbRowsRead: 0, evictedEvents: 0, invalidatedEvents: 0, expiredEvents: 0 };
+  _registry.push({ table: TABLE, snapshot: () => ({ table: TABLE, enabled: LATEST_CACHE_MAX > 0, cachedEvents: latest.size, cachedIdentities: latestIdentities, maxIdentities: LATEST_CACHE_MAX, ttlMs: LATEST_CACHE_TTL_MS, lastUpdateIsChange: LAST_UPDATE_IS_CHANGE, ...cstat }) });
+  function dropEvent(eventId) { const e = latest.get(eventId); if (!e) return false; latestIdentities -= e.ids.size; latest.delete(eventId); return true; }
+  function invalidateEvents(eventIds) { for (const id of eventIds) if (dropEvent(id)) cstat.invalidatedEvents++; }
+  function trimTo(keep) { // evict the oldest whole events (never one in `keep`) until under the bound
+    if (LATEST_CACHE_MAX <= 0) return;
+    for (const id of latest.keys()) { if (latestIdentities <= LATEST_CACHE_MAX) break; if (keep && keep.has(id)) continue; dropEvent(id); cstat.evictedEvents++; }
+  }
 
   // Stable string key for IDENTITY_COLS -- used only as an in-memory Map
   // key (never sent to the DB), so it never needs to match SQL's NULL
@@ -126,13 +160,22 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
   // window functions have been in SQLite (and therefore libSQL/Turso, and
   // the bundled better-sqlite3 used locally) since 3.25 -- both backends
   // this app already supports run the identical SQL here.
+  // Returns Map(eventId -> { ids: Map(identityKey -> fingerprint) }) for every event of the batch: from memory when cached and not expired, otherwise read from the database
+  // (ONE query for all the events that are missing) and, unless the cache is off, remembered. Same SQL as before, but only for the events not already known.
   async function fetchLatestForIdentities(normalizedRows) {
-    const map = new Map();
     const eventIds = [...new Set(normalizedRows.map(r => r.event_id))];
-    if (!eventIds.length) return map;
-    const placeholders = eventIds.map(() => '?').join(',');
+    const out = new Map(); if (!eventIds.length) return out;
+    cstat.batches++;
+    const now = Date.now(); const missing = [];
+    for (const id of eventIds) {
+      const e = LATEST_CACHE_MAX > 0 ? latest.get(id) : null;
+      if (e && now - e.loadedAt < LATEST_CACHE_TTL_MS) { out.set(id, e); cstat.eventsFromMemory++; latest.delete(id); latest.set(id, e); /* most recently used */ }
+      else { if (e) { dropEvent(id); cstat.expiredEvents++; } missing.push(id); }
+    }
+    if (!missing.length) return out;
+    const placeholders = missing.map(() => '?').join(',');
     const partitionCols = IDENTITY_COLS.join(', ');
-    // Only the columns the comparison below reads (identityKeyOf -> IDENTITY_COLS, differs -> CHANGE_FIELDS). The lookup used to be SELECT *, which also pulled every stored
+    // Only the columns the comparison below reads (identityKeyOf -> IDENTITY_COLS, the fingerprint -> CHANGE_FIELDS). The lookup used to be SELECT *, which also pulled every stored
     // row's raw_json (~1 KB of text each) for EVERY identity of the batch's events into memory for the length of the pass; nothing reads it.
     const lookupCols = [...new Set([...IDENTITY_COLS, ...CHANGE_FIELDS])].join(', ');
     const sql = `
@@ -142,9 +185,13 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
         WHERE sport IS ? AND event_id IN (${placeholders})
       ) WHERE _rn = 1
     `;
-    const rows = await store.query(sql, [sport, ...eventIds]);
-    for (const row of rows) map.set(identityKeyOf(row), row);
-    return map;
+    const rows = await store.query(sql, [sport, ...missing]);
+    cstat.dbLookups++; cstat.dbRowsRead += rows.length; cstat.eventsLoaded += missing.length;
+    const fresh = new Map(missing.map(id => [id, { eventId: id, loadedAt: now, ids: new Map() }]));
+    for (const row of rows) { const e = fresh.get(row.event_id == null ? null : String(row.event_id)); if (e) e.ids.set(identityKeyOf(row), fpOf(row)); }
+    for (const [id, e] of fresh) { out.set(id, e); if (LATEST_CACHE_MAX > 0) { latest.set(id, e); latestIdentities += e.ids.size; } }
+    trimTo(new Set(eventIds));
+    return out;
   }
 
   // Applies the EXACT existing changed/unchanged decision (differs()) to
@@ -160,15 +207,24 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
   // instead of stale DB state.
   async function recordNormalizedBatch(normalizedRows) {
     if (!normalizedRows.length) return { inserted: 0, unchanged: 0 };
-    const latestByIdentity = await fetchLatestForIdentities(normalizedRows);
+    const eventIds = [...new Set(normalizedRows.map(r => r.event_id))];
+    let latestByEvent;
+    try { latestByEvent = await fetchLatestForIdentities(normalizedRows); }
+    catch (e) { invalidateEvents(eventIds); throw e; }
     const toInsert = [];
+    const pending = [];   // [eventMap, key, fingerprint]: applied to the cache only once the write below has succeeded
+    const overlay = new Map();   // a later duplicate in the SAME batch compares against the earlier one's outcome, exactly as sequential recordObservation() calls would
     let unchanged = 0;
     for (const row of normalizedRows) {
       const key = identityKeyOf(row);
-      const prior = latestByIdentity.get(key) || null;
-      if (prior && !differs(row, prior)) { unchanged++; continue; }
+      const ev = latestByEvent.get(row.event_id);
+      const fp = fpOf(row);
+      const okey = row.event_id + '\u0002' + key;
+      const prior = overlay.has(okey) ? overlay.get(okey) : (ev ? ev.ids.get(key) : undefined);
+      if (prior !== undefined && prior === fp) { unchanged++; continue; }
       toInsert.push(row);
-      latestByIdentity.set(key, row);
+      overlay.set(okey, fp);
+      pending.push([ev, key, fp]);
     }
     if (toInsert.length) {
       const cols = Object.keys(toInsert[0]);
@@ -178,7 +234,22 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
       // transaction, with a process-wide cap on how many are open at once. The previous form held ONE write transaction open for the whole pass, one
       // round trip per row (minutes on Turso), which blocked every other writer and the booting instance's schema statements. If a chunk fails, the
       // earlier chunks stay committed and the next pass's latest-row lookup (above) sees them, so nothing is duplicated or lost.
-      await store.batchWrite(toInsert.map(row => ({ sql, args: cols.map(c => row[c]) })));
+      try { await store.batchWrite(toInsert.map(row => ({ sql, args: cols.map(c => row[c]) }))); }
+      catch (e) { invalidateEvents(eventIds); throw e; }   // some chunks may be committed and some not: forget these events and re-read them
+      // The write succeeded: the cache now reflects what is stored. When one pass inserts SEVERAL rows for the same identity (an alt-line ladder: the identity does not include
+      // the line) they all carry the same captured_at, and the database lookup this cache replaces ("latest row per identity, ORDER BY captured_at DESC") breaks that tie by
+      // keeping the FIRST row inserted. The cache reproduces exactly that (first wins), so the rows written are identical to what the database lookup would have produced
+      // (scripts/test-archive-heap-bound.js section A and scripts/test-snapshot-startup-archive.js compare them row for row). That tie-break is also why a ladder is partly
+      // re-written on every pass; see docs/RESOURCE_OPTIMIZATION_2026-11-05.md, "Ladder re-insertion", for the measurement and the decision it needs.
+      const applied = new Set();
+      for (const [ev, key, fp] of pending) {
+        if (!ev) continue;
+        const ak = ev.eventId + '\u0002' + key; if (applied.has(ak)) continue; applied.add(ak);
+        const isNew = !ev.ids.has(key);
+        ev.ids.set(key, fp);
+        if (isNew && latest.get(ev.eventId) === ev) latestIdentities++;
+      }
+      trimTo(new Set(eventIds));
     }
     return { inserted: toInsert.length, unchanged };
   }
@@ -193,6 +264,7 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
     const cols = Object.keys(row);
     const placeholders = cols.map(() => '?').join(',');
     const result = await store.run(`INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders})`, cols.map(c => row[c]));
+    invalidateEvents([row.event_id]);   // written outside a pass: the cached latest rows of this event are no longer authoritative
     return { inserted: true, id: result.lastInsertRowid };
   }
 
@@ -325,4 +397,6 @@ function createProviderLineArchive({ sport, propsPathRegex, tableName, semantics
 
 // Diagnostic view of the shared pass slot: the cap, how many passes hold it now, the most that ever did, how many have run, how many wait.
 const passStats = () => ({ limit: PASS_CONCURRENCY, maxWaiting: PASS_MAX_WAITING, active: _passActive, maxActive: _passMax, passesRun: _passRun, skipped: _passSkipped, waiting: _passWaiters.length });
-module.exports = { createProviderLineArchive, DFS_SOURCES, SPORTSBOOK_SOURCES, sourceTypeFor, passStats };
+// Per-table latest-row cache statistics (counts only) for GET /api/resource-metrics.
+const latestCacheStats = () => _registry.map(r => r.snapshot());
+module.exports = { createProviderLineArchive, DFS_SOURCES, SPORTSBOOK_SOURCES, sourceTypeFor, passStats, latestCacheStats };

@@ -42,8 +42,22 @@
 // (2am-9am ET) since very few US sports games are live then -- a safe,
 // clock-only heuristic that needs no extra API calls or live-game
 // awareness to implement.
-const DEFAULT_TTL_MS = 2 * 60_000;
-const OFF_PEAK_TTL_MS = 10 * 60_000;
+//
+// RESOURCE OPTIMIZATION (2026-11-05, docs/RESOURCE_OPTIMIZATION_2026-11-05.md): the baseline is now 10 minutes (was 2) and the off-peak TTL 30 minutes (was 10). The measured
+// credit burn came from a browser refresh loop that missed this cache on roughly every other tick; one refresh is ~36 upstream requests. A 10-minute TTL cuts the
+// upstream calls (and with them the archive passes, Turso reads/writes and outbound bytes, all of which hang off one upstream call) by about 5x. PARLAY_CACHE_TTL_MS
+// overrides the baseline (1 s .. 60 min; the low end exists for tests) and PARLAY_OFF_PEAK_TTL_MS the off-peak value. Line-movement history in the archives therefore has
+// ~10-minute resolution while a board is being viewed.
+const _ttlEnv = Number(process.env.PARLAY_CACHE_TTL_MS);
+const DEFAULT_TTL_MS = Number.isFinite(_ttlEnv) && process.env.PARLAY_CACHE_TTL_MS !== undefined && process.env.PARLAY_CACHE_TTL_MS !== '' && _ttlEnv >= 1000 ? Math.min(_ttlEnv, 60 * 60_000) : 10 * 60_000;
+const _offEnv = Number(process.env.PARLAY_OFF_PEAK_TTL_MS);
+const OFF_PEAK_TTL_MS = Number.isFinite(_offEnv) && process.env.PARLAY_OFF_PEAK_TTL_MS !== undefined && process.env.PARLAY_OFF_PEAK_TTL_MS !== '' && _offEnv >= 1000 ? Math.min(_offEnv, 6 * 60 * 60_000) : Math.max(DEFAULT_TTL_MS, 30 * 60_000);
+// Stale-on-error window: an expired 2xx body is kept (in a separate pool, never returned by get()) for this long so that, when the provider is down, cooling down or the
+// credit budget is spent, the page can be given the LAST GOOD board -- labelled x-cache: STALE with x-data-age-seconds -- instead of nothing. Capped at 2 hours.
+// OFF BY DEFAULT (0): the page does not read x-cache / x-data-age-seconds yet, and its "Checked N min ago" stamp is the page's own clock, so a stale board would look
+// current to a user. Turn it on (PARLAY_STALE_MAX_MS, e.g. 600000) only together with a page change that shows the data age. Everything below is tested with it on.
+const _staleEnv = Number(process.env.PARLAY_STALE_MAX_MS);
+const STALE_MAX_AGE_MS = process.env.PARLAY_STALE_MAX_MS !== undefined && process.env.PARLAY_STALE_MAX_MS !== '' && Number.isFinite(_staleEnv) && _staleEnv >= 0 ? Math.min(_staleEnv, 2 * 3600_000) : 0;
 const OFF_PEAK_START_HOUR_ET = 2;
 const OFF_PEAK_END_HOUR_ET = 9;
 
@@ -101,14 +115,16 @@ const MAX_CACHE_BYTES = (() => {
 // that a quiet sport's stale board doesn't sit resident for long, cheap
 // enough (O(cache.size), cache.size <= MAX_ENTRIES) to cost nothing
 // meaningful on a periodic timer.
-const SWEEP_INTERVAL_MS = DEFAULT_TTL_MS;
+const SWEEP_INTERVAL_MS = Math.min(DEFAULT_TTL_MS, 5 * 60_000);
 
 const cache = new Map();   // key -> { status, contentType, body, headers, expiresAt, cachedAt, byteSize }
+const stale = new Map();   // key -> an EXPIRED entry kept for stale-on-error only (same shape; never returned by get())
 const inFlight = new Map(); // key -> Promise<{status,contentType,body,headers}>
 
-let totalBytes = 0;
+let totalBytes = 0;   // fresh entries only -- what stats().cacheBytes and the existing tests measure
+let staleBytes = 0;   // the stale pool; fresh + stale together stay inside MAX_CACHE_BYTES
 
-const counters = { hits: 0, misses: 0, coalesced: 0, evictions: 0, byteEvictions: 0, expiredSwept: 0, sets: 0 };
+const counters = { hits: 0, misses: 0, coalesced: 0, evictions: 0, byteEvictions: 0, expiredSwept: 0, sets: 0, staleServed: 0, staleDropped: 0 };
 
 // What the response body actually occupies in the V8 heap -- the quantity MAX_CACHE_BYTES has to bound. This used to be the body's UTF-8 byte length, which is NOT what V8
 // holds: a string is stored at one byte per character only while every character is <= U+00FF; a single character above that (the "ć" in Dončić / Jokić, which is in nearly every
@@ -126,6 +142,25 @@ function removeEntry(key) {
   cache.delete(key);
 }
 
+function dropStale(key) {
+  const entry = stale.get(key);
+  if (!entry) return false;
+  staleBytes -= entry.byteSize || 0;
+  stale.delete(key);
+  return true;
+}
+
+// An entry that reached its expiry: leaves the fresh pool (and its bytes leave cacheBytes) and, if it is a 2xx body younger than the stale window, moves to the stale pool.
+function expireEntry(key) {
+  const entry = cache.get(key);
+  if (!entry) return;
+  removeEntry(key);
+  if (STALE_MAX_AGE_MS > 0 && entry.status >= 200 && entry.status < 300 && Date.now() < entry.cachedAt + STALE_MAX_AGE_MS) {
+    dropStale(key);
+    stale.set(key, entry); staleBytes += entry.byteSize || 0;
+  }
+}
+
 // Proactive reclamation: without this, an entry that expires during a
 // quiet period (nobody re-requests that exact sport/query combination)
 // would sit fully resident -- string body, headers, everything -- until
@@ -139,7 +174,10 @@ let _lastLoggedSets = 0;
 const sweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of cache) {
-    if (now >= entry.expiresAt) { removeEntry(key); counters.expiredSwept++; }
+    if (now >= entry.expiresAt) { expireEntry(key); counters.expiredSwept++; }
+  }
+  for (const [key, entry] of stale) {
+    if (now >= entry.cachedAt + STALE_MAX_AGE_MS) { dropStale(key); counters.staleDropped++; }
   }
   // One line per sweep while the cache has held anything since the last one (silent when idle): what the V8 heap holds against its limit, so that the memory problem in
   // docs/HEAP_EXHAUSTION_2026-10-21.md (or a regression of it) shows in the logs and not only in the instance's RSS graph, which cannot tell heap from native memory.
@@ -182,13 +220,60 @@ function cacheKeyFor(upstreamPath, query) {
 function get(key) {
   const entry = cache.get(key);
   if (!entry) { counters.misses++; return null; }
-  if (Date.now() >= entry.expiresAt) { removeEntry(key); counters.misses++; return null; }
+  if (Date.now() >= entry.expiresAt) { expireEntry(key); counters.misses++; return null; }
   counters.hits++;
   return entry;
 }
 
+// The fresh entry for a key without touching the hit/miss counters (for building a response around an entry that was just stored), or null.
+function peek(key) {
+  const entry = cache.get(key);
+  return entry && Date.now() < entry.expiresAt ? entry : null;
+}
+
+// The last good body for a key whose fresh entry has expired, or null. ONLY for answering when the provider cannot be asked (down, cooling down, budget spent):
+// the caller must label the response as stale and say how old it is (ageSeconds). Never used when a fresh entry or a live upstream call is possible.
+function getStale(key) {
+  if (STALE_MAX_AGE_MS <= 0) return null;
+  let entry = stale.get(key);
+  if (!entry) {
+    // An entry that expired but was never touched by get()/the sweep is still in the fresh pool; it is just as stale.
+    const e = cache.get(key);
+    if (e && Date.now() >= e.expiresAt) { expireEntry(key); entry = stale.get(key); }
+  }
+  if (!entry) return null;
+  if (Date.now() >= entry.cachedAt + STALE_MAX_AGE_MS) { dropStale(key); counters.staleDropped++; return null; }
+  counters.staleServed++;
+  return { entry, ageSeconds: Math.round((Date.now() - entry.cachedAt) / 1000) };
+}
+
+// Strong validator for a cached body (computed once per entry): lets the route answer If-None-Match with 304 without hashing a multi-MB string per request.
+function etagFor(entry) {
+  if (!entry) return null;
+  if (!entry._etag) entry._etag = require('crypto').createHash('sha1').update(String(entry.body)).digest('base64url').slice(0, 22);
+  return entry._etag;
+}
+
+// The body compressed with `encoding` ('br' | 'gzip'), computed once per entry and shared by every later request (a 0.1 vCPU instance cannot afford to re-compress a
+// multi-MB board per request). The compressed bytes are counted against the same budget as the body.
+function encodedBody(key, entry, encoding) {
+  entry._enc = entry._enc || {};
+  if (!entry._enc[encoding]) {
+    const p = require('./httpEncoding').encode(entry.body, encoding).then((buf) => {
+      const n = buf.length;
+      if (cache.get(key) === entry) { entry.byteSize = (entry.byteSize || 0) + n; totalBytes += n; }
+      else if (stale.get(key) === entry) { entry.byteSize = (entry.byteSize || 0) + n; staleBytes += n; }
+      return buf;
+    });
+    entry._enc[encoding] = p;
+    p.catch(() => { if (entry._enc && entry._enc[encoding] === p) delete entry._enc[encoding]; });
+  }
+  return entry._enc[encoding];
+}
+
 function set(key, result) {
   counters.sets++;
+  dropStale(key);   // a fresh body replaces any stale copy of the same key
   const isNewKey = !cache.has(key);
   if (isNewKey) {
     // Existing coarse guard: cap on distinct key COUNT.
@@ -212,6 +297,12 @@ function set(key, result) {
   // real board must never silently go uncached / cause a cache miss
   // storm because of its own size) -- it just can't coexist with much
   // else, and the very next set() call will start evicting again.
+  // The stale pool is the cheapest thing to give up: free it first (oldest first) so fresh + stale together stay inside the budget.
+  while (totalBytes + staleBytes + entry.byteSize > MAX_CACHE_BYTES && stale.size > 0) {
+    const oldestStale = stale.keys().next().value;
+    if (oldestStale === undefined) break;
+    dropStale(oldestStale); counters.staleDropped++;
+  }
   while (totalBytes + entry.byteSize > MAX_CACHE_BYTES && cache.size > 0) {
     const oldestKey = cache.keys().next().value;
     if (oldestKey === undefined || oldestKey === key) break;
@@ -239,6 +330,13 @@ function stats() {
     maxEntries: MAX_ENTRIES,
     cacheBytes: totalBytes,
     maxCacheBytes: MAX_CACHE_BYTES,
+    ttlMs: DEFAULT_TTL_MS,
+    offPeakTtlMs: OFF_PEAK_TTL_MS,
+    staleMaxAgeMs: STALE_MAX_AGE_MS,
+    staleEntries: stale.size,
+    staleBytes,
+    staleServed: counters.staleServed,
+    staleDropped: counters.staleDropped,
     inFlightRequests: inFlight.size,
     currentTtlMs: currentTtlMs(),
     hits: counters.hits,
@@ -251,4 +349,4 @@ function stats() {
   };
 }
 
-module.exports = { cacheKeyFor, get, set, getInFlight, setInFlight, recordCoalesced, stats, DEFAULT_TTL_MS, OFF_PEAK_TTL_MS };
+module.exports = { cacheKeyFor, get, peek, getStale, etagFor, encodedBody, set, getInFlight, setInFlight, recordCoalesced, stats, DEFAULT_TTL_MS, OFF_PEAK_TTL_MS };
